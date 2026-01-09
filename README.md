@@ -64,6 +64,6 @@ For comprehensive guides and API details, please refer to the documentation in t
 - **[Transformations](docs/transformations.md)**: How to write and use data transformations.
 - **[Validations](docs/validations.md)**: ensuring data quality.
 
-## Examples
+## Example
 
 Check `config/example_config.yaml` for a working configuration example.
