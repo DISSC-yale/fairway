@@ -1,0 +1,23 @@
+Bootstrap: docker
+From: python:3.13-slim
+
+%post
+    apt-get update && apt-get install -y git
+    pip install pandas pyyaml duckdb numpy pyarrow
+
+%environment
+    export LC_ALL=C
+    export PYTHONPATH=$PYTHONPATH:/app/src
+
+%files
+    src /app/src
+    config /app/config
+    data /app/data
+
+%runscript
+    python3 /app/src/pipeline.py "$@"
+
+%labels
+    Author Antigravity
+    Version 1.0
+    Description Data Ingestion Framework for Yale Centralized Data

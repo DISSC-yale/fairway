@@ -1,0 +1,30 @@
+site_name: Fairway Data Ingestion
+site_description: Documentation for fairway ingestion pipelines and data products.
+site_author: DISSC
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: blue grey
+    - scheme: slate
+      primary: blue grey
+  features:
+    - navigation.tabs
+    - content.code.copy
+
+plugins:
+  - search
+
+nav:
+  - Welcome: index.md
+  - Getting Started: getting-started.md
+  - Configuration: configuration.md
+  - Architecture: architecture.md
+  - Components:
+    - Engines: engines.md
+    - Validations: validations.md
+    - Enrichments: enrichments.md
+    - Transformations: transformations.md
+  - Data Products:
+    - Inventory: data_inventory.md

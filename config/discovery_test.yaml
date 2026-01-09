@@ -1,0 +1,18 @@
+dataset_name: "DiscoveryTest"
+engine: "duckdb"  # Use duckdb for easy local testing of the logic
+
+storage:
+  intermediate_dir: "data/intermediate"
+  final_dir: "data/final"
+
+partition_by: ["state", "year", "month"]
+
+sources:
+  - name: "complex_state_data"
+    path_pattern: "data/raw/complex_stats/*.csv"
+    naming_pattern: "stats--(?P<state>\\w+)--(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})"
+    format: "csv"
+
+validations:
+  level1:
+    min_rows: 1

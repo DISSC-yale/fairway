@@ -1,0 +1,12 @@
+site/
+data/
+logs/
+__pycache__/
+*.pyc
+*.egg-info/
+.DS_Store
+.coverage
+htmlcov/
+dist/
+build/
+.pytest_cache/

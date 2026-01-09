@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fairway"
+version = "0.1.0"
+authors = [
+  { name="Antigravity", email="antigravity@google.com" },
+]
+description = "A portable data ingestion framework for centralized research data."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pandas",
+    "pyyaml",
+    "duckdb",
+    "numpy",
+    "pyarrow",
+    "click",
+    "fsspec",
+    "mkdocs-material",
+    "pyspark",
+    "redivis",
+]
+
+[project.scripts]
+fairway = "cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
