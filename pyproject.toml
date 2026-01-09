@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fairway = "cli:main"
+fairway = "fairway.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

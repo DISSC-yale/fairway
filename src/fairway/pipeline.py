@@ -1,13 +1,13 @@
 import os
 import sys
-from config_loader import Config
-from manifest import ManifestManager
-from engines.duckdb_engine import DuckDBEngine
-# from engines.pyspark_engine import PySparkEngine
-from validations.checks import Validator
-from summarize import Summarizer
-from enrichments.geospatial import Enricher
-from exporters.redivis_exporter import RedivisExporter
+from .config_loader import Config
+from .manifest import ManifestManager
+from .engines.duckdb_engine import DuckDBEngine
+# from .engines.pyspark_engine import PySparkEngine
+from .validations.checks import Validator
+from .summarize import Summarizer
+from .enrichments.geospatial import Enricher
+from .exporters.redivis_exporter import RedivisExporter
 
 class IngestionPipeline:
     def __init__(self, config_path, spark_master=None):
@@ -63,7 +63,7 @@ class IngestionPipeline:
                 # 4. Custom Transformations (Phase III)
                 transform_script = self.config.data.get('transformation')
                 if transform_script:
-                    from transformations.registry import load_transformer
+                    from .transformations.registry import load_transformer
                     TransformerClass = load_transformer(transform_script)
                     if TransformerClass:
                         print(f"Applying custom transformations from {transform_script}...")

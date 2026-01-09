@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime
+from .generate_test_data import generate_test_data
 
 @click.group()
 def main():
@@ -38,6 +39,14 @@ def init(name):
     click.echo(f"Project {name} initialized successfully.")
 
 @main.command()
+@click.option('--size', type=click.Choice(['small', 'large']), default='small', help='Size of dataset to generate.')
+@click.option('--partitioned/--no-partitioned', default=True, help='Generate partitioned Parquet data (year/month).')
+def generate_data(size, partitioned):
+    """Generate mock test data."""
+    click.echo(f"Generating {size} test data (partitioned={partitioned})...")
+    generate_test_data(size=size, partitioned=partitioned)
+
+@main.command()
 @click.option('--config', default='config/example_config.yaml', help='Path to the config file.')
 @click.option('--profile', default='standard', help='Nextflow profile to use.')
 @click.option('--slurm', is_flag=True, help='Run as a Slurm batch job (allocates a controller node).')
@@ -52,14 +61,14 @@ def init(name):
 def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size):
     """Run the fairway ingestion pipeline."""
     # Load config to check engine
-    from config_loader import Config
+    from .config_loader import Config
     cfg = Config(config)
     
     spark_manager = None
     master_url = None
     
     if profile == 'slurm' and (with_spark or cfg.engine == 'pyspark'):
-        from engines.slurm_cluster import SlurmSparkManager
+        from .engines.slurm_cluster import SlurmSparkManager
         # Pass the CLI-provided resources to the spark manager
         spark_cfg = {
             'slurm_nodes': nodes,
