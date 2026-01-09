@@ -6,15 +6,9 @@ Fairway is a portable data ingestion framework designed to streamline the proces
 
 To install Fairway, ensure you have Python 3.10+ installed.
 
-1. Clone the repository:
+1. Install directly from GitHub:
    ```bash
-   git clone <repository-url>
-   cd fairway
-   ```
-
-2. Install the package:
-   ```bash
-   pip install .
+   pip install git+https://github.com/DISSC-yale/fairway.git
    ```
 
 ## Quick Start

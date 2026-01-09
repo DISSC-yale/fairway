@@ -116,5 +116,21 @@ o	Create a lineage manifest linking the Transformed file back to the specific Ra
 4.	Production Push (Transformed)
 o	Action: Upload to the Redivis Transformed Dataset.
 o	Gate: Manual or Automated approval (depending on configuration).
+
+# Spark Cluster Sizing on Slurm
+
+## 1. Node Allocation (Physical Layer)
+Controlled via `fairway run` CLI arguments (`--slurm-nodes`, `--slurm-cpus`, etc.).
+- Default: 1 node, 4 CPUs (CLI) / 2 nodes, 32 CPUs (Internal Fallback).
+- Logic: `src/engines/slurm_cluster.py` generates an sbatch script.
+
+## 2. Spark Dynamic Allocation (Logical Layer)
+Spark manages executors within allocated nodes using **Dynamic Allocation**.
+- Hardcoded in `src/engines/slurm_cluster.py`:
+  - `spark.dynamicAllocation.minExecutors 5`
+  - `spark.dynamicAllocation.maxExecutors 150`
+  - `spark.dynamicAllocation.initialExecutors 15`
+- Implication: Executors scale between 5 and 150 based on load, bounded by physical resources.
+
  
 
