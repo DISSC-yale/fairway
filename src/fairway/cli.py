@@ -109,12 +109,18 @@ dynamic_allocation:
         f.write(spark_config_content)
     click.echo("  Created file: config/spark.yaml")
 
-    # Copy nextflow.config to project for customization
+    # Copy nextflow.config and main.nf to project for customization
     fairway_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     nextflow_src = os.path.join(fairway_root, 'nextflow.config')
     if os.path.exists(nextflow_src):
         shutil.copy(nextflow_src, os.path.join(name, 'nextflow.config'))
         click.echo("  Created file: nextflow.config (customize profiles here)")
+    
+    # Copy main.nf pipeline file
+    main_nf_src = os.path.join(fairway_root, 'main.nf')
+    if os.path.exists(main_nf_src):
+        shutil.copy(main_nf_src, os.path.join(name, 'main.nf'))
+        click.echo("  Created file: main.nf (Nextflow pipeline)")
 
     # Create example transformation
     transform_content = """
