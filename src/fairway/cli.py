@@ -71,8 +71,8 @@ sources:
     path: "data/raw/example.csv"
     format: "csv"
     schema:
-      id: "int"
-      value: "double"
+      id: "BIGINT"
+      value: "DOUBLE"
 
 validations:
   level1:
@@ -109,33 +109,29 @@ dynamic_allocation:
         f.write(spark_config_content)
     click.echo("  Created file: config/spark.yaml")
 
-    # Copy nextflow.config and main.nf to project for customization
-    fairway_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    nextflow_src = os.path.join(fairway_root, 'nextflow.config')
-    if os.path.exists(nextflow_src):
-        shutil.copy(nextflow_src, os.path.join(name, 'nextflow.config'))
-        click.echo("  Created file: nextflow.config (customize profiles here)")
+    # Write nextflow.config from template
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, HPC_SCRIPT, SINGULARITY_DEF
+    with open(os.path.join(name, 'nextflow.config'), 'w') as f:
+        f.write(NEXTFLOW_CONFIG)
+    click.echo("  Created file: nextflow.config (customize profiles here)")
     
-    # Copy main.nf pipeline file
-    main_nf_src = os.path.join(fairway_root, 'main.nf')
-    if os.path.exists(main_nf_src):
-        shutil.copy(main_nf_src, os.path.join(name, 'main.nf'))
-        click.echo("  Created file: main.nf (Nextflow pipeline)")
+    # Write main.nf pipeline file from template
+    with open(os.path.join(name, 'main.nf'), 'w') as f:
+        f.write(MAIN_NF)
+    click.echo("  Created file: main.nf (Nextflow pipeline)")
 
-    # Copy HPC helper script
+    # Write HPC helper script from template
     os.makedirs(os.path.join(name, 'scripts'), exist_ok=True)
-    hpc_script_src = os.path.join(fairway_root, 'scripts', 'fairway-hpc.sh')
-    if os.path.exists(hpc_script_src):
-        hpc_script_dest = os.path.join(name, 'scripts', 'fairway-hpc.sh')
-        shutil.copy(hpc_script_src, hpc_script_dest)
-        os.chmod(hpc_script_dest, 0o755)
-        click.echo("  Created file: scripts/fairway-hpc.sh (HPC module/Apptainer helper)")
+    hpc_script_dest = os.path.join(name, 'scripts', 'fairway-hpc.sh')
+    with open(hpc_script_dest, 'w') as f:
+        f.write(HPC_SCRIPT)
+    os.chmod(hpc_script_dest, 0o755)
+    click.echo("  Created file: scripts/fairway-hpc.sh (HPC module/Apptainer helper)")
 
-    # Copy Singularity.def for container builds
-    singularity_src = os.path.join(fairway_root, 'Singularity.def')
-    if os.path.exists(singularity_src):
-        shutil.copy(singularity_src, os.path.join(name, 'Singularity.def'))
-        click.echo("  Created file: Singularity.def (Apptainer container definition)")
+    # Write Singularity.def from template
+    with open(os.path.join(name, 'Singularity.def'), 'w') as f:
+        f.write(SINGULARITY_DEF)
+    click.echo("  Created file: Singularity.def (Apptainer container definition)")
 
     # Create example transformation
     transform_content = """
