@@ -2,17 +2,17 @@ import pandas as pd
 import numpy as np
 import os
 
-def generate_test_data(size="small", partitioned=True):
+def generate_test_data(size="small", partitioned=True, file_format="csv"):
     os.makedirs('data/raw', exist_ok=True)
     
     if size == "small":
         n_rows = 100
-        file_path = 'data/raw/sales.csv'
-        parquet_path = 'data/raw/sales_partitioned'
+        file_path = f'data/raw/sales.{file_format}'
+        output_path = f'data/raw/sales_partitioned'
     else:
         n_rows = 1000000
-        file_path = 'data/raw/sales_large.csv'
-        parquet_path = 'data/raw/sales_large_partitioned'
+        file_path = f'data/raw/sales_large.{file_format}'
+        output_path = f'data/raw/sales_large_partitioned'
         
     df = pd.DataFrame({
         'id': range(n_rows),
@@ -24,11 +24,29 @@ def generate_test_data(size="small", partitioned=True):
     if partitioned:
         df['year'] = df['date'].dt.year
         df['month'] = df['date'].dt.month
-        df.to_parquet(parquet_path, partition_cols=['year', 'month'], index=False)
-        print(f"Generated {size} partitioned dataset at {parquet_path}")
+        
+        if file_format == 'parquet':
+            df.to_parquet(output_path, partition_cols=['year', 'month'], index=False)
+            print(f"Generated {size} partitioned parquet dataset at {output_path}")
+        else:
+            # Manual partitioning for CSV
+            for (year, month), group in df.groupby(['year', 'month']):
+                partition_dir = os.path.join(output_path, f"year={year}", f"month={month}")
+                os.makedirs(partition_dir, exist_ok=True)
+                # Using a simple filename strategy, could be more robust
+                partition_file = os.path.join(partition_dir, f"sales_part_{year}_{month}.csv")
+                group.to_csv(partition_file, index=False)
+            print(f"Generated {size} partitioned csv dataset at {output_path}")
+
     else:
-        df.to_csv(file_path, index=False)
-        print(f"Generated {size} dataset at {file_path}")
+        if file_format == 'parquet':
+             # Adjust extension if needed, though file_path usually has extension logic above
+             # treating file_path base as the target
+             file_path = file_path.replace('.csv', '.parquet') 
+             df.to_parquet(file_path, index=False)
+        else:
+             df.to_csv(file_path, index=False)
+        print(f"Generated {size} {file_format} dataset at {file_path}")
 
 if __name__ == "__main__":
     generate_test_data("small", partitioned=True)

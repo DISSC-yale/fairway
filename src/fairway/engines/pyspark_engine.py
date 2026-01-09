@@ -9,12 +9,17 @@ class PySparkEngine:
             builder = builder.master(spark_master)
         self.spark = builder.getOrCreate()
 
-    def ingest_csv(self, input_path, output_path, partition_by=None, balanced=True, metadata=None):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None):
         """
-        Reads CSV and writes to Parquet with balanced partitioning.
-        Includes metadata-driven column injection for state/dates.
+        Generic ingestion method that dispatches to format-specific handlers.
         """
-        df = self.spark.read.csv(input_path, header=True, inferSchema=True)
+        # PySpark supports generic load with format option
+        reader = self.spark.read.format(format)
+        
+        if format == 'csv':
+            reader = reader.option("header", "true").option("inferSchema", "true")
+            
+        df = reader.load(input_path)
         
         # Inject metadata if available (e.g. state from filename)
         if metadata:

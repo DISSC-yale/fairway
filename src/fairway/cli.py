@@ -85,11 +85,52 @@ def example_transform(df):
 
 @main.command()
 @click.option('--size', type=click.Choice(['small', 'large']), default='small', help='Size of dataset to generate.')
-@click.option('--partitioned/--no-partitioned', default=True, help='Generate partitioned Parquet data (year/month).')
-def generate_data(size, partitioned):
+@click.option('--partitioned/--no-partitioned', default=True, help='Generate partitioned data (year/month).')
+@click.option('--format', type=click.Choice(['csv', 'parquet']), default='csv', help='Output format (csv or parquet).')
+def generate_data(size, partitioned, format):
     """Generate mock test data."""
-    click.echo(f"Generating {size} test data (partitioned={partitioned})...")
-    generate_test_data(size=size, partitioned=partitioned)
+    click.echo(f"Generating {size} test data (partitioned={partitioned}, format={format})...")
+    generate_test_data(size=size, partitioned=partitioned, file_format=format)
+
+@main.command()
+@click.argument('file_path')
+@click.option('--output', help='Output file path for the schema (YAML).')
+def generate_schema(file_path, output):
+    """Generate a schema skeleton from a data file."""
+    if not os.path.exists(file_path):
+        click.echo(f"Error: File not found: {file_path}", err=True)
+        return
+
+    import duckdb
+    import yaml
+    
+    click.echo(f"Inferring schema from {file_path}...")
+    
+    try:
+        # Use read_csv_auto to infer types (samples file by default)
+        # We create a relation then get types
+        rel = duckdb.from_csv_auto(file_path)
+        # describe() returns a DF with column_name, column_type, etc.
+        # But actually rel.types and rel.columns is easier
+        
+        schema = {}
+        for col_name, col_type in zip(rel.columns, rel.types):
+            # Map duckdb types to simple types if desired, or keep as is
+            # For now, we'll keep them as string representations
+            schema[col_name] = str(col_type)
+
+        schema_yaml = yaml.dump(schema, sort_keys=False)
+        
+        if output:
+            with open(output, 'w') as f:
+                f.write(schema_yaml)
+            click.echo(f"Schema written to {output}")
+        else:
+            click.echo("\n--- Inferred Schema ---\n")
+            click.echo(schema_yaml)
+            
+    except Exception as e:
+        click.echo(f"Error inferring schema: {e}", err=True)
 
 @main.command()
 @click.option('--config', default='config/example_config.yaml', help='Path to the config file.')

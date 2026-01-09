@@ -17,6 +17,27 @@ class Config:
         self.partition_by = self.data.get('partition_by', [])
         self.redivis = self.data.get('redivis', {})
 
+
+
+    def _load_schema(self, schema_ref):
+        """Loads schema from a file if schema_ref is a path string, otherwise returns it as-is."""
+        if isinstance(schema_ref, str):
+            # Assume it's a file path
+            if not os.path.exists(schema_ref):
+                # Try relative to config file if not absolute
+                # Note: This is simplified, might need config dir context
+                raise FileNotFoundError(f"Schema file not found: {schema_ref}")
+            
+            with open(schema_ref, 'r') as f:
+                if schema_ref.endswith('.yaml') or schema_ref.endswith('.yml'):
+                    return yaml.safe_load(f)
+                elif schema_ref.endswith('.json'):
+                    import json
+                    return json.load(f)
+                else:
+                    raise ValueError(f"Unsupported schema file format: {schema_ref}")
+        return schema_ref or {}
+
     def _expand_sources(self, raw_sources):
         """Discovers files and extracts metadata via regex if patterns are provided."""
         expanded = []
@@ -30,6 +51,11 @@ class Config:
             # Glob discovery
             files = glob.glob(path_pattern, recursive=True)
             
+            # Resolve schema once if possible, or for each if dynamic?
+            # For now, simplistic: resolve usage of schema field
+            raw_schema = src.get('schema')
+            resolved_schema = self._load_schema(raw_schema)
+
             for f in files:
                 metadata = {}
                 if naming_pattern:
@@ -43,7 +69,7 @@ class Config:
                     'path': f,
                     'format': src.get('format', 'csv'),
                     'metadata': metadata,
-                    'schema': src.get('schema', {})
+                    'schema': resolved_schema
                 })
         return expanded
 

@@ -36,16 +36,19 @@ class IngestionPipeline:
             
             # Use source name (which is the basename of the file in expanded sources)
             # to create a unique output path
-            output_name = source['name'].replace(".csv", "")
+            # Remove extension from filename for output directory/file naming
+            output_name = os.path.splitext(source['name'])[0]
             output_path = os.path.join(self.config.storage['intermediate_dir'], output_name)
             partition_by = self.config.partition_by
             metadata = source.get('metadata', {})
+            source_format = source.get('format', 'csv')
             
             # For partitioning, DuckDB creates a directory. 
             # We use the name of the source (already unique due to expansion)
-            success = self.engine.ingest_csv(
+            success = self.engine.ingest(
                 input_path, 
-                output_path, 
+                output_path,
+                format=source_format,
                 partition_by=partition_by,
                 metadata=metadata
             )

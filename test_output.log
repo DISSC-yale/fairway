@@ -1,0 +1,346 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.2, pytest-8.4.2, pluggy-1.5.0
+rootdir: /Users/mad265/git-pub/DISSC/fairway
+configfile: pyproject.toml
+plugins: anyio-4.11.0, hydra-core-1.3.2
+collected 6 items
+
+tests/test_ingestion_formats.py FFFFFF                                   [100%]
+
+=================================== FAILURES ===================================
+_____________________ TestDuckDBIngestion.test_ingest_csv ______________________
+
+self = <test_ingestion_formats.TestDuckDBIngestion object at 0x10b233ed0>
+sample_data = {'csv': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0/data.csv'...t': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0/data.parquet'}
+tmp_path = PosixPath('/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0')
+
+    def test_ingest_csv(self, sample_data, tmp_path):
+        engine = DuckDBEngine()
+        output_path = os.path.join(str(tmp_path), "output_csv.parquet")
+    
+        print(f"DEBUG: Ingesting {sample_data['csv']} to {output_path}")
+        assert engine.ingest(sample_data['csv'], output_path, format='csv')
+>       verify_output(engine, output_path, sample_data['df'])
+
+tests/test_ingestion_formats.py:76: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_ingestion_formats.py:61: in verify_output
+    df_read = engine.query(f"SELECT * FROM '{output_path}/**/*.parquet'")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <fairway.engines.duckdb_engine.DuckDBEngine object at 0x10ddf1be0>
+query = "SELECT * FROM '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0/output_csv.parquet/**/*.parquet'"
+
+    def query(self, query):
+>       return self.con.execute(query).df()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       _duckdb.IOException: IO Error: No files found that match the pattern "/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0/output_csv.parquet/**/*.parquet"
+
+src/fairway/engines/duckdb_engine.py:66: IOException
+---------------------------- Captured stdout setup -----------------------------
+DEBUG: Created test files at /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0
+DEBUG: CSV Exists: True
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Ingesting /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0/data.csv to /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0/output_csv.parquet
+DEBUG: Verifying output from ['/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv0/output_csv.parquet']
+_____________________ TestDuckDBIngestion.test_ingest_json _____________________
+
+self = <test_ingestion_formats.TestDuckDBIngestion object at 0x10ddb0910>
+sample_data = {'csv': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json0/data.csv...': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json0/data.parquet'}
+tmp_path = PosixPath('/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json0')
+
+    def test_ingest_json(self, sample_data, tmp_path):
+        engine = DuckDBEngine()
+        output_path = os.path.join(str(tmp_path), "output_json.parquet")
+    
+        assert engine.ingest(sample_data['json'], output_path, format='json')
+>       verify_output(engine, output_path, sample_data['df'])
+
+tests/test_ingestion_formats.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_ingestion_formats.py:61: in verify_output
+    df_read = engine.query(f"SELECT * FROM '{output_path}/**/*.parquet'")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <fairway.engines.duckdb_engine.DuckDBEngine object at 0x10ddb3750>
+query = "SELECT * FROM '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json0/output_json.parquet/**/*.parquet'"
+
+    def query(self, query):
+>       return self.con.execute(query).df()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       _duckdb.IOException: IO Error: No files found that match the pattern "/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json0/output_json.parquet/**/*.parquet"
+
+src/fairway/engines/duckdb_engine.py:66: IOException
+---------------------------- Captured stdout setup -----------------------------
+DEBUG: Created test files at /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json0
+DEBUG: CSV Exists: True
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Verifying output from ['/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json0/output_json.parquet']
+___________________ TestDuckDBIngestion.test_ingest_parquet ____________________
+
+self = <test_ingestion_formats.TestDuckDBIngestion object at 0x10dce3360>
+sample_data = {'csv': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_parquet0/data....'/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_parquet0/data.parquet'}
+tmp_path = PosixPath('/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_parquet0')
+
+    def test_ingest_parquet(self, sample_data, tmp_path):
+        engine = DuckDBEngine()
+        output_path = os.path.join(str(tmp_path), "output_parquet.parquet")
+    
+        assert engine.ingest(sample_data['parquet'], output_path, format='parquet')
+>       verify_output(engine, output_path, sample_data['df'])
+
+tests/test_ingestion_formats.py:90: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_ingestion_formats.py:61: in verify_output
+    df_read = engine.query(f"SELECT * FROM '{output_path}/**/*.parquet'")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <fairway.engines.duckdb_engine.DuckDBEngine object at 0x10ddb3c50>
+query = "SELECT * FROM '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_parquet0/output_parquet.parquet/**/*.parquet'"
+
+    def query(self, query):
+>       return self.con.execute(query).df()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       _duckdb.IOException: IO Error: No files found that match the pattern "/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_parquet0/output_parquet.parquet/**/*.parquet"
+
+src/fairway/engines/duckdb_engine.py:66: IOException
+---------------------------- Captured stdout setup -----------------------------
+DEBUG: Created test files at /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_parquet0
+DEBUG: CSV Exists: True
+----------------------------- Captured stdout call -----------------------------
+DEBUG: Verifying output from ['/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_parquet0/output_parquet.parquet']
+_________________ TestDuckDBIngestion.test_metadata_injection __________________
+
+self = <test_ingestion_formats.TestDuckDBIngestion object at 0x10dce35c0>
+sample_data = {'csv': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_metadata_injection0/d...ivate/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_metadata_injection0/data.parquet'}
+tmp_path = PosixPath('/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_metadata_injection0')
+
+    def test_metadata_injection(self, sample_data, tmp_path):
+        engine = DuckDBEngine()
+        output_path = os.path.join(str(tmp_path), "output_meta.parquet")
+        metadata = {'source': 'test_source'}
+    
+        engine.ingest(sample_data['csv'], output_path, format='csv', metadata=metadata)
+    
+>       df_read = engine.query(f"SELECT * FROM '{output_path}/**/*.parquet'")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_ingestion_formats.py:99: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <fairway.engines.duckdb_engine.DuckDBEngine object at 0x10de2a520>
+query = "SELECT * FROM '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_metadata_injection0/output_meta.parquet/**/*.parquet'"
+
+    def query(self, query):
+>       return self.con.execute(query).df()
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       _duckdb.IOException: IO Error: No files found that match the pattern "/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_metadata_injection0/output_meta.parquet/**/*.parquet"
+
+src/fairway/engines/duckdb_engine.py:66: IOException
+---------------------------- Captured stdout setup -----------------------------
+DEBUG: Created test files at /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_metadata_injection0
+DEBUG: CSV Exists: True
+_____________________ TestPySparkIngestion.test_ingest_csv _____________________
+
+self = <test_ingestion_formats.TestPySparkIngestion object at 0x10ddb07d0>
+sample_data = {'csv': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv1/data.csv'...t': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv1/data.parquet'}
+tmp_path = PosixPath('/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv1')
+
+    @pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not available")
+    def test_ingest_csv(self, sample_data, tmp_path):
+>       engine = PySparkEngine()
+                 ^^^^^^^^^^^^^^^
+
+tests/test_ingestion_formats.py:106: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/fairway/engines/pyspark_engine.py:10: in __init__
+    self.spark = builder.getOrCreate()
+                 ^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/sql/session.py:557: in getOrCreate
+    sc = SparkContext.getOrCreate(sparkConf)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:542: in getOrCreate
+    SparkContext(conf=conf or SparkConf())
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:208: in __init__
+    self._do_init(
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:301: in _do_init
+    self._jsc = jsc or self._initialize_context(self._conf._jconf)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:448: in _initialize_context
+    return self._jvm.JavaSparkContext(jconf)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/py4j/java_gateway.py:1627: in __call__
+    return_value = get_return_value(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+answer = 'xro15'
+gateway_client = <py4j.clientserver.JavaClient object at 0x10ddf2a50>
+target_id = None, name = 'org.apache.spark.api.java.JavaSparkContext'
+
+    def get_return_value(answer, gateway_client, target_id=None, name=None):
+        """Converts an answer received from the Java gateway into a Python object.
+    
+        For example, string representation of integers are converted to Python
+        integer, string representation of objects are converted to JavaObject
+        instances, etc.
+    
+        :param answer: the string returned by the Java gateway
+        :param gateway_client: the gateway client used to communicate with the Java
+            Gateway. Only necessary if the answer is a reference (e.g., object,
+            list, map)
+        :param target_id: the name of the object from which the answer comes from
+            (e.g., *object1* in `object1.hello()`). Optional.
+        :param name: the name of the member from which the answer comes from
+            (e.g., *hello* in `object1.hello()`). Optional.
+        """
+        if is_error(answer)[0]:
+            if len(answer) > 1:
+                type = answer[1]
+                value = OUTPUT_CONVERTER[type](answer[2:], gateway_client)
+                if answer[1] == REFERENCE_TYPE:
+>                   raise Py4JJavaError(
+                        "An error occurred while calling {0}{1}{2}.\n".
+                        format(target_id, ".", name), value)
+E                   py4j.protocol.Py4JJavaError: An error occurred while calling None.org.apache.spark.api.java.JavaSparkContext.
+E                   : java.net.BindException: bind(..) failed with error(-49): Can't assign requested address: Service 'sparkDriver' failed after 16 retries (on a random free port)! Consider explicitly setting the appropriate binding address for the service 'sparkDriver' (for example spark.driver.bindAddress for SparkDriver) to the correct binding address.
+
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/py4j/protocol.py:327: Py4JJavaError
+---------------------------- Captured stdout setup -----------------------------
+DEBUG: Created test files at /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_csv1
+DEBUG: CSV Exists: True
+----------------------------- Captured stderr call -----------------------------
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: package sun.security.action not in java.base
+Using Spark's default log4j profile: org/apache/spark/log4j2-defaults.properties
+Setting default log level to "WARN".
+To adjust logging level use sc.setLogLevel(newLevel). For SparkR, use setLogLevel(newLevel).
+26/01/09 13:48:18 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 ERROR SparkContext: Error initializing SparkContext.
+java.net.BindException: bind(..) failed with error(-49): Can't assign requested address: Service 'sparkDriver' failed after 16 retries (on a random free port)! Consider explicitly setting the appropriate binding address for the service 'sparkDriver' (for example spark.driver.bindAddress for SparkDriver) to the correct binding address.
+____________________ TestPySparkIngestion.test_ingest_json _____________________
+
+self = <test_ingestion_formats.TestPySparkIngestion object at 0x10ddb0a50>
+temp_dir = '/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/tmpg9xw7e8s'
+sample_data = {'csv': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json1/data.csv...': '/private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json1/data.parquet'}
+
+    @pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not available")
+    def test_ingest_json(self, temp_dir, sample_data):
+>       engine = PySparkEngine()
+                 ^^^^^^^^^^^^^^^
+
+tests/test_ingestion_formats.py:114: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/fairway/engines/pyspark_engine.py:10: in __init__
+    self.spark = builder.getOrCreate()
+                 ^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/sql/session.py:557: in getOrCreate
+    sc = SparkContext.getOrCreate(sparkConf)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:542: in getOrCreate
+    SparkContext(conf=conf or SparkConf())
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:208: in __init__
+    self._do_init(
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:301: in _do_init
+    self._jsc = jsc or self._initialize_context(self._conf._jconf)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/pyspark/core/context.py:448: in _initialize_context
+    return self._jvm.JavaSparkContext(jconf)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/py4j/java_gateway.py:1627: in __call__
+    return_value = get_return_value(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+answer = 'xro31'
+gateway_client = <py4j.clientserver.JavaClient object at 0x10ddf2a50>
+target_id = None, name = 'org.apache.spark.api.java.JavaSparkContext'
+
+    def get_return_value(answer, gateway_client, target_id=None, name=None):
+        """Converts an answer received from the Java gateway into a Python object.
+    
+        For example, string representation of integers are converted to Python
+        integer, string representation of objects are converted to JavaObject
+        instances, etc.
+    
+        :param answer: the string returned by the Java gateway
+        :param gateway_client: the gateway client used to communicate with the Java
+            Gateway. Only necessary if the answer is a reference (e.g., object,
+            list, map)
+        :param target_id: the name of the object from which the answer comes from
+            (e.g., *object1* in `object1.hello()`). Optional.
+        :param name: the name of the member from which the answer comes from
+            (e.g., *hello* in `object1.hello()`). Optional.
+        """
+        if is_error(answer)[0]:
+            if len(answer) > 1:
+                type = answer[1]
+                value = OUTPUT_CONVERTER[type](answer[2:], gateway_client)
+                if answer[1] == REFERENCE_TYPE:
+>                   raise Py4JJavaError(
+                        "An error occurred while calling {0}{1}{2}.\n".
+                        format(target_id, ".", name), value)
+E                   py4j.protocol.Py4JJavaError: An error occurred while calling None.org.apache.spark.api.java.JavaSparkContext.
+E                   : java.net.BindException: bind(..) failed with error(-49): Can't assign requested address: Service 'sparkDriver' failed after 16 retries (on a random free port)! Consider explicitly setting the appropriate binding address for the service 'sparkDriver' (for example spark.driver.bindAddress for SparkDriver) to the correct binding address.
+
+/opt/homebrew/Caskroom/miniconda/base/lib/python3.13/site-packages/py4j/protocol.py:327: Py4JJavaError
+---------------------------- Captured stdout setup -----------------------------
+DEBUG: Created test files at /private/var/folders/ph/j5ln2nv51nb0mbb17g555l00t24pfm/T/pytest-of-mad265/pytest-1/test_ingest_json1
+DEBUG: CSV Exists: True
+----------------------------- Captured stderr call -----------------------------
+26/01/09 13:48:19 WARN SparkContext: Another SparkContext is being constructed (or threw an exception in its constructor). This may indicate an error, since only one SparkContext should be running in this JVM (see SPARK-2243). The other SparkContext was created at:
+org.apache.spark.api.java.JavaSparkContext.<init>(JavaSparkContext.scala:59)
+java.base/jdk.internal.reflect.DirectConstructorHandleAccessor.newInstance(DirectConstructorHandleAccessor.java:62)
+java.base/java.lang.reflect.Constructor.newInstanceWithCaller(Constructor.java:499)
+java.base/java.lang.reflect.Constructor.newInstance(Constructor.java:483)
+py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:247)
+py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:374)
+py4j.Gateway.invoke(Gateway.java:238)
+py4j.commands.ConstructorCommand.invokeConstructor(ConstructorCommand.java:80)
+py4j.commands.ConstructorCommand.execute(ConstructorCommand.java:69)
+py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:184)
+py4j.ClientServerConnection.run(ClientServerConnection.java:108)
+java.base/java.lang.Thread.run(Thread.java:1474)
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 WARN Utils: Service 'sparkDriver' could not bind on a random free port. You may check whether configuring an appropriate binding address.
+26/01/09 13:48:19 ERROR SparkContext: Error initializing SparkContext.
+java.net.BindException: bind(..) failed with error(-49): Can't assign requested address: Service 'sparkDriver' failed after 16 retries (on a random free port)! Consider explicitly setting the appropriate binding address for the service 'sparkDriver' (for example spark.driver.bindAddress for SparkDriver) to the correct binding address.
+=========================== short test summary info ============================
+FAILED tests/test_ingestion_formats.py::TestDuckDBIngestion::test_ingest_csv
+FAILED tests/test_ingestion_formats.py::TestDuckDBIngestion::test_ingest_json
+FAILED tests/test_ingestion_formats.py::TestDuckDBIngestion::test_ingest_parquet
+FAILED tests/test_ingestion_formats.py::TestDuckDBIngestion::test_metadata_injection
+FAILED tests/test_ingestion_formats.py::TestPySparkIngestion::test_ingest_csv
+FAILED tests/test_ingestion_formats.py::TestPySparkIngestion::test_ingest_json
+============================== 6 failed in 2.35s ===============================

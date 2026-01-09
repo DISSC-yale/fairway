@@ -28,3 +28,7 @@ nav:
     - Transformations: transformations.md
   - Data Products:
     - Inventory: data_inventory.md
+  - Guide:
+    - Supported Formats: supported_formats.md
+  - Design Docs:
+    - Flexible Ingestion RFC: design_docs/flexible_ingestion_rfc.md
