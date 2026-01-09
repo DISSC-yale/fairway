@@ -158,7 +158,16 @@ build_container() {
     # Check if we have a Singularity.def in current directory
     if [[ -f "Singularity.def" ]]; then
         echo "Building from local Singularity.def..."
-        apptainer build "$CONTAINER_LOCAL" Singularity.def
+        echo "Building from local Singularity.def..."
+        if ! apptainer build "$CONTAINER_LOCAL" Singularity.def; then
+            echo ""
+            echo "Error: Container build failed."
+            echo "Possible reasons:"
+            echo "  1. No internet access on the current node. Try running this command on a login node."
+            echo "  2. Network firewall/proxy issues. Check HTTP_PROXY/HTTPS_PROXY settings."
+            echo "  3. Temporary registry outage or rate limiting."
+            exit 1
+        fi
     else
         echo "Pulling from container registry..."
         echo "  Source: $CONTAINER_IMAGE"

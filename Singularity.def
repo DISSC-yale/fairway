@@ -35,8 +35,9 @@ From: python:3.10-slim
         pyspark \
         click
     
-    # Install fairway from source (will be mounted or built in)
-    pip install --no-cache-dir git+https://github.com/DISSC-yale/fairway.git || true
+    # Install fairway from local source
+    cd /app
+    pip install --no-cache-dir .
 
 %environment
     export LC_ALL=C
@@ -50,6 +51,8 @@ From: python:3.10-slim
     config /app/config
     main.nf /app/main.nf
     nextflow.config /app/nextflow.config
+    pyproject.toml /app/pyproject.toml
+    README.md /app/README.md
 
 %runscript
     exec fairway "$@"
