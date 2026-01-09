@@ -1,0 +1,1 @@
+# test_project\n\nInitialized by fairway on 2026-01-09T14:05:17.511631\n\nEngine: duckdb\n

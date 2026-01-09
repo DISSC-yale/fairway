@@ -24,7 +24,12 @@ cd my_new_project
 This will create folders for your data, configuration, logs, and transformations.
 
 ### 2. Configure Your Pipeline
-Fairway uses YAML configuration files to define data sources and processing steps. A sample configuration is available at `config/example_config.yaml`.
+Fairway uses YAML configuration files to define data sources and processing steps.
+
+Key files created:
+- `config/fairway.yaml`: Main pipeline configuration
+- `config/spark.yaml`: Spark cluster settings (nodes, memory, etc.)
+- `nextflow.config`: Execution profiles (Slurm, Kubernetes, etc.)
 
 Key configuration elements include:
 - **Project Metadata**: Name, description, and owner.
@@ -36,8 +41,11 @@ Key configuration elements include:
 ### 3. Run the Pipeline
 
 **Local Execution**
-Run the pipeline on your local machine:
+Run the pipeline on your local machine (auto-discovers config from `config/` folder):
 ```bash
+fairway run
+
+# Or specify a config explicitly
 fairway run --config config/my_config.yaml
 ```
 
@@ -58,6 +66,76 @@ For comprehensive guides and API details, please refer to the documentation in t
 - **[Transformations](docs/transformations.md)**: How to write and use data transformations.
 - **[Validations](docs/validations.md)**: ensuring data quality.
 
-## Example
+## Examples
 
-Check `config/example_config.yaml` for a working configuration example.
+### Generate Test Data
+
+Quickly create sample datasets for testing your pipeline:
+
+```bash
+# Generate a small partitioned CSV dataset
+fairway generate-data --size small --partitioned
+
+# Generate a large Parquet dataset (non-partitioned)
+fairway generate-data --size large --no-partitioned --format parquet
+```
+
+### Auto-Generate Schema
+
+Infer schema from existing data files or partitioned directories:
+
+```bash
+# Generate schema from a CSV file
+fairway generate-schema data/raw/sales.csv
+
+# Generate schema from a partitioned directory
+fairway generate-schema data/raw/events/ --output config/events_schema.yaml
+```
+
+This outputs a YAML schema file that can be used in your config.
+
+### Sample Configuration
+
+A minimal `config.yaml` for processing data:
+
+```yaml
+dataset_name: "sales_data"
+engine: "duckdb"
+
+storage:
+  raw_dir: "data/raw"
+  final_dir: "data/final"
+
+sources:
+  - name: "sales"
+    path: "data/raw/sales.csv"
+    format: "csv"
+    schema:
+      id: "int"
+      date: "date"
+      amount: "double"
+
+validations:
+  level1:
+    check_column_count: true
+    min_rows: 10
+```
+
+See `config/example_config.yaml` for a complete configuration example with all options.
+
+### Running the Pipeline
+
+```bash
+# Local execution with DuckDB
+fairway run --config config/my_config.yaml
+
+# Slurm cluster with PySpark
+fairway run --config config/my_config.yaml --profile slurm --with-spark --account my_account
+
+# Customize Slurm resources
+fairway run --config config/my_config.yaml --slurm \
+  --cpus 8 \
+  --mem 32G \
+  --time 04:00:00 \
+  --nodes 4
+```

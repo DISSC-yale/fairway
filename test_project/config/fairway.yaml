@@ -1,0 +1,21 @@
+dataset_name: "test_project"
+engine: "duckdb"
+storage:
+  raw_dir: "data/raw"
+  intermediate_dir: "data/intermediate"
+  final_dir: "data/final"
+
+sources:
+  - name: "example_source"
+    path: "data/raw/example.csv"
+    format: "csv"
+    schema:
+      id: "int"
+      value: "double"
+
+validations:
+  level1:
+    min_rows: 1
+
+enrichment:
+  geocode: false

@@ -66,3 +66,63 @@ data:
 ```
 
 The pipeline will look for a class in `src/transformations/my_custom_transform.py` that implements the transformation logic.
+
+## Config Auto-Discovery
+
+When running `fairway run` without specifying `--config`, fairway will automatically discover the config file:
+
+1. Scans the `config/` directory for `.yaml` or `.yml` files
+2. Excludes `*_schema.yaml` files and `spark.yaml`
+3. If exactly **one** config is found, uses it automatically
+4. If **multiple** configs exist, shows an error listing them—use `--config` to specify
+
+```bash
+# Auto-discovers config/fairway.yaml (if it's the only config file)
+fairway run
+
+# Explicit config selection (required when multiple configs exist)
+fairway run --config config/my_pipeline.yaml
+```
+
+## Spark Cluster Config (`spark.yaml`)
+
+For Slurm/PySpark execution, resource settings are configured in `config/spark.yaml`:
+
+```yaml
+# config/spark.yaml
+nodes: 2
+cpus_per_node: 32
+mem_per_node: "200G"
+
+account: "my_account"
+partition: "day"
+time: "24:00:00"
+
+dynamic_allocation:
+  enabled: true
+  min_executors: 5
+  max_executors: 150
+  initial_executors: 15
+```
+
+CLI options (e.g., `--slurm-nodes 4`) override `spark.yaml` values.
+
+## Nextflow Profiles
+
+Fairway uses Nextflow for execution orchestration. The `nextflow.config` file (copied to your project on `fairway init`) defines execution profiles:
+
+| Profile | Executor | Use Case |
+| :--- | :--- | :--- |
+| `standard` | local | Development, testing |
+| `slurm` | Slurm | HPC clusters |
+| `kubernetes` | k8s | Cloud-native |
+| `google_batch` | Google Batch | GCP |
+| `docker` | local + Docker | Containerized local |
+| `apptainer` | local + Apptainer | HPC containers |
+
+Select a profile with `--profile`:
+
+```bash
+fairway run --profile slurm
+```
+

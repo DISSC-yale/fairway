@@ -5,6 +5,32 @@ import subprocess
 from datetime import datetime
 from .generate_test_data import generate_test_data
 
+
+def discover_config():
+    """Auto-discover config file in config/ folder.
+    
+    Returns the path to the config file if exactly one is found.
+    Raises ClickException if zero or multiple configs exist.
+    """
+    config_dir = 'config'
+    if not os.path.isdir(config_dir):
+        raise click.ClickException("No config/ directory found. Run 'fairway init' first.")
+    
+    # Exclude schema files and spark.yaml
+    configs = [f for f in os.listdir(config_dir) 
+               if f.endswith(('.yaml', '.yml')) 
+               and not f.endswith('_schema.yaml')
+               and f != 'spark.yaml']
+    
+    if len(configs) == 0:
+        raise click.ClickException("No config files found in config/")
+    elif len(configs) == 1:
+        return os.path.join(config_dir, configs[0])
+    else:
+        raise click.ClickException(
+            f"Multiple config files found: {configs}. Use --config to specify one.")
+
+
 @click.group()
 def main():
     """fairway: A portable data ingestion framework."""
@@ -59,6 +85,37 @@ enrichment:
         f.write(config_content)
     click.echo("  Created file: config/fairway.yaml")
 
+    # Create spark.yaml with defaults
+    spark_config_content = """# Spark cluster configuration
+# Override these values for your HPC environment
+
+nodes: 2
+cpus_per_node: 32
+mem_per_node: "200G"
+
+# Slurm-specific
+account: "borzekowski"
+partition: "day"
+time: "24:00:00"
+
+# Spark dynamic allocation
+dynamic_allocation:
+  enabled: true
+  min_executors: 5
+  max_executors: 150
+  initial_executors: 15
+"""
+    with open(os.path.join(name, 'config', 'spark.yaml'), 'w') as f:
+        f.write(spark_config_content)
+    click.echo("  Created file: config/spark.yaml")
+
+    # Copy nextflow.config to project for customization
+    fairway_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    nextflow_src = os.path.join(fairway_root, 'nextflow.config')
+    if os.path.exists(nextflow_src):
+        shutil.copy(nextflow_src, os.path.join(name, 'nextflow.config'))
+        click.echo("  Created file: nextflow.config (customize profiles here)")
+
     # Create example transformation
     transform_content = """
 def example_transform(df):
@@ -76,10 +133,139 @@ def example_transform(df):
         f.write(transform_content.strip())
     click.echo("  Created file: src/transformations/example_transform.py")
 
-    # Create README.md
+    # Create README.md with usage examples
+    readme_content = f"""# {name}
+
+Initialized by fairway on {datetime.now().isoformat()}
+
+**Engine**: {engine}
+
+## Quick Start
+
+### 1. Generate Test Data
+
+```bash
+fairway generate-data --size small --partitioned
+```
+
+### 2. Generate Schema (optional)
+
+```bash
+fairway generate-schema data/raw/your_data.csv
+```
+
+### 3. Update Configuration
+
+Edit `config/fairway.yaml` to define your data sources, validations, and enrichments.
+
+### 4. Run the Pipeline
+
+**Local execution:**
+```bash
+fairway run --config config/fairway.yaml
+```
+
+**Slurm cluster:**
+```bash
+fairway run --config config/fairway.yaml --profile slurm --with-spark --account YOUR_ACCOUNT
+```
+
+## Project Structure
+
+- `config/` - Pipeline configuration files
+- `data/raw/` - Input data files
+- `data/intermediate/` - Intermediate processing outputs
+- `data/final/` - Final processed data
+- `src/transformations/` - Custom transformation scripts
+- `docs/` - Project documentation
+- `logs/` - Execution logs
+
+## Documentation
+
+See the [fairway documentation](https://github.com/DISSC-yale/fairway) for more details.
+"""
     with open(os.path.join(name, 'README.md'), 'w') as f:
-        f.write(f"# {name}\\n\\nInitialized by fairway on {datetime.now().isoformat()}\\n\\nEngine: {engine}\\n")
+        f.write(readme_content)
     click.echo("  Created file: README.md")
+
+    # Create docs/getting-started.md
+    docs_content = f"""# Getting Started with {name}
+
+## Prerequisites
+
+- Python 3.9+
+- fairway installed (`pip install git+https://github.com/DISSC-yale/fairway.git`)
+
+## Generating Test Data
+
+Create sample data to test your pipeline:
+
+```bash
+# Small partitioned CSV dataset
+fairway generate-data --size small --partitioned
+
+# Large Parquet dataset
+fairway generate-data --size large --format parquet
+```
+
+## Schema Inference
+
+Auto-generate schema from your data:
+
+```bash
+# From a single file
+fairway generate-schema data/raw/example.csv
+
+# From a partitioned directory
+fairway generate-schema data/raw/partitioned_data/
+```
+
+## Configuration
+
+Your pipeline is configured in `config/fairway.yaml`:
+
+```yaml
+dataset_name: "{name}"
+engine: "{'pyspark' if engine == 'spark' else 'duckdb'}"
+
+sources:
+  - name: "my_source"
+    path: "data/raw/my_data.csv"
+    format: "csv"
+    schema:
+      id: "int"
+      value: "double"
+
+validations:
+  level1:
+    min_rows: 100
+    check_column_count: true
+
+enrichment:
+  geocode: true
+```
+
+## Running Your Pipeline
+
+### Local (DuckDB)
+```bash
+fairway run --config config/fairway.yaml
+```
+
+### Slurm Cluster (PySpark)
+```bash
+fairway run --config config/fairway.yaml --profile slurm --with-spark --account YOUR_ACCOUNT
+```
+
+### Custom Slurm Resources
+```bash
+fairway run --config config/fairway.yaml --slurm \\
+  --cpus 8 --mem 32G --time 04:00:00 --nodes 4
+```
+"""
+    with open(os.path.join(name, 'docs', 'getting-started.md'), 'w') as f:
+        f.write(docs_content)
+    click.echo("  Created file: docs/getting-started.md")
 
     click.echo(f"Project {name} initialized successfully.")
 
@@ -96,57 +282,136 @@ def generate_data(size, partitioned, format):
 @click.argument('file_path')
 @click.option('--output', help='Output file path for the schema (YAML).')
 def generate_schema(file_path, output):
-    """Generate a schema skeleton from a data file."""
-    if not os.path.exists(file_path):
-        click.echo(f"Error: File not found: {file_path}", err=True)
-        return
-
+    """Generate a schema skeleton from a data file or partitioned directory."""
+    import re
+    import glob
     import duckdb
     import yaml
     
-    click.echo(f"Inferring schema from {file_path}...")
+    if not os.path.exists(file_path):
+        click.echo(f"Error: Path not found: {file_path}", err=True)
+        return
+
+    partition_columns = []
+    sample_file = None
+    dataset_name = os.path.basename(file_path.rstrip('/'))
+    
+    # Check if path is a directory (partitioned data)
+    if os.path.isdir(file_path):
+        click.echo(f"Detected partitioned directory: {file_path}")
+        
+        # Walk directory to extract partition columns and find a data file
+        current_path = file_path
+        while os.path.isdir(current_path):
+            entries = os.listdir(current_path)
+            dirs = [e for e in entries if os.path.isdir(os.path.join(current_path, e))]
+            files = [e for e in entries if os.path.isfile(os.path.join(current_path, e)) 
+                     and (e.endswith('.csv') or e.endswith('.parquet') or e.endswith('.json'))]
+            
+            # Check for Hive-style partition directories (key=value)
+            partition_dirs = [d for d in dirs if '=' in d]
+            
+            if partition_dirs:
+                # Extract partition column name from first partition dir
+                partition_col = partition_dirs[0].split('=')[0]
+                if partition_col not in partition_columns:
+                    partition_columns.append(partition_col)
+                # Navigate into first partition
+                current_path = os.path.join(current_path, partition_dirs[0])
+            elif files:
+                # Found data files, pick first one as sample
+                sample_file = os.path.join(current_path, files[0])
+                break
+            elif dirs:
+                # Non-partition subdirectory, navigate in
+                current_path = os.path.join(current_path, dirs[0])
+            else:
+                click.echo("Error: No data files found in partitioned directory", err=True)
+                return
+        
+        if not sample_file:
+            click.echo("Error: Could not find a sample data file", err=True)
+            return
+            
+        click.echo(f"Detected partition columns: {partition_columns}")
+        click.echo(f"Using sample file: {sample_file}")
+    else:
+        sample_file = file_path
+    
+    click.echo(f"Inferring schema from {sample_file}...")
     
     try:
-        # Use read_csv_auto to infer types (samples file by default)
-        # We create a relation then get types
-        rel = duckdb.from_csv_auto(file_path)
-        # describe() returns a DF with column_name, column_type, etc.
-        # But actually rel.types and rel.columns is easier
-        
-        schema = {}
-        for col_name, col_type in zip(rel.columns, rel.types):
-            # Map duckdb types to simple types if desired, or keep as is
-            # For now, we'll keep them as string representations
-            schema[col_name] = str(col_type)
-
-        schema_yaml = yaml.dump(schema, sort_keys=False)
-        
-        if output:
-            with open(output, 'w') as f:
-                f.write(schema_yaml)
-            click.echo(f"Schema written to {output}")
+        # Detect file format and read accordingly
+        if sample_file.endswith('.parquet'):
+            rel = duckdb.read_parquet(sample_file)
+        elif sample_file.endswith('.json'):
+            rel = duckdb.read_json(sample_file)
         else:
-            click.echo("\n--- Inferred Schema ---\n")
-            click.echo(schema_yaml)
+            rel = duckdb.read_csv(sample_file)
+        
+        columns = {}
+        for col_name, col_type in zip(rel.columns, rel.types):
+            # Skip partition columns since they're derived from directory structure
+            if col_name not in partition_columns:
+                columns[col_name] = str(col_type)
+
+        # Build output schema
+        schema_output = {'name': dataset_name}
+        if partition_columns:
+            schema_output['partition_by'] = partition_columns
+        schema_output['columns'] = columns
+
+        schema_yaml = yaml.dump(schema_output, sort_keys=False, default_flow_style=False)
+        
+        # Default output path: config/{dataset_name}_schema.yaml
+        if not output:
+            os.makedirs('config', exist_ok=True)
+            output = f"config/{dataset_name}_schema.yaml"
+        
+        with open(output, 'w') as f:
+            f.write(schema_yaml)
+        click.echo(f"Schema written to {output}")
             
     except Exception as e:
         click.echo(f"Error inferring schema: {e}", err=True)
 
 @main.command()
-@click.option('--config', default='config/example_config.yaml', help='Path to the config file.')
+@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--profile', default='standard', help='Nextflow profile to use.')
 @click.option('--slurm', is_flag=True, help='Run as a Slurm batch job (allocates a controller node).')
 @click.option('--with-spark', is_flag=True, help='Automatically provision a Spark-on-Slurm cluster.')
-@click.option('--slurm-cpus', 'cpus', default=4, help='CPUs per task/node.')
-@click.option('--slurm-mem', 'mem', default='16G', help='Memory per node.')
-@click.option('--slurm-time', 'time', default='24:00:00', help='Time limit.')
-@click.option('--slurm-nodes', 'nodes', default=1, help='Number of nodes.')
-@click.option('--account', default='borzekowski', help='Slurm account.')
-@click.option('--partition', default='day', help='Slurm partition.')
+@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per task/node (overrides spark.yaml).')
+@click.option('--slurm-mem', 'mem', default=None, help='Memory per node (overrides spark.yaml).')
+@click.option('--slurm-time', 'time', default=None, help='Time limit (overrides spark.yaml).')
+@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of nodes (overrides spark.yaml).')
+@click.option('--account', default=None, help='Slurm account (overrides spark.yaml).')
+@click.option('--partition', default=None, help='Slurm partition (overrides spark.yaml).')
 @click.option('--batch-size', default=30, help='Max parallel jobs.')
 def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size):
     """Run the fairway ingestion pipeline."""
-    # Load config to check engine
+    import yaml
+    
+    # Auto-discover config if not specified
+    if config is None:
+        config = discover_config()
+        click.echo(f"Auto-discovered config: {config}")
+    
+    # Load spark.yaml for defaults
+    spark_yaml_path = 'config/spark.yaml'
+    spark_defaults = {}
+    if os.path.exists(spark_yaml_path):
+        with open(spark_yaml_path, 'r') as f:
+            spark_defaults = yaml.safe_load(f) or {}
+    
+    # Merge: CLI args > spark.yaml > hardcoded defaults
+    nodes = nodes or spark_defaults.get('nodes', 2)
+    cpus = cpus or spark_defaults.get('cpus_per_node', 32)
+    mem = mem or spark_defaults.get('mem_per_node', '200G')
+    account = account or spark_defaults.get('account', 'borzekowski')
+    partition = partition or spark_defaults.get('partition', 'day')
+    time = time or spark_defaults.get('time', '24:00:00')
+    
+    # Load main config to check engine
     from .config_loader import Config
     cfg = Config(config)
     
