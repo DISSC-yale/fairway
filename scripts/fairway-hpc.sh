@@ -4,14 +4,17 @@
 # =============================================================================
 # 
 # This script helps manage module loading and job submission for Fairway
-# on HPC clusters running Slurm.
+# on HPC clusters running Slurm. Supports both module-based and Apptainer
+# container-based execution.
 #
 # Usage:
-#   source fairway-hpc.sh setup         # Load required modules
-#   source fairway-hpc.sh setup-spark   # Load modules including Spark
-#   fairway-hpc.sh run [options]        # Submit a fairway job
-#   fairway-hpc.sh status               # Check running fairway jobs
-#   fairway-hpc.sh cancel [job_id]      # Cancel a fairway job
+#   source fairway-hpc.sh setup           # Load required modules
+#   source fairway-hpc.sh setup-spark     # Load modules including Spark
+#   fairway-hpc.sh run [options]          # Submit a fairway job
+#   fairway-hpc.sh run --apptainer        # Submit using Apptainer container
+#   fairway-hpc.sh build-container        # Build/pull Apptainer image
+#   fairway-hpc.sh status                 # Check running fairway jobs
+#   fairway-hpc.sh cancel [job_id]        # Cancel a fairway job
 #
 # =============================================================================
 
@@ -27,15 +30,19 @@ DEFAULT_NODES=2
 DEFAULT_CPUS=32
 DEFAULT_MEM="200G"
 
+# Container configuration
+CONTAINER_IMAGE="docker://ghcr.io/dissc-yale/fairway:latest"
+CONTAINER_LOCAL="fairway.sif"
+
 # Module names - adjust these to match your HPC's module system
 MODULES_BASE=(
-    "Nextflow"           # Workflow orchestration
-    "miniconda"          # Python environment
+    "Nextflow/25.04.6"
+    "Python/3.10.8-GCCcore-12.2.0"
 )
 
 MODULES_SPARK=(
-    "Java/11.0.20"       # Required for Spark
-    "Spark/3.5.0"        # Apache Spark
+    "Java/11.0.20"
+    "Spark/3.5.0"
 )
 
 # -----------------------------------------------------------------------------
@@ -55,11 +62,12 @@ print_usage() {
 Usage: fairway-hpc.sh <command> [options]
 
 Commands:
-  setup           Load base modules (Nextflow, Python)
-  setup-spark     Load all modules including Spark
-  run             Submit a fairway pipeline job
-  status          Show status of fairway jobs
-  cancel <id>     Cancel a fairway job
+  setup             Load base modules (Nextflow, Python)
+  setup-spark       Load all modules including Spark
+  run               Submit a fairway pipeline job
+  build-container   Build/pull the Fairway Apptainer image
+  status            Show status of fairway jobs
+  cancel <id>       Cancel a fairway job
 
 Run Options:
   --config <file>     Config file path (default: auto-discover)
@@ -71,16 +79,20 @@ Run Options:
   --account <name>    Slurm account (default: $DEFAULT_ACCOUNT)
   --partition <name>  Slurm partition (default: $DEFAULT_PARTITION)
   --with-spark        Enable Spark cluster provisioning
+  --apptainer         Use Apptainer container instead of modules
 
 Examples:
   # Load modules interactively
   source fairway-hpc.sh setup
 
-  # Submit a job with defaults
+  # Submit a job with modules (traditional)
   fairway-hpc.sh run --config config/mydata.yaml
 
-  # Submit with custom resources
-  fairway-hpc.sh run --nodes 4 --cpus 16 --mem 128G --with-spark
+  # Submit using Apptainer container (recommended - reproducible)
+  fairway-hpc.sh run --config config/mydata.yaml --apptainer
+
+  # Build/pull the container first
+  fairway-hpc.sh build-container
 
 EOF
 }
@@ -100,8 +112,11 @@ load_modules() {
     done
     
     echo ""
-    echo "Base modules loaded. Activate your Python environment:"
-    echo "  conda activate fairway"
+    echo "Modules loaded successfully."
+    echo "Python: $(which python)"
+    echo ""
+    echo "To install fairway in your environment:"
+    echo "  pip install --user git+https://github.com/DISSC-yale/fairway.git"
 }
 
 load_spark_modules() {
@@ -130,6 +145,32 @@ check_fairway() {
     fi
 }
 
+build_container() {
+    echo "Building/pulling Fairway Apptainer image..."
+    echo ""
+    
+    if [[ -f "$CONTAINER_LOCAL" ]]; then
+        echo "Container already exists: $CONTAINER_LOCAL"
+        echo "To rebuild, delete it first: rm $CONTAINER_LOCAL"
+        return 0
+    fi
+    
+    # Check if we have a Singularity.def in current directory
+    if [[ -f "Singularity.def" ]]; then
+        echo "Building from local Singularity.def..."
+        apptainer build "$CONTAINER_LOCAL" Singularity.def
+    else
+        echo "Pulling from container registry..."
+        echo "  Source: $CONTAINER_IMAGE"
+        apptainer pull "$CONTAINER_LOCAL" "$CONTAINER_IMAGE"
+    fi
+    
+    echo ""
+    echo "Container built successfully: $CONTAINER_LOCAL"
+    echo ""
+    echo "Test with: apptainer exec $CONTAINER_LOCAL fairway --help"
+}
+
 submit_job() {
     # Parse arguments
     local CONFIG=""
@@ -141,6 +182,7 @@ submit_job() {
     local ACCOUNT=$DEFAULT_ACCOUNT
     local PARTITION=$DEFAULT_PARTITION
     local WITH_SPARK=""
+    local USE_APPTAINER=false
     
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -178,6 +220,10 @@ submit_job() {
                 ;;
             --with-spark)
                 WITH_SPARK="--with-spark"
+                shift
+                ;;
+            --apptainer)
+                USE_APPTAINER=true
                 shift
                 ;;
             *)
@@ -225,30 +271,56 @@ echo "Node: \$SLURMD_NODENAME"
 echo "Time: \$(date)"
 echo "========================================"
 
+SBATCH_EOF
+
+    if [[ "$USE_APPTAINER" == true ]]; then
+        # Apptainer-based execution - no modules needed
+        cat >> "$SBATCH_SCRIPT" << SBATCH_EOF
+# Using Apptainer container - no module loading required
+CONTAINER="$CONTAINER_LOCAL"
+
+if [[ ! -f "\$CONTAINER" ]]; then
+    echo "Error: Container not found: \$CONTAINER"
+    echo "Build it first with: fairway-hpc.sh build-container"
+    exit 1
+fi
+
+echo "Using Apptainer container: \$CONTAINER"
+echo ""
+
+# Bind current directory and common HPC paths
+APPTAINER_OPTS="--bind \$(pwd):/work --bind /vast --pwd /work"
+
+# Run fairway inside container
+apptainer exec \$APPTAINER_OPTS "\$CONTAINER" fairway run $CONFIG_OPT \\
+    --profile $PROFILE \\
+    --slurm-nodes $NODES \\
+    --slurm-cpus $CPUS \\
+    --slurm-mem $MEM \\
+    --slurm-time $TIME \\
+    --account $ACCOUNT \\
+    --partition $PARTITION $WITH_SPARK
+SBATCH_EOF
+    else
+        # Module-based execution
+        cat >> "$SBATCH_SCRIPT" << SBATCH_EOF
 # Load required modules
 module purge
 SBATCH_EOF
 
-    # Add module loads
-    for mod in "${MODULES_BASE[@]}"; do
-        echo "module load $mod" >> "$SBATCH_SCRIPT"
-    done
-    
-    # Add Spark modules if needed
-    if [[ -n "$WITH_SPARK" ]]; then
-        for mod in "${MODULES_SPARK[@]}"; do
+        # Add module loads
+        for mod in "${MODULES_BASE[@]}"; do
             echo "module load $mod" >> "$SBATCH_SCRIPT"
         done
-    fi
-    
-    cat >> "$SBATCH_SCRIPT" << SBATCH_EOF
-
-# Activate conda environment (adjust name as needed)
-source \$(conda info --base)/etc/profile.d/conda.sh
-conda activate fairway || {
-    echo "Warning: Could not activate conda environment 'fairway'"
-    echo "Attempting to continue with base environment..."
-}
+        
+        # Add Spark modules if needed
+        if [[ -n "$WITH_SPARK" ]]; then
+            for mod in "${MODULES_SPARK[@]}"; do
+                echo "module load $mod" >> "$SBATCH_SCRIPT"
+            done
+        fi
+        
+        cat >> "$SBATCH_SCRIPT" << SBATCH_EOF
 
 echo ""
 echo "Loaded modules:"
@@ -268,6 +340,10 @@ fairway run $CONFIG_OPT \\
     --slurm-time $TIME \\
     --account $ACCOUNT \\
     --partition $PARTITION $WITH_SPARK
+SBATCH_EOF
+    fi
+
+    cat >> "$SBATCH_SCRIPT" << SBATCH_EOF
 
 echo ""
 echo "========================================"
@@ -279,7 +355,12 @@ SBATCH_EOF
     chmod +x "$SBATCH_SCRIPT"
     
     echo ""
-    echo "Submitting job: $JOB_NAME"
+    if [[ "$USE_APPTAINER" == true ]]; then
+        echo "Submitting job using Apptainer container..."
+    else
+        echo "Submitting job using HPC modules..."
+    fi
+    echo "Job name: $JOB_NAME"
     echo "Script: $SBATCH_SCRIPT"
     echo ""
     
@@ -326,9 +407,15 @@ main() {
             print_header
             load_spark_modules
             ;;
+        build-container)
+            print_header
+            build_container
+            ;;
         run)
             print_header
-            check_fairway
+            if [[ ! " $* " =~ " --apptainer " ]]; then
+                check_fairway
+            fi
             submit_job "$@"
             ;;
         status)

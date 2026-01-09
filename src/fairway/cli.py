@@ -122,6 +122,21 @@ dynamic_allocation:
         shutil.copy(main_nf_src, os.path.join(name, 'main.nf'))
         click.echo("  Created file: main.nf (Nextflow pipeline)")
 
+    # Copy HPC helper script
+    os.makedirs(os.path.join(name, 'scripts'), exist_ok=True)
+    hpc_script_src = os.path.join(fairway_root, 'scripts', 'fairway-hpc.sh')
+    if os.path.exists(hpc_script_src):
+        hpc_script_dest = os.path.join(name, 'scripts', 'fairway-hpc.sh')
+        shutil.copy(hpc_script_src, hpc_script_dest)
+        os.chmod(hpc_script_dest, 0o755)
+        click.echo("  Created file: scripts/fairway-hpc.sh (HPC module/Apptainer helper)")
+
+    # Copy Singularity.def for container builds
+    singularity_src = os.path.join(fairway_root, 'Singularity.def')
+    if os.path.exists(singularity_src):
+        shutil.copy(singularity_src, os.path.join(name, 'Singularity.def'))
+        click.echo("  Created file: Singularity.def (Apptainer container definition)")
+
     # Create example transformation
     transform_content = """
 def example_transform(df):
