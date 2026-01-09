@@ -12,9 +12,10 @@ def main():
 
 @main.command()
 @click.argument('name')
-def init(name):
+@click.option('--engine', type=click.Choice(['duckdb', 'spark']), required=True, help='Compute engine to use (duckdb or spark).')
+def init(name, engine):
     """Initialize a new fairway project."""
-    click.echo(f"Initializing new fairway project: {name}")
+    click.echo(f"Initializing new fairway project: {name} with engine: {engine}")
     
     directories = [
         'config',
@@ -31,10 +32,54 @@ def init(name):
         os.makedirs(os.path.join(name, d), exist_ok=True)
         click.echo(f"  Created directory: {d}")
 
-    # Copy template files if they exist in the package
-    # For now, we'll just create placeholder READMEs
+    # Create config.yaml
+    config_content = f"""dataset_name: "{name}"
+engine: "{'pyspark' if engine == 'spark' else 'duckdb'}"
+storage:
+  raw_dir: "data/raw"
+  intermediate_dir: "data/intermediate"
+  final_dir: "data/final"
+
+sources:
+  - name: "example_source"
+    path: "data/raw/example.csv"
+    format: "csv"
+    schema:
+      id: "int"
+      value: "double"
+
+validations:
+  level1:
+    min_rows: 1
+
+enrichment:
+  geocode: false
+"""
+    with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
+        f.write(config_content)
+    click.echo("  Created file: config/fairway.yaml")
+
+    # Create example transformation
+    transform_content = """
+def example_transform(df):
+    \"\"\"
+    An example transformation function.
+    Args:
+        df: Input DataFrame (pandas or spark)
+    Returns:
+        Transformed DataFrame
+    \"\"\"
+    # Example logic
+    return df
+"""
+    with open(os.path.join(name, 'src', 'transformations', 'example_transform.py'), 'w') as f:
+        f.write(transform_content.strip())
+    click.echo("  Created file: src/transformations/example_transform.py")
+
+    # Create README.md
     with open(os.path.join(name, 'README.md'), 'w') as f:
-        f.write(f"# {name}\n\nInitialized by fairway on {datetime.now().isoformat()}\n")
+        f.write(f"# {name}\\n\\nInitialized by fairway on {datetime.now().isoformat()}\\n\\nEngine: {engine}\\n")
+    click.echo("  Created file: README.md")
 
     click.echo(f"Project {name} initialized successfully.")
 
