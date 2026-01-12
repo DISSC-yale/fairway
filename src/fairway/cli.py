@@ -135,16 +135,6 @@ dynamic_allocation:
     os.chmod(hpc_script_dest, 0o755)
     click.echo("  Created file: scripts/fairway-hpc.sh (HPC module/Apptainer helper)")
 
-    # Write Apptainer.def from template
-    with open(os.path.join(name, 'Apptainer.def'), 'w') as f:
-        f.write(APPTAINER_DEF)
-    click.echo("  Created file: Apptainer.def (Apptainer container definition)")
-
-    # Write Dockerfile from template
-    with open(os.path.join(name, 'Dockerfile'), 'w') as f:
-        f.write(DOCKERFILE_TEMPLATE)
-    click.echo("  Created file: Dockerfile (Docker container definition)")
-
     # Create example transformation
     transform_content = """
 def example_transform(df):
@@ -198,6 +188,19 @@ fairway run --config config/fairway.yaml
 ```bash
 fairway run --config config/fairway.yaml --profile slurm --with-spark --account YOUR_ACCOUNT
 ```
+
+**Containerized execution:**
+```bash
+fairway run --config config/fairway.yaml --profile apptainer
+```
+*Note: This pulls the default container. To customize the environment, run `fairway eject`.*
+
+## Customization
+
+To customize the Apptainer container or Dockerfile:
+1. Run `fairway eject` to generate `Apptainer.def` and `Dockerfile`.
+2. Edit the generated files.
+3. Build locally (fairway will automatically favor local definitions).
 
 ## Project Structure
 
@@ -463,6 +466,43 @@ def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition,
         # Set environment variable for the pipeline to discover the master
         os.environ['SPARK_MASTER_URL'] = master_url
 
+    # Calculate Apptainer bind paths from config
+    bind_paths = set()
+    
+    # 1. Check storage directories
+    if cfg.storage:
+        for key in ['raw_dir', 'intermediate_dir', 'final_dir']:
+            path = cfg.storage.get(key)
+            if path:
+                abs_path = os.path.abspath(path)
+                if os.path.exists(abs_path):
+                    bind_paths.add(abs_path)
+    
+    # 2. Check source paths
+    if cfg.sources:
+        for src in cfg.sources:
+            path = src.get('path')
+            if path:
+                abs_path = os.path.abspath(path)
+                if os.path.exists(abs_path):
+                    bind_paths.add(abs_path)
+            # Handle unexpanded path patterns if any (though config loader might have expanded them)
+            # The config loader expands sources, so 'path' should be concrete file paths
+            # But we might want to bind the parent directory of files to be safe/cleaner
+            if os.path.isfile(abs_path):
+                bind_paths.add(os.path.dirname(abs_path))
+    
+    if bind_paths:
+        bind_str = ','.join(sorted(list(bind_paths)))
+        click.echo(f"Auto-binding paths for Apptainer: {bind_str}")
+        
+        # Merge with existing binds if any
+        existing_binds = os.environ.get('APPTAINER_BIND', '')
+        if existing_binds:
+            os.environ['APPTAINER_BIND'] = f"{existing_binds},{bind_str}"
+        else:
+            os.environ['APPTAINER_BIND'] = bind_str
+
     try:
         if slurm:
             click.echo("Submitting fairway pipeline as a Slurm batch job...")
@@ -484,6 +524,9 @@ SPARK_URL_ARG=""
 if [ ! -z "$SPARK_MASTER_URL" ]; then
     SPARK_URL_ARG="--spark_master $SPARK_MASTER_URL"
 fi
+
+# Pass through Apptainer binds calculated by the CLI
+export APPTAINER_BIND="{os.environ.get('APPTAINER_BIND', '')}"
 
 nextflow run main.nf -profile {profile} \\
     --config {config} \\
@@ -521,6 +564,25 @@ nextflow run main.nf -profile {profile} \\
             # Only stop if we are running in the current terminal session
             # If we submitted via sbatch, the controller script should handle cleanup
             spark_manager.stop_cluster()
+
+@main.command()
+def eject():
+    """Eject container definitions (Apptainer.def, Dockerfile) to the current directory."""
+    if os.path.exists('Apptainer.def') or os.path.exists('Dockerfile'):
+        if not click.confirm('Container files already exist. Overwrite?'):
+            return
+
+    from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE
+    
+    # Write Apptainer.def from template
+    with open('Apptainer.def', 'w') as f:
+        f.write(APPTAINER_DEF)
+    click.echo("  Created file: Apptainer.def (Apptainer container definition)")
+
+    # Write Dockerfile from template
+    with open('Dockerfile', 'w') as f:
+        f.write(DOCKERFILE_TEMPLATE)
+    click.echo("  Created file: Dockerfile (Docker container definition)")
 
 if __name__ == '__main__':
     main()

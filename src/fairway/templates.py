@@ -456,7 +456,7 @@ fi
 '''
 
 APPTAINER_DEF = '''Bootstrap: docker
-From: python:3.10-slim
+From: python:3.10-slim-bookworm
 
 %labels
     Author DISSC-Yale
@@ -467,6 +467,9 @@ From: python:3.10-slim
     requirements.txt /opt/requirements.txt
 
 %post
+    # Fail fast on any error
+    set -e
+
     apt-get update && apt-get install -y --no-install-recommends \\
         git \\
         curl \\
@@ -537,6 +540,7 @@ profiles {
         apptainer.enabled = true
         apptainer.autoMounts = true
         apptainer.runOptions = '--bind /vast'
+        process.container = 'docker://ghcr.io/dissc-yale/fairway:latest'
     }
 }
 '''
