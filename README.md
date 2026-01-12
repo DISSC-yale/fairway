@@ -149,3 +149,25 @@ fairway run --config config/my_config.yaml --slurm \
   --time 04:00:00 \
   --nodes 4
 ```
+
+## Development
+
+A `Makefile` is provided to streamline common development tasks:
+
+```bash
+# Install the package in editable mode
+make install
+
+# Run tests
+make test
+
+# Generate small test data
+make generate-data
+
+# Clean build artifacts
+make clean
+
+# Show all available commands
+make help
+```
+

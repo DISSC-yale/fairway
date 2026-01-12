@@ -1,0 +1,25 @@
+# Exclude git history
+.git/
+.github/
+
+# Exclude data and logs (security & size)
+data/
+logs/
+
+# Exclude python build artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+htmlcov/
+dist/
+build/
+.coverage
+.DS_Store
+
+# Exclude extensive documentation builds
+site/
+
+# Exclude local configuration with secrets (if any)
+config/secrets.yaml
+.env
