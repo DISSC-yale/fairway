@@ -588,11 +588,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install project in editable mode
-COPY pyproject.toml requirements.txt* ./
+COPY pyproject.toml README.md ./
 COPY src/ src/
-# Create a minimal requirements.txt if it doesn't exist
-RUN if [ ! -f requirements.txt ]; then echo "fairway" > requirements.txt; fi
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir .
 
 # Final stage
 FROM python:3.10-slim-bookworm
