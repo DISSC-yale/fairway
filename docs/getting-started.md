@@ -154,6 +154,34 @@ fairway run --config config/my_pipeline.yaml --slurm \
   --nodes 4
 ```
 
+## Development
+
+For developers contributing to or extending `fairway`, a `Makefile` is provided to streamline common tasks.
+
+### Using the Makefile
+
+| Command | Description |
+| :--- | :--- |
+| `make install` | Install the package in editable mode. |
+| `make install-all` | Install with all optional dependencies (Spark, DuckDB, Redivis). |
+| `make test` | Run the test suite. |
+| `make generate-data` | Generate a small partitioned dataset for testing. |
+| `make clean` | Remove build artifacts and temporary files. |
+| `make help` | Show all available commands. |
+
+Example workflow:
+
+```bash
+# 1. Install dependencies
+make install-all
+
+# 2. Generate test data
+make generate-data
+
+# 3. Run the pipeline (using the 'run' shorthand)
+make run
+```
+
 ## Next Steps
 
 - [Configuration Reference](configuration.md) - All config options
