@@ -117,7 +117,7 @@ dynamic_allocation:
     click.echo("  Created file: requirements.txt")
 
     # Write nextflow.config from template
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, HPC_SCRIPT, APPTAINER_DEF
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, HPC_SCRIPT, APPTAINER_DEF, DOCKERFILE_TEMPLATE
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:
         f.write(NEXTFLOW_CONFIG)
     click.echo("  Created file: nextflow.config (customize profiles here)")
@@ -139,6 +139,11 @@ dynamic_allocation:
     with open(os.path.join(name, 'Apptainer.def'), 'w') as f:
         f.write(APPTAINER_DEF)
     click.echo("  Created file: Apptainer.def (Apptainer container definition)")
+
+    # Write Dockerfile from template
+    with open(os.path.join(name, 'Dockerfile'), 'w') as f:
+        f.write(DOCKERFILE_TEMPLATE)
+    click.echo("  Created file: Dockerfile (Docker container definition)")
 
     # Create example transformation
     transform_content = """
