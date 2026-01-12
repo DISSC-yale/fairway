@@ -122,7 +122,8 @@ load_modules() {
     echo "Python: $(which python)"
     echo ""
     echo "To install fairway in your environment:"
-    echo "  pip install --user git+https://github.com/DISSC-yale/fairway.git"
+    echo "  pip install --user -r requirements.txt"
+    echo "  # Or manually: pip install --user git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
 }
 
 load_spark_modules() {
@@ -462,6 +463,9 @@ From: python:3.10-slim
     Version 1.0
     Description Fairway - Portable Data Ingestion Framework
 
+%files
+    requirements.txt /opt/requirements.txt
+
 %post
     apt-get update && apt-get install -y --no-install-recommends \\
         git \\
@@ -481,18 +485,13 @@ From: python:3.10-slim
     curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" | tar -xz -C /opt
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
     
-    # Install fairway and dependencies
-    pip install --no-cache-dir \\
-        pandas \\
-        pyyaml \\
-        duckdb \\
-        numpy \\
-        pyarrow \\
-        pyspark \\
-        click
-    
-    # Install fairway from source
-    pip install --no-cache-dir git+https://github.com/DISSC-yale/fairway.git || true
+    # Install project dependencies
+    if [ -f /opt/requirements.txt ]; then
+        pip install --no-cache-dir -r /opt/requirements.txt
+    else
+        # Fallback: install fairway[all]
+        pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
+    fi
 
 %environment
     export LC_ALL=C

@@ -109,6 +109,13 @@ dynamic_allocation:
         f.write(spark_config_content)
     click.echo("  Created file: config/spark.yaml")
 
+    # Create requirements.txt
+    # Assuming installation from git source for now, as reflected in other parts of the CLI
+    reqs_content = f"git+https://github.com/DISSC-yale/fairway.git#egg=fairway[{'spark' if engine == 'spark' else 'duckdb'}]\n"
+    with open(os.path.join(name, 'requirements.txt'), 'w') as f:
+        f.write(reqs_content)
+    click.echo("  Created file: requirements.txt")
+
     # Write nextflow.config from template
     from .templates import NEXTFLOW_CONFIG, MAIN_NF, HPC_SCRIPT, SINGULARITY_DEF
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:

@@ -17,16 +17,38 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "pandas",
-    "pyyaml",
-    "duckdb",
-    "numpy",
-    "pyarrow",
     "click",
+    "pyyaml",
     "fsspec",
     "mkdocs-material",
+]
+
+[project.optional-dependencies]
+spark = [
     "pyspark",
+    "pandas",
+    "numpy",
+    "pyarrow",
+]
+duckdb = [
+    "duckdb",
+    "pandas",
+    "numpy",
+    "pyarrow",
+]
+redivis = [
     "redivis",
+    "pandas",
+    "numpy",
+    "pyarrow",
+]
+all = [
+    "pyspark",
+    "duckdb",
+    "redivis",
+    "pandas",
+    "numpy",
+    "pyarrow",
 ]
 
 [project.scripts]
