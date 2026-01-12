@@ -1,5 +1,5 @@
 # Build stage
-FROM python:3.13-slim AS builder
+FROM python:3.10-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 
 # Final stage
-FROM python:3.13-slim
+FROM python:3.10-slim-bookworm
 
 WORKDIR /app
 
@@ -32,7 +32,7 @@ ENV SPARK_HOME=/opt/spark
 ENV PATH=$PATH:$SPARK_HOME/bin
 
 # Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy source code and config
@@ -41,7 +41,7 @@ COPY config/ /app/config/
 COPY main.nf /app/
 COPY nextflow.config /app/
 
-ENV PYTHONPATH=$PYTHONPATH:/app/src
+ENV PYTHONPATH=/app/src
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 ENTRYPOINT ["fairway"]

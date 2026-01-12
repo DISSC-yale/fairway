@@ -631,7 +631,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY . /app/
 
 # Set Python path to include src
-ENV PYTHONPATH=$PYTHONPATH:/app/src
+ENV PYTHONPATH=/app/src
 
 # Default command
 CMD ["fairway", "--help"]
