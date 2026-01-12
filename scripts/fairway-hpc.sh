@@ -155,11 +155,10 @@ build_container() {
         return 0
     fi
     
-    # Check if we have a Singularity.def in current directory
-    if [[ -f "Singularity.def" ]]; then
-        echo "Building from local Singularity.def..."
-        echo "Building from local Singularity.def..."
-        if ! apptainer build "$CONTAINER_LOCAL" Singularity.def; then
+    # Check if we have a Apptainer.def in current directory
+    if [[ -f "Apptainer.def" ]]; then
+        echo "Building from local Apptainer.def..."
+        if ! apptainer build "$CONTAINER_LOCAL" Apptainer.def; then
             echo ""
             echo "Error: Container build failed."
             echo "Possible reasons:"

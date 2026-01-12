@@ -162,10 +162,10 @@ build_container() {
         return 0
     fi
     
-    # Check if we have a Singularity.def in current directory
-    if [[ -f "Singularity.def" ]]; then
-        echo "Building from local Singularity.def..."
-        apptainer build "$CONTAINER_LOCAL" Singularity.def
+    # Check if we have a Apptainer.def in current directory
+    if [[ -f "Apptainer.def" ]]; then
+        echo "Building from local Apptainer.def..."
+        apptainer build "$CONTAINER_LOCAL" Apptainer.def
     else
         echo "Pulling from container registry..."
         echo "  Source: $CONTAINER_IMAGE"
@@ -455,7 +455,7 @@ else
 fi
 '''
 
-SINGULARITY_DEF = '''Bootstrap: docker
+APPTAINER_DEF = '''Bootstrap: docker
 From: python:3.10-slim
 
 %labels
@@ -511,7 +511,7 @@ From: python:3.10-slim
       apptainer exec fairway.sif fairway generate-schema data/raw/file.csv
     
     Building:
-      apptainer build fairway.sif Singularity.def
+      apptainer build fairway.sif Apptainer.def
 '''
 
 NEXTFLOW_CONFIG = '''params {

@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: python:3.10-slim
+From: python:3.10-slim-bookworm
 
 %labels
     Author DISSC-Yale
@@ -72,4 +72,4 @@ From: python:3.10-slim
       apptainer exec fairway.sif fairway generate-schema data/raw/file.csv
     
     Building:
-      apptainer build fairway.sif Singularity.def
+      apptainer build fairway.sif Apptainer.def

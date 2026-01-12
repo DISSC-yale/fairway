@@ -8,7 +8,17 @@ To install Fairway, ensure you have Python 3.10+ installed.
 
 1. Install directly from GitHub:
    ```bash
-   pip install git+https://github.com/DISSC-yale/fairway.git
+   # Core installation (lightweight)
+   pip install "git+https://github.com/DISSC-yale/fairway.git"
+
+   # With DuckDB support
+   pip install "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[duckdb]"
+
+   # With PySpark support
+   pip install "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[spark]"
+
+   # For generating test data only
+   pip install "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[test-data-gen]"
    ```
 
 ## Quick Start
