@@ -5,7 +5,7 @@ def generate_test_data(size="small", partitioned=True, file_format="csv"):
         import pandas as pd
         import numpy as np
     except ImportError:
-        raise ImportError("Generating test data requires pandas and numpy. Please install fairway[all] or fairway[duckdb/spark].")
+        raise ImportError("Generating test data requires pandas and numpy. Please install fairway[test-data-gen] or fairway[all].")
 
     os.makedirs('data/raw', exist_ok=True)
     

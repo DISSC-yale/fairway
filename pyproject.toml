@@ -42,6 +42,10 @@ redivis = [
     "numpy",
     "pyarrow",
 ]
+test-data-gen = [
+    "pandas",
+    "numpy",
+]
 all = [
     "pyspark",
     "duckdb",
