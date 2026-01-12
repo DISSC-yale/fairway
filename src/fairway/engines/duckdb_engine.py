@@ -1,8 +1,14 @@
-import duckdb
+try:
+    import duckdb
+except ImportError:
+    duckdb = None
+
 import os
 
 class DuckDBEngine:
     def __init__(self):
+        if duckdb is None:
+            raise ImportError("DuckDB is not installed. Please install fairway[duckdb] or fairway[all].")
         self.con = duckdb.connect(database=':memory:')
         self.con.execute("INSTALL httpfs; LOAD httpfs;")
         self.con.execute("INSTALL aws; LOAD aws;") # Or gcs if needed

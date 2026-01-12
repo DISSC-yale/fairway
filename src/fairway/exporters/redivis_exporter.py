@@ -1,10 +1,16 @@
+try:
+    import redivis
+except ImportError:
+    redivis = None
+
 import os
-import redivis
 import json
 from pathlib import Path
 
 class RedivisExporter:
     def __init__(self, config):
+        if redivis is None:
+            raise ImportError("Redivis is not installed. Please install fairway[redivis] or fairway[all].")
         """
         Initialize the Redivis exporter.
         
