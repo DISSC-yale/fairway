@@ -7,37 +7,31 @@ From: python:3.10-slim-bookworm
     Description Fairway - Portable Data Ingestion Framework
 
 %post
+    # Fail fast on any error
+    set -e
+
     apt-get update && apt-get install -y --no-install-recommends \
         git \
         curl \
         openjdk-17-jre-headless \
         procps \
         && rm -rf /var/lib/apt/lists/*
-    
+
     # Install Nextflow
     curl -s https://get.nextflow.io | bash
     mv nextflow /usr/local/bin/
     chmod +x /usr/local/bin/nextflow
-    
+
     # Install Spark
     SPARK_VERSION=3.5.1
     HADOOP_VERSION=3
     curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" | tar -xz -C /opt
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
-    
-    # Install fairway and dependencies
-    pip install --no-cache-dir \
-        pandas \
-        pyyaml \
-        duckdb \
-        numpy \
-        pyarrow \
-        pyspark \
-        click
-    
-    # Install fairway from local source
+
+    # Install fairway and all dependencies from local source
+    # This automatically handles pyproject.toml dependencies (including [all] extras)
     cd /app
-    pip install --no-cache-dir .
+    pip install --no-cache-dir ".[all]"
 
 %environment
     export LC_ALL=C
@@ -59,17 +53,17 @@ From: python:3.10-slim-bookworm
 
 %help
     Fairway - A portable data ingestion framework for research data.
-    
+
     Usage:
       # Run fairway commands
       apptainer run fairway.sif --help
       apptainer run fairway.sif run --config config/mydata.yaml
-      
+
       # Interactive shell
       apptainer shell fairway.sif
-      
+
       # Execute specific command
       apptainer exec fairway.sif fairway generate-schema data/raw/file.csv
-    
+
     Building:
       apptainer build fairway.sif Apptainer.def
