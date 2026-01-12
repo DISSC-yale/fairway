@@ -13,7 +13,7 @@ class DuckDBEngine:
         self.con.execute("INSTALL httpfs; LOAD httpfs;")
         self.con.execute("INSTALL aws; LOAD aws;") # Or gcs if needed
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None, **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """

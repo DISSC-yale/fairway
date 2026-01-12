@@ -16,7 +16,7 @@ class PySparkEngine:
             builder = builder.master(spark_master)
         self.spark = builder.getOrCreate()
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, target_rows=500000):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
@@ -36,8 +36,7 @@ class PySparkEngine:
 
         if balanced and partition_by:
             # Salting logic inspired by data_l2 to prevent skew
-            # Assuming ~500k rows per file is a good default
-            target_rows = 500000
+            # Assuming ~500k rows per file is a good default, or user provided value
             total_rows = df.count()
             num_salts = max(1, total_rows // target_rows)
             

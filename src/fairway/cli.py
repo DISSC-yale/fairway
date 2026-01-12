@@ -117,7 +117,7 @@ dynamic_allocation:
     click.echo("  Created file: requirements.txt")
 
     # Write nextflow.config from template
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, HPC_SCRIPT, SINGULARITY_DEF
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, HPC_SCRIPT, APPTAINER_DEF
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:
         f.write(NEXTFLOW_CONFIG)
     click.echo("  Created file: nextflow.config (customize profiles here)")
@@ -135,10 +135,10 @@ dynamic_allocation:
     os.chmod(hpc_script_dest, 0o755)
     click.echo("  Created file: scripts/fairway-hpc.sh (HPC module/Apptainer helper)")
 
-    # Write Singularity.def from template
-    with open(os.path.join(name, 'Singularity.def'), 'w') as f:
-        f.write(SINGULARITY_DEF)
-    click.echo("  Created file: Singularity.def (Apptainer container definition)")
+    # Write Apptainer.def from template
+    with open(os.path.join(name, 'Apptainer.def'), 'w') as f:
+        f.write(APPTAINER_DEF)
+    click.echo("  Created file: Apptainer.def (Apptainer container definition)")
 
     # Create example transformation
     transform_content = """

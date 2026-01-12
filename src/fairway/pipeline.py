@@ -50,7 +50,8 @@ class IngestionPipeline:
                 output_path,
                 format=source_format,
                 partition_by=partition_by,
-                metadata=metadata
+                metadata=metadata,
+                target_rows=self.config.target_rows
             )
             
             if success:

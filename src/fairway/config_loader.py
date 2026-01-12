@@ -15,7 +15,12 @@ class Config:
         self.validations = self.data.get('validations', {})
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
+        self.partition_by = self.data.get('partition_by', [])
         self.redivis = self.data.get('redivis', {})
+        
+        # Performance/Optimizations
+        performance = self.data.get('performance', {})
+        self.target_rows = performance.get('target_rows') or self.data.get('target_rows', 500000)
 
 
 
