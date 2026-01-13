@@ -21,6 +21,7 @@ dependencies = [
     "pyyaml",
     "fsspec",
     "mkdocs-material",
+    "pandas",
 ]
 
 [project.optional-dependencies]
@@ -32,25 +33,21 @@ spark = [
 ]
 duckdb = [
     "duckdb",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
 redivis = [
     "redivis",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
 test-data-gen = [
-    "pandas",
     "numpy",
 ]
 all = [
     "pyspark",
     "duckdb",
     "redivis",
-    "pandas",
     "numpy",
     "pyarrow",
 ]

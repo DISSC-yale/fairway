@@ -1,0 +1,10 @@
+click
+pyyaml
+fsspec
+mkdocs-material
+pandas
+pyspark
+duckdb
+redivis
+numpy
+pyarrow
