@@ -81,7 +81,8 @@ def init(name, engine):
         'src/transformations',
         'docs',
         'logs/slurm',
-        'logs/nextflow'
+        'logs/nextflow',
+        'scripts'
     ]
     
     for d in directories:
@@ -161,6 +162,12 @@ dynamic_allocation:
     with open(os.path.join(name, 'Makefile'), 'w') as f:
         f.write(MAKEFILE_TEMPLATE)
     click.echo("  Created file: Makefile")
+    
+    from .templates import FAIRWAY_HPC_SH_TEMPLATE
+    with open(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 'w') as f:
+        f.write(FAIRWAY_HPC_SH_TEMPLATE)
+    os.chmod(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 0o755)
+    click.echo("  Created file: scripts/fairway-hpc.sh")
 
     # Create example transformation
     transform_content = """
@@ -187,6 +194,13 @@ Initialized by fairway on {datetime.now().isoformat()}
 **Engine**: {engine}
 
 ## Quick Start
+    
+### 0. Load Environment (HPC Only)
+
+On an HPC system, load the required modules first:
+```bash
+source scripts/fairway-hpc.sh setup
+```
 
 ### 1. Generate Test Data
 
