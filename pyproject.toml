@@ -21,36 +21,32 @@ dependencies = [
     "pyyaml",
     "fsspec",
     "mkdocs-material",
+    "pandas",
 ]
 
 [project.optional-dependencies]
 spark = [
     "pyspark",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
 duckdb = [
     "duckdb",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
 redivis = [
     "redivis",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
 test-data-gen = [
-    "pandas",
     "numpy",
 ]
 all = [
     "pyspark",
     "duckdb",
     "redivis",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
@@ -60,3 +56,10 @@ fairway = "fairway.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+fairway = ["data/*"]
+"fairway.data" = ["*"]
