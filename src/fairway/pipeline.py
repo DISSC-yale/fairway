@@ -3,7 +3,7 @@ import sys
 from .config_loader import Config
 from .manifest import ManifestManager
 from .engines.duckdb_engine import DuckDBEngine
-# from .engines.pyspark_engine import PySparkEngine
+
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
@@ -17,7 +17,11 @@ class IngestionPipeline:
 
     def _get_engine(self, spark_master=None):
         if self.config.engine == 'pyspark':
-            return PySparkEngine(spark_master)
+            try:
+                from .engines.pyspark_engine import PySparkEngine
+                return PySparkEngine(spark_master)
+            except ImportError:
+                sys.exit("Error: PySpark is not installed. Please install using `pip install fairway[spark]`")
         return DuckDBEngine()
 
     def run(self):

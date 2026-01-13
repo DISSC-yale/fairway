@@ -25,7 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 spark = [
-    "pyspark",
+    "pyspark>=4.1.1",
     "pandas",
     "numpy",
     "pyarrow",
