@@ -77,8 +77,32 @@ load_modules() {
     echo ""
 }
 
+setup_venv() {
+    # Determine project root (assuming script is in scripts/)
+    local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+    local VENV_DIR="$PROJECT_ROOT/.venv"
+
+    echo "Checking virtual environment..."
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "Creating virtual environment in $VENV_DIR..."
+        python3 -m venv "$VENV_DIR"
+        source "$VENV_DIR/bin/activate"
+        echo "Installing dependencies..."
+        pip install -e "$PROJECT_ROOT"
+        echo "Virtual environment created and dependencies installed."
+    else
+        echo "Activating virtual environment..."
+        source "$VENV_DIR/bin/activate"
+    fi
+    
+    echo "Environment active: $(which python)"
+    echo ""
+}
+
 load_spark_modules() {
     load_modules
+    setup_venv
     
     echo ""
     echo "Loading Spark modules..."
@@ -106,6 +130,7 @@ main() {
         setup)
             print_header
             load_modules
+            setup_venv
             ;;
         setup-spark)
             print_header

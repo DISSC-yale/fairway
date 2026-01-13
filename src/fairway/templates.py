@@ -1,11 +1,20 @@
 
-MAKEFILE_TEMPLATE = """.PHONY: help install install-all test clean generate-data generate-schema run run-slurm docs status cancel build
+MAKEFILE_TEMPLATE = """.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel build
 
 # Default target
 .DEFAULT_GOAL := help
 
-# Python interpreter
-PYTHON := python
+# Configuration
+VENV := .venv
+BIN := $(VENV)/bin
+PYTHON := $(BIN)/python
+
+# Detect Fairway executable (use venv if exists, else system)
+ifneq (,$(wildcard $(BIN)/fairway))
+    FAIRWAY := $(BIN)/fairway
+else
+    FAIRWAY := fairway
+endif
 
 help: ## Show this help message
 	@echo "Usage: make [target]"
@@ -13,48 +22,57 @@ help: ## Show this help message
 	@echo "Targets:"
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \\033[36m%-20s\\033[0m %s\\n", $$1, $$2}'
 
-install: ## Install the package in editable mode
+setup: ## Create virtual environment and install dependencies
+	@echo "Checking/Creating virtual environment in $(VENV)..."
+	@test -d $(VENV) || python3 -m venv $(VENV)
+	@echo "Installing dependencies..."
+	@$(BIN)/pip install -e .
+	@echo ""
+	@echo "Setup complete."
+	@echo "----------------------------------------------------------------"
+	@echo "To activate the environment: source $(VENV)/bin/activate"
+	@echo "To load HPC modules:         source scripts/fairway-hpc.sh setup"
+	@echo "----------------------------------------------------------------"
+
+install: ## Install the package in editable mode (assumes active env or uses system)
 	pip install -e .
 
-install-all: ## Install the package with all optional dependencies (spark, duckdb, redivis)
-	pip install -e ".[all]"
-
 test: ## Run the test suite
-	pytest tests
+	$(BIN)/pytest tests || pytest tests
 
 clean: ## Remove build artifacts and temporary files
-	rm -rf build/ dist/ *.egg-info .pytest_cache .coverage
+	rm -rf build/ dist/ *.egg-info .pytest_cache .coverage $(VENV)
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 
 generate-data: ## Generate test data (default: size=small, partitioned=True)
-	fairway generate-data --size small --partitioned
+	$(FAIRWAY) generate-data --size small --partitioned
 
-generate-schema: ## Generate schema from data (requires input file, e.g., make generate-schema FILE=data/raw/data.csv)
+generate-schema: ## Generate schema from data (requires FILE=<path>)
 	@if [ -z "$(FILE)" ]; then \\
 		echo "Error: FILE argument is required. Usage: make generate-schema FILE=<path_to_file>"; \\
 		exit 1; \\
 	fi
-	fairway generate-schema $(FILE)
+	$(FAIRWAY) generate-schema $(FILE)
 
 run: ## Run the pipeline locally (auto-discovers config)
-	fairway run
+	$(FAIRWAY) run
 
 run-slurm: ## Run the pipeline on Slurm (requires Slurm environment)
-	fairway run --profile slurm --slurm
+	$(FAIRWAY) run --profile slurm --slurm
 
 status: ## Show status of Fairway jobs on Slurm
-	fairway status
+	$(FAIRWAY) status
 
 cancel: ## Cancel a Fairway job (usage: make cancel JOB_ID=12345)
 	@if [ -z "$(JOB_ID)" ]; then \\
 		echo "Error: JOB_ID argument is required. Usage: make cancel JOB_ID=<job_id>"; \\
 		exit 1; \\
 	fi
-	fairway cancel $(JOB_ID)
+	$(FAIRWAY) cancel $(JOB_ID)
 
 build: ## Build or pull the Apptainer container
-	fairway build
+	$(FAIRWAY) build
 
 docs: ## Build and serve documentation using mkdocs
 	mkdocs serve
@@ -239,8 +257,32 @@ load_modules() {
     echo ""
 }
 
+setup_venv() {
+    # Determine project root (assuming script is in scripts/)
+    local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+    local VENV_DIR="$PROJECT_ROOT/.venv"
+
+    echo "Checking virtual environment..."
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "Creating virtual environment in $VENV_DIR..."
+        python3 -m venv "$VENV_DIR"
+        source "$VENV_DIR/bin/activate"
+        echo "Installing dependencies..."
+        pip install -e "$PROJECT_ROOT"
+        echo "Virtual environment created and dependencies installed."
+    else
+        echo "Activating virtual environment..."
+        source "$VENV_DIR/bin/activate"
+    fi
+    
+    echo "Environment active: $(which python)"
+    echo ""
+}
+
 load_spark_modules() {
     load_modules
+    setup_venv
     
     echo ""
     echo "Loading Spark modules..."
@@ -256,6 +298,7 @@ load_spark_modules() {
     echo "Spark modules loaded."
 }
 
+
 # -----------------------------------------------------------------------------
 # Main Command Handler
 # -----------------------------------------------------------------------------
@@ -268,6 +311,7 @@ main() {
         setup)
             print_header
             load_modules
+            setup_venv
             ;;
         setup-spark)
             print_header
