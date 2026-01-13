@@ -1,4 +1,4 @@
-.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel build
+.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel pull build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -25,7 +25,8 @@ setup: ## Create virtual environment and install dependencies
 	@echo "Checking/Creating virtual environment in $(VENV)..."
 	@test -d $(VENV) || python3 -m venv $(VENV)
 	@echo "Installing dependencies..."
-	@$(BIN)/pip install -e .
+	@if [ -f requirements.txt ]; then $(BIN)/pip install -r requirements.txt; fi
+	@if [ -f pyproject.toml ] || [ -f setup.py ]; then $(BIN)/pip install -e .; fi
 	@echo ""
 	@echo "Setup complete."
 	@echo "----------------------------------------------------------------"
@@ -70,7 +71,10 @@ cancel: ## Cancel a Fairway job (usage: make cancel JOB_ID=12345)
 	fi
 	$(FAIRWAY) cancel $(JOB_ID)
 
-build: ## Build or pull the Apptainer container
+pull: ## Pull (mirror) the Apptainer container from registry
+	$(FAIRWAY) pull
+
+build: ## Build the Apptainer container from local definition
 	$(FAIRWAY) build
 
 docs: ## Build and serve documentation using mkdocs
