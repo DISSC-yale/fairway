@@ -41,6 +41,7 @@ From: python:3.10-slim-bookworm
 
 %environment
     export LC_ALL=C
+    export PYTHONNOUSERSITE=1
     export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
     export SPARK_HOME=/opt/spark
     export PATH=$PATH:/opt/spark/bin:/usr/local/bin
