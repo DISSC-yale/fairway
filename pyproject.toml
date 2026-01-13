@@ -57,5 +57,9 @@ fairway = "fairway.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.package-data]
 fairway = ["data/*"]
+"fairway.data" = ["*"]
