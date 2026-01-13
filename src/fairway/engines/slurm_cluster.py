@@ -53,9 +53,18 @@ echo "$((SLURM_CPUS_ON_NODE - 1))" > {self.cores_file}
 
 sleep infinity
 """
-        script_path = "start_spark_cluster.sh"
+        # Use timestamped script path for visibility
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Ensure log dir exists
+        os.makedirs("logs/slurm", exist_ok=True)
+        
+        script_path = f"logs/slurm/start_spark_cluster_{timestamp}.sh"
         with open(script_path, "w") as f:
             f.write(sbatch_script)
+            
+        click.echo(f"Generated Spark cluster script: {script_path}")
             
         result = subprocess.run(["sbatch", script_path], capture_output=True, text=True)
         if result.returncode != 0:

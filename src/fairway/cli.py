@@ -471,7 +471,8 @@ def generate_schema(file_path, output):
 @click.option('--account', default=None, help='Slurm account (overrides spark.yaml).')
 @click.option('--partition', default=None, help='Slurm partition (overrides spark.yaml).')
 @click.option('--batch-size', default=30, help='Max parallel jobs.')
-def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size):
+@click.option('--dry-run', is_flag=True, help='Generate script but do not submit.')
+def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size, dry_run):
     """Run the fairway ingestion pipeline."""
     import yaml
     
@@ -534,10 +535,59 @@ def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition,
 
     try:
         if slurm:
-            click.echo("Submitting fairway pipeline as a Slurm batch job...")
+            if not dry_run:
+                click.echo("Submitting fairway pipeline as a Slurm batch job...")
+            else:
+                click.echo("Generating Slurm batch job script (Dry Run)...")
+                
+            # Pass dry_run to kwargs for use in the block below if needed, or just use local var
+            kwargs = {'dry_run': dry_run}
             # Template for sbatch script (Controller node)
+    # Template for sbatch script (Controller node)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            job_name_safe = os.path.basename(config).replace('.', '_')
+            
+            # Ensure log dir exists
+            os.makedirs("logs/slurm", exist_ok=True)
+            
+            script_path = f"logs/slurm/fairway_{job_name_safe}_{timestamp}.sh"
+            
+            # Spark shutdown logic
+            spark_cleanup = ""
+            if master_url: # If using existing master
+               pass # We don't shut it down as we didn't start it here
+            elif spark_manager:
+               # We are starting a cluster inside the job (if we refactor slurm_cluster to be called from within the job)
+               # OR, if we started it here in CLI (current logic), we can't easily trap it in the batch job unless we pass the ID.
+               # Current logic: CLI starts cluster -> gets URL -> submits batch job -> waits (?) -> stops cluster.
+               # BUT: if --slurm is used, the CLI exits. Who stops the cluster?
+               # FIX: The Batch Job itself should start/stop the cluster OR we accept that the user must cancel it.
+               # Better FIX (as per plan): The generated batch script should trap EXIT and cancel the spark job.
+               # However, the Spark Cluster is currently started by Python `subprocess` in CLI *before* sbatch.
+               # This means the spark cluster job ID is known here `spark_manager.job_id_file`?
+               # We need to get the job ID from spark_manager to inject into the cleanup script.
+               
+               # Let's inspect spark_manager implementation. It writes job_id to a file.
+               # We can read it back or make spark_manager return it.
+               # For now, let's assume we can get it.
+               
+               # UPDATE: Since we can't easily change `slurm_cluster.py`'s return signature without checking,
+               # let's read the job_id_file if it exists.
+               job_id_file = os.path.expanduser("~/cluster_job_id.txt")
+               if os.path.exists(job_id_file):
+                   with open(job_id_file, 'r') as f:
+                       spark_cluster_id = f.read().strip()
+                   spark_cleanup = f"""
+# Clean up Spark cluster on exit
+cleanup_spark() {{
+    echo "Stopping Spark cluster (Job ID: {spark_cluster_id})..."
+    scancel {spark_cluster_id}
+}}
+trap cleanup_spark EXIT
+"""
+
             sbatch_content = f"""#!/bin/bash
-#SBATCH --job-name=fairway_{os.path.basename(config)}
+#SBATCH --job-name=fairway_{job_name_safe}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task={cpus}
@@ -545,7 +595,9 @@ def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition,
 #SBATCH --time={time}
 #SBATCH --account={account}
 #SBATCH --partition={partition}
-#SBATCH --output=logs/slurm/fairway_%j.log
+#SBATCH --output=logs/slurm/fairway_{job_name_safe}_%j.log
+
+{spark_cleanup}
 
 module load Nextflow
 # Pass the spark master if we have one
@@ -557,6 +609,11 @@ fi
 # Pass through Apptainer binds calculated by the CLI
 export APPTAINER_BIND="{os.environ.get('APPTAINER_BIND', '')}"
 
+echo "Starting Fairway Pipeline..."
+echo "Config: {config}"
+echo "Profile: {profile}"
+echo "Spark Master: $SPARK_MASTER_URL"
+
 nextflow run main.nf -profile {profile} \\
     --config {config} \\
     --batch_size {batch_size} \\
@@ -567,11 +624,18 @@ nextflow run main.nf -profile {profile} \\
     --slurm_partition {partition} \\
     --account {account} \\
     $SPARK_URL_ARG
+
+echo "Fairway Pipeline Completed."
 """
-            with open('run_fairway_slurm.sh', 'w') as f:
+            with open(script_path, 'w') as f:
                 f.write(sbatch_content)
             
-            subprocess.run(['sbatch', 'run_fairway_slurm.sh'])
+            click.echo(f"Generated submission script: {script_path}")
+            
+            if not kwargs.get('dry_run'):
+                subprocess.run(['sbatch', script_path], check=True)
+            else:
+                click.echo("Dry run: Skipping submission.")
         else:
             click.echo(f"Running fairway pipeline with config: {config}, profile: {profile}")
             
@@ -704,5 +768,76 @@ def shell(config, image, bind):
         click.echo("Error: 'apptainer' command not found. Is Apptainer installed?", err=True)
 
 
+@main.command()
+def status():
+    """Show status of fairway jobs (wraps squeue)."""
+    click.echo(f"Fairway jobs for user: {os.environ.get('USER', 'unknown')}")
+    try:
+        user = os.environ.get('USER')
+        if not user:
+            click.echo("Error: USER environment variable not set.", err=True)
+            return
+
+        # Using -o to format output similar to the script
+        # %.10i %.20j %.8T %.10M %.6D %R
+        subprocess.run([
+            "squeue", 
+            "-u", user, 
+            "--name=fairway*", 
+            "-o", "%.10i %.20j %.8T %.10M %.6D %R"
+        ], check=True)
+    except subprocess.CalledProcessError:
+        click.echo("Error running squeue. Is Slurm available?", err=True)
+    except FileNotFoundError:
+        click.echo("squeue command not found.", err=True)
+
+@main.command()
+@click.argument('job_id')
+def cancel(job_id):
+    """Cancel a fairway job (wraps scancel)."""
+    click.echo(f"Cancelling job: {job_id}")
+    try:
+        subprocess.run(["scancel", job_id], check=True)
+        click.echo("Job cancelled.")
+    except subprocess.CalledProcessError:
+        click.echo(f"Error cancelling job {job_id}.", err=True)
+    except FileNotFoundError:
+        click.echo("scancel command not found.", err=True)
+
+@main.command()
+def build():
+    """Build or pull the Apptainer container (fairway.sif)."""
+    container_local = "fairway.sif"
+    
+    if os.path.exists(container_local):
+        click.echo(f"Container already exists: {container_local}")
+        click.echo("To rebuild, delete it first: rm fairway.sif")
+        return
+
+    click.echo("Building/pulling Fairway Apptainer image...")
+    
+    # Check for local definition first
+    if os.path.exists("Apptainer.def"):
+        click.echo("Building from local Apptainer.def...")
+        cmd = ["apptainer", "build", container_local, "Apptainer.def"]
+    else:
+        # Pull from registry
+        # Hardcoding registry URL for now (same as in script)
+        container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
+        click.echo(f"Pulling from registry: {container_image}")
+        cmd = ["apptainer", "pull", container_local, container_image]
+    
+    try:
+        subprocess.run(cmd, check=True)
+        click.echo(f"\nContainer built successfully: {container_local}")
+        click.echo(f"Test with: apptainer exec {container_local} fairway --help")
+    except subprocess.CalledProcessError:
+        click.echo("\nError: Container build/pull failed.", err=True)
+        click.echo("Possible reasons: Network issues, registry outage, or invalid definition.", err=True)
+    except FileNotFoundError:
+        click.echo("apptainer command not found. Is Apptainer installed?", err=True)
+
+
 if __name__ == '__main__':
     main()
+

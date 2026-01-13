@@ -42,5 +42,19 @@ run: ## Run the pipeline locally (auto-discovers config)
 run-slurm: ## Run the pipeline on Slurm (requires Slurm environment)
 	fairway run --profile slurm --slurm
 
+status: ## Show status of Fairway jobs on Slurm
+	fairway status
+
+cancel: ## Cancel a Fairway job (usage: make cancel JOB_ID=12345)
+	@if [ -z "$(JOB_ID)" ]; then \
+		echo "Error: JOB_ID argument is required. Usage: make cancel JOB_ID=<job_id>"; \
+		exit 1; \
+	fi
+	fairway cancel $(JOB_ID)
+
+build: ## Build or pull the Apptainer container
+	fairway build
+
+
 docs: ## Build and serve documentation using mkdocs
 	mkdocs serve
