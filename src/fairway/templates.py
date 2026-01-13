@@ -146,8 +146,7 @@ process RUN_INGESTION {
     script:
     \"\"\"
     export PYTHONPATH=\$PYTHONPATH:\$(pwd)/src
-    fairway run --config ${config_file} --profile standard
-    // Note: Inside the process, we run as 'standard' (local to the node) because Slurm/Nextflow handled the allocation
+    python3 -m fairway.pipeline ${config_file} --spark_master "${params.spark_master}"
     \"\"\"
 }
 
