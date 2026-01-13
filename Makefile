@@ -77,5 +77,8 @@ pull: ## Pull (mirror) the Apptainer container from registry
 build: ## Build the Apptainer container from local definition
 	$(FAIRWAY) build
 
+shell: ## Enter interactive container shell
+	$(FAIRWAY) shell
+
 docs: ## Build and serve documentation using mkdocs
 	mkdocs serve
