@@ -829,34 +829,48 @@ def cancel(job_id):
 
 @main.command()
 def build():
-    """Build or pull the Apptainer container (fairway.sif)."""
+    """Build the Apptainer container from local Apptainer.def."""
     container_local = "fairway.sif"
     
     if os.path.exists(container_local):
-        click.echo(f"Container already exists: {container_local}")
-        click.echo("To rebuild, delete it first: rm fairway.sif")
+        if not click.confirm(f"Container {container_local} already exists. Overwrite?"):
+            return
+
+    if not os.path.exists("Apptainer.def"):
+        click.echo("Error: Apptainer.def not found.", err=True)
+        click.echo("Run 'fairway eject' to generate the definition file.", err=True)
         return
 
-    click.echo("Building/pulling Fairway Apptainer image...")
-    
-    # Check for local definition first
-    if os.path.exists("Apptainer.def"):
-        click.echo("Building from local Apptainer.def...")
-        cmd = ["apptainer", "build", container_local, "Apptainer.def"]
-    else:
-        # Pull from registry
-        # Hardcoding registry URL for now (same as in script)
-        container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
-        click.echo(f"Pulling from registry: {container_image}")
-        cmd = ["apptainer", "pull", container_local, container_image]
+    click.echo("Building from local Apptainer.def...")
+    cmd = ["apptainer", "build", "--force", container_local, "Apptainer.def"]
     
     try:
         subprocess.run(cmd, check=True)
         click.echo(f"\nContainer built successfully: {container_local}")
-        click.echo(f"Test with: apptainer exec {container_local} fairway --help")
     except subprocess.CalledProcessError:
-        click.echo("\nError: Container build/pull failed.", err=True)
-        click.echo("Possible reasons: Network issues, registry outage, or invalid definition.", err=True)
+        click.echo("\nError: Container build failed.", err=True)
+    except FileNotFoundError:
+        click.echo("apptainer command not found. Is Apptainer installed?", err=True)
+
+@main.command()
+def pull():
+    """Pull (mirror) the Apptainer container from the registry."""
+    container_local = "fairway.sif"
+    container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
+    
+    if os.path.exists(container_local):
+        if not click.confirm(f"Container {container_local} already exists. Overwrite?"):
+            return
+
+    click.echo(f"Pulling from registry: {container_image}...")
+    cmd = ["apptainer", "pull", "--force", container_local, container_image]
+    
+    try:
+        subprocess.run(cmd, check=True)
+        click.echo(f"\nContainer pulled successfully: {container_local}")
+    except subprocess.CalledProcessError:
+        click.echo("\nError: Container pull failed.", err=True)
+        click.echo("If you see an auth error, run: source scripts/fairway-hpc.sh registry-login", err=True)
     except FileNotFoundError:
         click.echo("apptainer command not found. Is Apptainer installed?", err=True)
 

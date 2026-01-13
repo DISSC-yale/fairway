@@ -9,6 +9,7 @@
 # Usage:
 #   source fairway-hpc.sh setup           # Load required modules
 #   source fairway-hpc.sh setup-spark     # Load modules including Spark
+#   source fairway-hpc.sh registry-login  # Login to container registry
 #
 # =============================================================================
 
@@ -48,6 +49,7 @@ Usage: source fairway-hpc.sh <command>
 Commands:
   setup             Load base modules (Nextflow, Python)
   setup-spark       Load all modules including Spark
+  registry-login    Authenticate Apptainer with GitHub Container Registry
 
 Note:
   This script MUST be sourced to load modules into your current shell.
@@ -55,6 +57,22 @@ Note:
   For checking status, use: fairway status
 
 EOF
+}
+
+registry_login() {
+    print_header
+    echo "This helper will log you into the GitHub Container Registry (GHCR)."
+    echo ""
+    echo "1. Create a Personal Access Token (PAT) on GitHub:"
+    echo "   Settings -> Developer Settings -> Personal access tokens (Classic)"
+    echo "   Scope required: read:packages"
+    echo ""
+    echo "2. When prompted for password, PASTE YOUR TOKEN (starts with ghp_)"
+    echo ""
+    echo "Logging into docker://ghcr.io..."
+    apptainer remote login -u "$USER" docker://ghcr.io
+    echo ""
+    echo "Login process completed."
 }
 
 load_modules() {
@@ -124,6 +142,7 @@ load_spark_modules() {
     echo "Spark modules loaded."
 }
 
+
 # -----------------------------------------------------------------------------
 # Main Command Handler
 # -----------------------------------------------------------------------------
@@ -141,6 +160,9 @@ main() {
         setup-spark)
             print_header
             load_spark_modules
+            ;;
+        registry-login)
+            registry_login
             ;;
         -h|--help|help|"")
             print_header

@@ -1,5 +1,5 @@
 
-MAKEFILE_TEMPLATE = """.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel build
+MAKEFILE_TEMPLATE = """.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel pull build
 
 # Default target
 .DEFAULT_GOAL := help
@@ -73,7 +73,10 @@ cancel: ## Cancel a Fairway job (usage: make cancel JOB_ID=12345)
 	fi
 	$(FAIRWAY) cancel $(JOB_ID)
 
-build: ## Build or pull the Apptainer container
+pull: ## Pull (mirror) the Apptainer container from registry
+	$(FAIRWAY) pull
+
+build: ## Build the Apptainer container from local definition
 	$(FAIRWAY) build
 
 docs: ## Build and serve documentation using mkdocs
@@ -230,6 +233,7 @@ Usage: source fairway-hpc.sh <command>
 Commands:
   setup             Load base modules (Nextflow, Python)
   setup-spark       Load all modules including Spark
+  registry-login    Authenticate Apptainer with GitHub Container Registry
 
 Note:
   This script MUST be sourced to load modules into your current shell.
@@ -237,6 +241,22 @@ Note:
   For checking status, use: fairway status
 
 EOF
+}
+
+registry_login() {
+    print_header
+    echo "This helper will log you into the GitHub Container Registry (GHCR)."
+    echo ""
+    echo "1. Create a Personal Access Token (PAT) on GitHub:"
+    echo "   Settings -> Developer Settings -> Personal access tokens (Classic)"
+    echo "   Scope required: read:packages"
+    echo ""
+    echo "2. When prompted for password, PASTE YOUR TOKEN (starts with ghp_)"
+    echo ""
+    echo "Logging into docker://ghcr.io..."
+    apptainer remote login -u "$USER" docker://ghcr.io
+    echo ""
+    echo "Login process completed."
 }
 
 load_modules() {
@@ -324,6 +344,9 @@ main() {
         setup-spark)
             print_header
             load_spark_modules
+            ;;
+        registry-login)
+            registry_login
             ;;
         -h|--help|help|"")
             print_header
