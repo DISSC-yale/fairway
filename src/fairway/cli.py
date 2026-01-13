@@ -31,6 +31,36 @@ def discover_config():
             f"Multiple config files found: {configs}. Use --config to specify one.")
 
 
+def _get_apptainer_binds(cfg):
+    """Calculate Apptainer bind paths from config."""
+    bind_paths = set()
+    
+    # 1. Check storage directories
+    if cfg.storage:
+        for key in ['raw_dir', 'intermediate_dir', 'final_dir']:
+            path = cfg.storage.get(key)
+            if path:
+                abs_path = os.path.abspath(path)
+                if os.path.exists(abs_path):
+                    bind_paths.add(abs_path)
+    
+    # 2. Check source paths
+    if cfg.sources:
+        for src in cfg.sources:
+            path = src.get('path')
+            if path:
+                abs_path = os.path.abspath(path)
+                if os.path.exists(abs_path):
+                    bind_paths.add(abs_path)
+            # Handle unexpanded path patterns if any (though config loader might have expanded them)
+            # The config loader expands sources, so 'path' should be concrete file paths
+            # But we might want to bind the parent directory of files to be safe/cleaner
+            if os.path.isfile(abs_path):
+                bind_paths.add(os.path.dirname(abs_path))
+    
+    return bind_paths
+
+
 @click.group()
 def main():
     """fairway: A portable data ingestion framework."""
@@ -489,30 +519,7 @@ def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition,
         os.environ['SPARK_MASTER_URL'] = master_url
 
     # Calculate Apptainer bind paths from config
-    bind_paths = set()
-    
-    # 1. Check storage directories
-    if cfg.storage:
-        for key in ['raw_dir', 'intermediate_dir', 'final_dir']:
-            path = cfg.storage.get(key)
-            if path:
-                abs_path = os.path.abspath(path)
-                if os.path.exists(abs_path):
-                    bind_paths.add(abs_path)
-    
-    # 2. Check source paths
-    if cfg.sources:
-        for src in cfg.sources:
-            path = src.get('path')
-            if path:
-                abs_path = os.path.abspath(path)
-                if os.path.exists(abs_path):
-                    bind_paths.add(abs_path)
-            # Handle unexpanded path patterns if any (though config loader might have expanded them)
-            # The config loader expands sources, so 'path' should be concrete file paths
-            # But we might want to bind the parent directory of files to be safe/cleaner
-            if os.path.isfile(abs_path):
-                bind_paths.add(os.path.dirname(abs_path))
+    bind_paths = _get_apptainer_binds(cfg)
     
     if bind_paths:
         bind_str = ','.join(sorted(list(bind_paths)))
@@ -567,8 +574,12 @@ nextflow run main.nf -profile {profile} \\
             subprocess.run(['sbatch', 'run_fairway_slurm.sh'])
         else:
             click.echo(f"Running fairway pipeline with config: {config}, profile: {profile}")
+            
+            # Check for nextflow
+            nextflow_path = shutil.which('nextflow')
+            
             cmd = [
-                'nextflow', 'run', 'main.nf', 
+                'run', 'main.nf', 
                 '-profile', profile, 
                 '--config', config,
                 '--batch_size', str(batch_size),
@@ -580,7 +591,41 @@ nextflow run main.nf -profile {profile} \\
             ]
             if master_url:
                 cmd.extend(['--spark_master', master_url])
-            subprocess.run(cmd)
+
+            if nextflow_path:
+                cmd.insert(0, 'nextflow')
+                subprocess.run(cmd)
+            else:
+                # Nextflow not found, check for Apptainer
+                apptainer_path = shutil.which('apptainer')
+                if not apptainer_path:
+                    raise click.ClickException(
+                        "Nextflow not found on PATH. Apptainer also not found. "
+                        "Please install Nextflow or Apptainer to run the pipeline."
+                    )
+                
+                click.echo("Nextflow not found locally. Falling back to Apptainer execution...")
+                
+                # Determine image
+                container_image = "fairway.sif" if os.path.exists("fairway.sif") else "docker://ghcr.io/dissc-yale/fairway:latest"
+                
+                # Construct Apptainer command
+                apptainer_cmd = ['apptainer', 'exec']
+                
+                # Ensure we bind the current directory and any auto-discovered paths
+                # Note: os.environ['APPTAINER_BIND'] might have been set above, but apptainer exec 
+                # respects the env var, so we don't strictly need to pass --bind if the env var is set.
+                # However, we MUST ensure the current working directory is bound so main.nf is visible.
+                # Apptainer usually binds $PWD by default, but let's be safe if we want robustness.
+                # Implicit binding of $PWD is standard in Apptainer.
+                
+                # If the env var was set by us earlier (line 531), it will be inherited by subprocess.run
+                
+                apptainer_cmd.append(container_image)
+                apptainer_cmd.append('nextflow')
+                apptainer_cmd.extend(cmd)
+                
+                subprocess.run(apptainer_cmd)
     finally:
         if spark_manager and not slurm:
             # Only stop if we are running in the current terminal session
@@ -605,6 +650,59 @@ def eject():
     with open('Dockerfile', 'w') as f:
         f.write(DOCKERFILE_TEMPLATE)
     click.echo("  Created file: Dockerfile (Docker container definition)")
+
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
+@click.option('--image', default=None, help='Path to Apptainer image (default: checks local fairway.sif then pulls from registry).')
+@click.option('--bind', multiple=True, help='Additional bind paths.')
+def shell(config, image, bind):
+    """Enter an interactive shell inside the fairway container."""
+    from .config_loader import Config
+
+    # Auto-discover config if not specified
+    if config is None:
+        try:
+            config = discover_config()
+            click.echo(f"Auto-discovered config: {config}")
+        except Exception:
+            # It's okay if we don't find config for shell, but we won't auto-bind project paths
+            config = None
+            click.echo("No config file found. Proceeding without auto-binding project paths.")
+
+    bind_paths = set(bind)
+    
+    if config:
+        cfg = Config(config)
+        auto_binds = _get_apptainer_binds(cfg)
+        bind_paths.update(auto_binds)
+
+    # Determine image
+    if image:
+        container_image = image
+    elif os.path.exists("fairway.sif"):
+        container_image = "fairway.sif"
+    else:
+        # Default to latest from registry
+        # We need to import this constant or hardcode it
+        # For now, let's look at the implementation plan
+        container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
+
+    cmd = ["apptainer", "shell"]
+    
+    if bind_paths:
+        bind_str = ','.join(sorted(list(bind_paths)))
+        cmd.extend(["--bind", bind_str])
+        click.echo(f"Binding paths: {bind_str}")
+    
+    cmd.append(container_image)
+    
+    click.echo(f"Launching shell in container: {container_image}")
+    try:
+        subprocess.run(cmd)
+    except FileNotFoundError:
+        click.echo("Error: 'apptainer' command not found. Is Apptainer installed?", err=True)
+
 
 if __name__ == '__main__':
     main()
