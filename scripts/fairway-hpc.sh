@@ -89,7 +89,13 @@ setup_venv() {
         python3 -m venv "$VENV_DIR"
         source "$VENV_DIR/bin/activate"
         echo "Installing dependencies..."
-        pip install -e "$PROJECT_ROOT"
+        pip install --upgrade pip
+        if [ -f "$PROJECT_ROOT/requirements.txt" ]; then
+            pip install -r "$PROJECT_ROOT/requirements.txt"
+        fi
+        if [ -f "$PROJECT_ROOT/pyproject.toml" ] || [ -f "$PROJECT_ROOT/setup.py" ]; then
+            pip install -e "$PROJECT_ROOT"
+        fi
         echo "Virtual environment created and dependencies installed."
     else
         echo "Activating virtual environment..."
