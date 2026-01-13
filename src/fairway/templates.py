@@ -158,7 +158,7 @@ workflow {
 """
 
 APPTAINER_DEF = """Bootstrap: docker
-From: python:3.10-slim
+From: python:3.10-slim-bookworm
 
 %post
     apt-get update && apt-get install -y git openjdk-17-jre-headless
@@ -173,7 +173,7 @@ From: python:3.10-slim
     exec fairway "$@"
 """
 
-DOCKERFILE_TEMPLATE = """FROM python:3.10-slim
+DOCKERFILE_TEMPLATE = """FROM python:3.10-slim-bookworm
 
 RUN apt-get update && apt-get install -y git openjdk-17-jre-headless
 RUN pip install --upgrade pip
