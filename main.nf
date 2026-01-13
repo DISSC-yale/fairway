@@ -30,7 +30,7 @@ process RUN_INGESTION {
     script:
     """
     export PYTHONPATH=\$PYTHONPATH:\$(pwd)/src
-    python3 src/pipeline.py ${config_file} --spark_master "${params.spark_master}"
+    python3 -m fairway.pipeline ${config_file} --spark_master "${params.spark_master}"
     """
 }
 
