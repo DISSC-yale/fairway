@@ -1,5 +1,5 @@
 site/
-data/
+/data/
 logs/
 __pycache__/
 *.pyc
