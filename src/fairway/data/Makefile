@@ -1,4 +1,4 @@
-.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel pull build
+.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel pull build shell
 
 # Default target
 .DEFAULT_GOAL := help
@@ -19,7 +19,7 @@ help: ## Show this help message
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \\033[36m%-20s\\033[0m %s\\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 setup: ## Create virtual environment and install dependencies
 	@echo "Checking/Creating virtual environment in $(VENV)..."
@@ -49,9 +49,9 @@ generate-data: ## Generate test data (default: size=small, partitioned=True)
 	$(FAIRWAY) generate-data --size small --partitioned
 
 generate-schema: ## Generate schema from data (requires FILE=<path>)
-	@if [ -z "$(FILE)" ]; then \\
-		echo "Error: FILE argument is required. Usage: make generate-schema FILE=<path_to_file>"; \\
-		exit 1; \\
+	@if [ -z "$(FILE)" ]; then \
+		echo "Error: FILE argument is required. Usage: make generate-schema FILE=<path_to_file>"; \
+		exit 1; \
 	fi
 	$(FAIRWAY) generate-schema $(FILE)
 
@@ -65,9 +65,9 @@ status: ## Show status of Fairway jobs on Slurm
 	$(FAIRWAY) status
 
 cancel: ## Cancel a Fairway job (usage: make cancel JOB_ID=12345)
-	@if [ -z "$(JOB_ID)" ]; then \\
-		echo "Error: JOB_ID argument is required. Usage: make cancel JOB_ID=<job_id>"; \\
-		exit 1; \\
+	@if [ -z "$(JOB_ID)" ]; then \
+		echo "Error: JOB_ID argument is required. Usage: make cancel JOB_ID=<job_id>"; \
+		exit 1; \
 	fi
 	$(FAIRWAY) cancel $(JOB_ID)
 
