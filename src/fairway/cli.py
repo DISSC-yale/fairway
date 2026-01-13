@@ -2,6 +2,7 @@ import click
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from .generate_test_data import generate_test_data
 
@@ -703,7 +704,15 @@ echo "Fairway Pipeline Completed."
                 apptainer_cmd.append('nextflow')
                 apptainer_cmd.extend(cmd)
                 
-                subprocess.run(apptainer_cmd)
+                result = subprocess.run(apptainer_cmd)
+                if result.returncode != 0:
+                    click.echo("", err=True)
+                    click.echo("Error: Apptainer execution failed.", err=True)
+                    click.echo("If the container image could not be pulled, try building it locally:", err=True)
+                    click.echo("  1. fairway eject", err=True)
+                    click.echo("  2. fairway build", err=True)
+                    click.echo("  3. Run this command again.", err=True)
+                    sys.exit(result.returncode)
     finally:
         if spark_manager and not slurm:
             # Only stop if we are running in the current terminal session
