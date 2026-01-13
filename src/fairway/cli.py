@@ -117,7 +117,7 @@ dynamic_allocation:
     click.echo("  Created file: requirements.txt")
 
     # Write nextflow.config from template
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, HPC_SCRIPT, APPTAINER_DEF, DOCKERFILE_TEMPLATE
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:
         f.write(NEXTFLOW_CONFIG)
     click.echo("  Created file: nextflow.config (customize profiles here)")
@@ -127,13 +127,10 @@ dynamic_allocation:
         f.write(MAIN_NF)
     click.echo("  Created file: main.nf (Nextflow pipeline)")
 
-    # Write HPC helper script from template
-    os.makedirs(os.path.join(name, 'scripts'), exist_ok=True)
-    hpc_script_dest = os.path.join(name, 'scripts', 'fairway-hpc.sh')
-    with open(hpc_script_dest, 'w') as f:
-        f.write(HPC_SCRIPT)
-    os.chmod(hpc_script_dest, 0o755)
-    click.echo("  Created file: scripts/fairway-hpc.sh (HPC module/Apptainer helper)")
+    # Write Makefile
+    with open(os.path.join(name, 'Makefile'), 'w') as f:
+        f.write(MAKEFILE_TEMPLATE)
+    click.echo("  Created file: Makefile")
 
     # Create example transformation
     transform_content = """
@@ -181,12 +178,12 @@ Edit `config/fairway.yaml` to define your data sources, validations, and enrichm
 
 **Local execution:**
 ```bash
-fairway run --config config/fairway.yaml
+make run
 ```
 
 **Slurm cluster:**
 ```bash
-fairway run --config config/fairway.yaml --profile slurm --with-spark --account YOUR_ACCOUNT
+make run-hpc
 ```
 
 **Containerized execution:**
@@ -194,6 +191,30 @@ fairway run --config config/fairway.yaml --profile slurm --with-spark --account 
 fairway run --config config/fairway.yaml --profile apptainer
 ```
 *Note: This pulls the default container. To customize the environment, run `fairway eject`.*
+
+## Extending the Pipeline
+
+To add a post-processing step (e.g., reshaping), edit `main.nf`. For example:
+
+```groovy
+process RESHAPE {{
+    input:
+    path "data/final/*"
+ 
+    output:
+    path "data/reshaped/*"
+ 
+    script:
+    \"\"\"
+    python3 src/reshape.py ...
+    \"\"\"
+}}
+
+workflow {{
+    // ... existing ...
+    RESHAPE(run_fairway.out)
+}}
+```
 
 ## Customization
 
@@ -211,6 +232,7 @@ To customize the Apptainer container or Dockerfile:
 - `src/transformations/` - Custom transformation scripts
 - `docs/` - Project documentation
 - `logs/` - Execution logs
+- `Makefile` - Convenience commands
 
 ## Documentation
 
@@ -281,12 +303,12 @@ enrichment:
 
 ### Local (DuckDB)
 ```bash
-fairway run --config config/fairway.yaml
+make run
 ```
 
 ### Slurm Cluster (PySpark)
 ```bash
-fairway run --config config/fairway.yaml --profile slurm --with-spark --account YOUR_ACCOUNT
+make run-hpc
 ```
 
 ### Custom Slurm Resources
