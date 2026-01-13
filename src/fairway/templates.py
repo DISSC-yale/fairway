@@ -1,3 +1,8 @@
+import importlib.resources
+from . import data
+
+def _read_data_file(filename):
+    return importlib.resources.read_text(data, filename)
 
 
 NEXTFLOW_CONFIG = _read_data_file('nextflow.config')
