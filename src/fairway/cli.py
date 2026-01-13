@@ -836,10 +836,19 @@ def build():
         if not click.confirm(f"Container {container_local} already exists. Overwrite?"):
             return
 
+    # Auto-eject if missing
     if not os.path.exists("Apptainer.def"):
-        click.echo("Error: Apptainer.def not found.", err=True)
-        click.echo("Run 'fairway eject' to generate the definition file.", err=True)
-        return
+        click.echo("Apptainer.def not found. Creating from template...", err=True)
+        from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE
+        with open('Apptainer.def', 'w') as f:
+            f.write(APPTAINER_DEF)
+        click.echo("  Created file: Apptainer.def")
+        
+        # Also create Dockerfile for completeness, though not used here
+        if not os.path.exists('Dockerfile'):
+            with open('Dockerfile', 'w') as f:
+                f.write(DOCKERFILE_TEMPLATE)
+            click.echo("  Created file: Dockerfile")
 
     click.echo("Building from local Apptainer.def...")
     cmd = ["apptainer", "build", "--force", container_local, "Apptainer.def"]
