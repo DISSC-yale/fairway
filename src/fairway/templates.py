@@ -161,13 +161,36 @@ APPTAINER_DEF = """Bootstrap: docker
 From: python:3.10-slim-bookworm
 
 %post
-    apt-get update && apt-get install -y git openjdk-17-jre-headless
+    # Fail fast on any error
+    set -e
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        openjdk-17-jre-headless \
+        procps \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Install Nextflow
+    curl -s https://get.nextflow.io | bash
+    mv nextflow /usr/local/bin/
+    chmod +x /usr/local/bin/nextflow
+    
+    # Install Spark
+    SPARK_VERSION=3.5.1
+    HADOOP_VERSION=3
+    curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" | tar -xz -C /opt
+    ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
+    
+    # Install project dependencies
     pip install --upgrade pip
     pip install git+https://github.com/DISSC-yale/fairway.git
-    
+
 %environment
-    export LC_ALL=C.UTF-8
-    export LANG=C.UTF-8
+    export LC_ALL=C
+    export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+    export SPARK_HOME=/opt/spark
+    export PATH=$PATH:/opt/spark/bin:/usr/local/bin
 
 %runscript
     exec fairway "$@"
