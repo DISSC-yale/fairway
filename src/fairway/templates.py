@@ -175,15 +175,20 @@ From: python:3.10-slim-bookworm
     mv nextflow /usr/local/bin/
     chmod +x /usr/local/bin/nextflow
     
-    # Install Spark
-    SPARK_VERSION=3.5.1
-    HADOOP_VERSION=3
     curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" | tar -xz -C /opt
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
     
     # Install project dependencies
     pip install --upgrade pip
-    pip install git+https://github.com/DISSC-yale/fairway.git
+    if [ -f /opt/requirements.txt ]; then
+        pip install --no-cache-dir -r /opt/requirements.txt
+    else
+        # Fallback: install from git
+        pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
+    fi
+
+%files
+    requirements.txt /opt/requirements.txt
 
 %environment
     export LC_ALL=C
