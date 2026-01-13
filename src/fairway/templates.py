@@ -180,7 +180,7 @@ ENTRYPOINT ["fairway"]
 """
 
 # Script to be placed in scripts/fairway-hpc.sh during init
-FAIRWAY_HPC_SH_TEMPLATE = """#!/bin/bash
+FAIRWAY_HPC_SH_TEMPLATE = r"""#!/bin/bash
 # =============================================================================
 # fairway-hpc.sh - HPC Environment Setup
 # =============================================================================
