@@ -653,6 +653,10 @@ run-hpc: ## Run on Slurm with Spark
 shell: ## Enter a shell inside the ecosystem
 	fairway shell
 
+# Build the container (Apptainer/Docker)
+build: ## Build the container image
+	fairway build
+
 # Clean up artifacts
 clean: ## Clean logs and temp data
 	rm -rf logs/ .nextflow* work/

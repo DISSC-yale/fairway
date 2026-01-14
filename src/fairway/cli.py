@@ -434,6 +434,51 @@ def eject():
 
 
 @main.command()
+@click.option('--force', is_flag=True, help='Force rebuild (overwrite existing image).')
+def build(force):
+    """Build the container image (Apptainer preferred, falls back to Docker)."""
+    
+    # Check for Apptainer.def
+    if os.path.exists('Apptainer.def'):
+        click.echo("Found Apptainer.def. Building Apptainer image...")
+        
+        if os.path.exists("fairway.sif"):
+            if force:
+                click.echo("Overwriting existing fairway.sif...")
+                os.remove("fairway.sif")
+            else:
+                if not click.confirm("fairway.sif already exists. Overwrite?"):
+                    return
+
+        cmd = ["apptainer", "build", "fairway.sif", "Apptainer.def"]
+        try:
+            subprocess.run(cmd, check=True)
+            click.echo("\nBuild complete: fairway.sif")
+            click.echo("You can now run tasks with: fairway run --profile apptainer")
+        except subprocess.CalledProcessError as e:
+            raise click.ClickException(f"Apptainer build failed with exit code {e.returncode}")
+        except FileNotFoundError:
+             raise click.ClickException("Apptainer command not found.")
+             
+    elif os.path.exists("Dockerfile"):
+        click.echo("Found Dockerfile. Building Docker image...")
+        
+        cmd = ["docker", "build", "-t", "fairway", "."]
+        try:
+            subprocess.run(cmd, check=True)
+            click.echo("\nBuild complete: fairway:latest")
+        except subprocess.CalledProcessError as e:
+             raise click.ClickException(f"Docker build failed with exit code {e.returncode}")
+        except FileNotFoundError:
+             raise click.ClickException("Docker command not found.")
+    else:
+        raise click.ClickException(
+            "No container definition found. "
+            "Run 'fairway eject' to generate Apptainer.def and Dockerfile."
+        )
+
+
+@main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--image', default=None, help='Path to Apptainer image (default: checks local fairway.sif then pulls from registry).')
 @click.option('--bind', multiple=True, help='Additional bind paths.')
