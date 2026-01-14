@@ -24,7 +24,7 @@ From: python:3.10-slim-bookworm
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
     
 
-    pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
+    pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git@query-engine-refactor#egg=fairway[all]"
 
 %files
     requirements.txt /opt/requirements.txt
