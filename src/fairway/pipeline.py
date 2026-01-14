@@ -2,7 +2,7 @@ import os
 import sys
 from .config_loader import Config
 from .manifest import ManifestManager
-from .engines.duckdb_engine import DuckDBEngine
+
 
 from .validations.checks import Validator
 from .summarize import Summarizer
@@ -16,13 +16,19 @@ class IngestionPipeline:
         self.engine = self._get_engine(spark_master)
 
     def _get_engine(self, spark_master=None):
-        if self.config.engine == 'pyspark':
+        engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
+        
+        if engine_type in ['pyspark', 'spark']:
             try:
                 from .engines.pyspark_engine import PySparkEngine
                 return PySparkEngine(spark_master)
             except ImportError:
                 sys.exit("Error: PySpark is not installed. Please install using `pip install fairway[spark]`")
-        return DuckDBEngine()
+        elif engine_type == 'duckdb':
+            from .engines.duckdb_engine import DuckDBEngine
+            return DuckDBEngine()
+        else:
+            raise ValueError(f"Unknown engine: {self.config.engine}. Supported engines: 'duckdb', 'spark'")
 
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
