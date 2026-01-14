@@ -11,6 +11,7 @@ from .exporters.redivis_exporter import RedivisExporter
 
 class IngestionPipeline:
     def __init__(self, config_path, spark_master=None):
+        print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)

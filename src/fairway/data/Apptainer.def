@@ -24,13 +24,11 @@ From: python:3.10-slim-bookworm
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
     
     # Install project dependencies
-    pip install --upgrade pip
     if [ -f /opt/requirements.txt ]; then
         pip install --no-cache-dir -r /opt/requirements.txt
     else
-        # Fallback: install from git
-        # Note: hash 'egg=fairway[all]' is important for pip to know the package name from git
-        pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
+        # Fallback: install from git (specific branch for testing)
+        pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git@query-engine-refactor#egg=fairway[all]"
     fi
 
 %files

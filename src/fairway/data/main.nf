@@ -32,7 +32,7 @@ process RUN_INGESTION {
     // Only pass spark_master if set; explicitly ignored by DuckDB engine in pipeline.py
     def spark_arg = params.spark_master ? "--spark_master \"${params.spark_master}\"" : ""
     """
-    export PYTHONPATH=\$PYTHONPATH:\$(pwd)/src
+    export PYTHONPATH=\$(pwd)/src:\$PYTHONPATH
     python3 -m fairway.pipeline ${config_file} ${spark_arg}
     """
 }
