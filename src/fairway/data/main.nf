@@ -12,12 +12,15 @@ params.slurm_time = "24:00:00"
 params.slurm_partition = "day"
 
 
+params.dev_path = null
+
 process RUN_INGESTION {
     maxForks params.batch_size
     tag "Ingesting ${params.config}"
     publishDir "${params.outdir}", mode: 'copy'
 
     container params.container
+    containerOptions { params.dev_path ? "--bind ${params.dev_path}:/opt/fairway/src" : "" }
 
     input:
     path config_file
@@ -31,8 +34,9 @@ process RUN_INGESTION {
     script:
     // Only pass spark_master if set; explicitly ignored by DuckDB engine in pipeline.py
     def spark_arg = params.spark_master ? "--spark_master \"${params.spark_master}\"" : ""
+    def python_path_prepend = params.dev_path ? "/opt/fairway/src:" : ""
     """
-    export PYTHONPATH=\$(pwd)/src:\$PYTHONPATH
+    export PYTHONPATH=${python_path_prepend}\$(pwd)/src:\$PYTHONPATH
     python3 -m fairway.pipeline ${config_file} ${spark_arg}
     """
 }
