@@ -20,9 +20,27 @@ class ManifestManager:
 
     def get_file_hash(self, file_path):
         sha256_hash = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
+        
+        if os.path.isdir(file_path):
+            # For directories, hash all files recursively, sorted by path
+            for root, dirs, files in sorted(os.walk(file_path)):
+                for names in sorted(files):
+                    filepath = os.path.join(root, names)
+                    # Update hash with filename to detect rename/move
+                    relpath = os.path.relpath(filepath, file_path)
+                    sha256_hash.update(relpath.encode('utf-8'))
+                    try:
+                        with open(filepath, "rb") as f:
+                            for byte_block in iter(lambda: f.read(4096), b""):
+                                sha256_hash.update(byte_block)
+                    except (IOError, OSError):
+                        # Skip files we can't read
+                        pass
+        else:
+            with open(file_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+                    
         return sha256_hash.hexdigest()
 
     def should_process(self, file_path):

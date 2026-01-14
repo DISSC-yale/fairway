@@ -89,65 +89,27 @@ def init(name, engine):
         click.echo(f"  Created directory: {d}")
 
     # Create config.yaml
-    config_content = f"""dataset_name: "{name}"
-engine: "{'pyspark' if engine == 'spark' else 'duckdb'}"
-storage:
-  raw_dir: "data/raw"
-  intermediate_dir: "data/intermediate"
-  final_dir: "data/final"
-
-sources:
-  - name: "example_source"
-    path: "data/raw/example.csv"
-    format: "csv"
-    schema:
-      id: "BIGINT"
-      value: "DOUBLE"
-
-validations:
-  level1:
-    min_rows: 1
-
-enrichment:
-  geocode: false
-"""
+    engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, REQS_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+    config_content = CONFIG_TEMPLATE.format(name=name, engine_type=engine_type)
+    
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
         f.write(config_content)
     click.echo("  Created file: config/fairway.yaml")
 
     # Create spark.yaml with defaults
-    spark_config_content = """# Spark cluster configuration
-# Override these values for your HPC environment
-
-nodes: 2
-cpus_per_node: 32
-mem_per_node: "200G"
-
-# Slurm-specific
-account: "borzekowski"
-partition: "day"
-time: "24:00:00"
-
-# Spark dynamic allocation
-dynamic_allocation:
-  enabled: true
-  min_executors: 5
-  max_executors: 150
-  initial_executors: 15
-"""
     with open(os.path.join(name, 'config', 'spark.yaml'), 'w') as f:
-        f.write(spark_config_content)
+        f.write(SPARK_YAML_TEMPLATE)
     click.echo("  Created file: config/spark.yaml")
 
     # Create requirements.txt
-    # Assuming installation from git source for now, as reflected in other parts of the CLI
-    reqs_content = f"git+https://github.com/DISSC-yale/fairway.git#egg=fairway[{'spark' if engine == 'spark' else 'duckdb'}]\n"
+    extra = 'spark' if engine == 'spark' else 'duckdb'
+    reqs_content = REQS_TEMPLATE.format(extra=extra)
     with open(os.path.join(name, 'requirements.txt'), 'w') as f:
         f.write(reqs_content)
     click.echo("  Created file: requirements.txt")
 
     # Write nextflow.config from template
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:
         f.write(NEXTFLOW_CONFIG)
     click.echo("  Created file: nextflow.config (customize profiles here)")
@@ -163,195 +125,32 @@ dynamic_allocation:
     click.echo("  Created file: Makefile")
 
     # Create example transformation
-    transform_content = """
-def example_transform(df):
-    \"\"\"
-    An example transformation function.
-    Args:
-        df: Input DataFrame (pandas or spark)
-    Returns:
-        Transformed DataFrame
-    \"\"\"
-    # Example logic
-    return df
-"""
     with open(os.path.join(name, 'src', 'transformations', 'example_transform.py'), 'w') as f:
-        f.write(transform_content.strip())
+        f.write(TRANSFORM_TEMPLATE.strip())
     click.echo("  Created file: src/transformations/example_transform.py")
 
     # Create README.md with usage examples
-    readme_content = f"""# {name}
 
-Initialized by fairway on {datetime.now().isoformat()}
-
-**Engine**: {engine}
-
-## Quick Start
-
-### 1. Generate Test Data
-
-```bash
-fairway generate-data --size small --partitioned
-```
-
-### 2. Generate Schema (optional)
-
-```bash
-fairway generate-schema data/raw/your_data.csv
-```
-
-### 3. Update Configuration
-
-Edit `config/fairway.yaml` to define your data sources, validations, and enrichments.
-
-### 4. Run the Pipeline
-
-**Local execution:**
-```bash
-make run
-```
-
-**Slurm cluster:**
-```bash
-make run-hpc
-```
-
-**Containerized execution:**
-```bash
-fairway run --config config/fairway.yaml --profile apptainer
-```
-*Note: This pulls the default container. To customize the environment, run `fairway eject`.*
-
-## Extending the Pipeline
-
-To add a post-processing step (e.g., reshaping), edit `main.nf`. For example:
-
-```groovy
-process RESHAPE {{
-    input:
-    path "data/final/*"
- 
-    output:
-    path "data/reshaped/*"
- 
-    script:
-    \"\"\"
-    python3 src/reshape.py ...
-    \"\"\"
-}}
-
-workflow {{
-    // ... existing ...
-    RESHAPE(run_fairway.out)
-}}
-```
-
-## Customization
-
-To customize the Apptainer container or Dockerfile:
-1. Run `fairway eject` to generate `Apptainer.def` and `Dockerfile`.
-2. Edit the generated files.
-3. Build locally (fairway will automatically favor local definitions).
-
-## Project Structure
-
-- `config/` - Pipeline configuration files
-- `data/raw/` - Input data files
-- `data/intermediate/` - Intermediate processing outputs
-- `data/final/` - Final processed data
-- `src/transformations/` - Custom transformation scripts
-- `docs/` - Project documentation
-- `logs/` - Execution logs
-- `Makefile` - Convenience commands
-
-## Documentation
-
-See the [fairway documentation](https://github.com/DISSC-yale/fairway) for more details.
-"""
+    readme_content = README_TEMPLATE.format(
+        name=name,
+        timestamp=datetime.now().isoformat(),
+        engine=engine
+    )
     with open(os.path.join(name, 'README.md'), 'w') as f:
         f.write(readme_content)
     click.echo("  Created file: README.md")
 
     # Create docs/getting-started.md
-    docs_content = f"""# Getting Started with {name}
-
-## Prerequisites
-
-- Python 3.9+
-- fairway installed (`pip install git+https://github.com/DISSC-yale/fairway.git`)
-
-## Generating Test Data
-
-Create sample data to test your pipeline:
-
-```bash
-# Small partitioned CSV dataset
-fairway generate-data --size small --partitioned
-
-# Large Parquet dataset
-fairway generate-data --size large --format parquet
-```
-
-## Schema Inference
-
-Auto-generate schema from your data:
-
-```bash
-# From a single file
-fairway generate-schema data/raw/example.csv
-
-# From a partitioned directory
-fairway generate-schema data/raw/partitioned_data/
-```
-
-## Configuration
-
-Your pipeline is configured in `config/fairway.yaml`:
-
-```yaml
-dataset_name: "{name}"
-engine: "{'pyspark' if engine == 'spark' else 'duckdb'}"
-
-sources:
-  - name: "my_source"
-    path: "data/raw/my_data.csv"
-    format: "csv"
-    schema:
-      id: "int"
-      value: "double"
-
-validations:
-  level1:
-    min_rows: 100
-    check_column_count: true
-
-enrichment:
-  geocode: true
-```
-
-## Running Your Pipeline
-
-### Local (DuckDB)
-```bash
-make run
-```
-
-### Slurm Cluster (PySpark)
-```bash
-make run-hpc
-```
-
-### Custom Slurm Resources
-```bash
-fairway run --config config/fairway.yaml --slurm \\
-  --cpus 8 --mem 32G --time 04:00:00 --nodes 4
-```
-"""
+    docs_content = DOCS_TEMPLATE.format(
+        name=name,
+        engine_type=engine_type
+    )
     with open(os.path.join(name, 'docs', 'getting-started.md'), 'w') as f:
         f.write(docs_content)
     click.echo("  Created file: docs/getting-started.md")
 
     click.echo(f"Project {name} initialized successfully.")
+
 
 @main.command()
 @click.option('--size', type=click.Choice(['small', 'large']), default='small', help='Size of dataset to generate.')
@@ -536,38 +335,20 @@ def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition,
         if slurm:
             click.echo("Submitting fairway pipeline as a Slurm batch job...")
             # Template for sbatch script (Controller node)
-            sbatch_content = f"""#!/bin/bash
-#SBATCH --job-name=fairway_{os.path.basename(config)}
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task={cpus}
-#SBATCH --mem={mem}
-#SBATCH --time={time}
-#SBATCH --account={account}
-#SBATCH --partition={partition}
-#SBATCH --output=logs/slurm/fairway_%j.log
-
-module load Nextflow
-# Pass the spark master if we have one
-SPARK_URL_ARG=""
-if [ ! -z "$SPARK_MASTER_URL" ]; then
-    SPARK_URL_ARG="--spark_master $SPARK_MASTER_URL"
-fi
-
-# Pass through Apptainer binds calculated by the CLI
-export APPTAINER_BIND="{os.environ.get('APPTAINER_BIND', '')}"
-
-nextflow run main.nf -profile {profile} \\
-    --config {config} \\
-    --batch_size {batch_size} \\
-    --slurm_nodes {nodes} \\
-    --slurm_cpus_per_task {cpus} \\
-    --slurm_mem {mem} \\
-    --slurm_time {time} \\
-    --slurm_partition {partition} \\
-    --account {account} \\
-    $SPARK_URL_ARG
-"""
+            from .templates import SBATCH_TEMPLATE
+            sbatch_content = SBATCH_TEMPLATE.format(
+                job_name_suffix=os.path.basename(config),
+                nodes=1,
+                cpus=cpus,
+                mem=mem,
+                time=time,
+                account=account,
+                partition=partition,
+                config=config,
+                profile=profile,
+                batch_size=batch_size,
+                apptainer_bind=os.environ.get('APPTAINER_BIND', '')
+            )
             with open('run_fairway_slurm.sh', 'w') as f:
                 f.write(sbatch_content)
             

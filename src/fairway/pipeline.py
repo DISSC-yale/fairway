@@ -88,6 +88,23 @@ class IngestionPipeline:
                 if l1['passed'] and l2['passed']:
                     print(f"Validations passed for {source['name']}")
                     
+                    # Move/Copy to final directory
+                    final_output_path = os.path.join(self.config.storage['final_dir'], os.path.basename(output_path))
+                    if os.path.exists(final_output_path):
+                        import shutil
+                        if os.path.isdir(final_output_path):
+                            shutil.rmtree(final_output_path)
+                        else:
+                            os.remove(final_output_path)
+                    
+                    import shutil
+                    if os.path.isdir(output_path):
+                        shutil.copytree(output_path, final_output_path)
+                    else:
+                        shutil.copy2(output_path, final_output_path)
+                    
+                    print(f"Data finalized at {final_output_path}")
+
                     # 6. Summarization and Reporting
                     summary_path = os.path.join(self.config.storage['final_dir'], f"{source['name']}_summary.csv")
                     report_path = os.path.join(self.config.storage['final_dir'], f"{source['name']}_report.md")

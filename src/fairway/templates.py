@@ -657,3 +657,258 @@ shell: ## Enter a shell inside the ecosystem
 clean: ## Clean logs and temp data
 	rm -rf logs/ .nextflow* work/
 '''
+
+CONFIG_TEMPLATE = """dataset_name: "{name}"
+engine: "{engine_type}"
+storage:
+  raw_dir: "data/raw"
+  intermediate_dir: "data/intermediate"
+  final_dir: "data/final"
+
+sources:
+  - name: "example_source"
+    path: "data/raw/example.csv"
+    format: "csv"
+    schema:
+      id: "BIGINT"
+      value: "DOUBLE"
+
+validations:
+  level1:
+    min_rows: 1
+
+enrichment:
+  geocode: false
+"""
+
+SPARK_YAML_TEMPLATE = """# Spark cluster configuration
+# Override these values for your HPC environment
+
+nodes: 2
+cpus_per_node: 32
+mem_per_node: "200G"
+
+# Slurm-specific
+account: "borzekowski"
+partition: "day"
+time: "24:00:00"
+
+# Spark dynamic allocation
+dynamic_allocation:
+  enabled: true
+  min_executors: 5
+  max_executors: 150
+  initial_executors: 15
+"""
+
+REQS_TEMPLATE = "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[{extra}]\n"
+
+TRANSFORM_TEMPLATE = """
+def example_transform(df):
+    \"\"\"
+    An example transformation function.
+    Args:
+        df: Input DataFrame (pandas or spark)
+    Returns:
+        Transformed DataFrame
+    \"\"\"
+    # Example logic
+    return df
+"""
+
+README_TEMPLATE = """# {name}
+
+Initialized by fairway on {timestamp}
+
+**Engine**: {engine}
+
+## Quick Start
+
+### 1. Generate Test Data
+
+```bash
+fairway generate-data --size small --partitioned
+```
+
+### 2. Generate Schema (optional)
+
+```bash
+fairway generate-schema data/raw/your_data.csv
+```
+
+### 3. Update Configuration
+
+Edit `config/fairway.yaml` to define your data sources, validations, and enrichments.
+
+### 4. Run the Pipeline
+
+**Local execution:**
+```bash
+make run
+```
+
+**Slurm cluster:**
+```bash
+make run-hpc
+```
+
+**Containerized execution:**
+```bash
+fairway run --config config/fairway.yaml --profile apptainer
+```
+*Note: This pulls the default container. To customize the environment, run `fairway eject`.*
+
+## Extending the Pipeline
+
+To add a post-processing step (e.g., reshaping), edit `main.nf`. For example:
+
+```groovy
+process RESHAPE {{
+    input:
+    path "data/final/*"
+ 
+    output:
+    path "data/reshaped/*"
+ 
+    script:
+    \"\"\"
+    python3 src/reshape.py ...
+    \"\"\"
+}}
+
+workflow {{
+    // ... existing ...
+    RESHAPE(run_fairway.out)
+}}
+```
+
+## Customization
+
+To customize the Apptainer container or Dockerfile:
+1. Run `fairway eject` to generate `Apptainer.def` and `Dockerfile`.
+2. Edit the generated files.
+3. Build locally (fairway will automatically favor local definitions).
+
+## Project Structure
+
+- `config/` - Pipeline configuration files
+- `data/raw/` - Input data files
+- `data/intermediate/` - Intermediate processing outputs
+- `data/final/` - Final processed data
+- `src/transformations/` - Custom transformation scripts
+- `docs/` - Project documentation
+- `logs/` - Execution logs
+- `Makefile` - Convenience commands
+
+## Documentation
+
+See the [fairway documentation](https://github.com/DISSC-yale/fairway) for more details.
+"""
+
+DOCS_TEMPLATE = """# Getting Started with {name}
+
+## Prerequisites
+
+- Python 3.9+
+- fairway installed (`pip install git+https://github.com/DISSC-yale/fairway.git`)
+
+## Generating Test Data
+
+Create sample data to test your pipeline:
+
+```bash
+# Small partitioned CSV dataset
+fairway generate-data --size small --partitioned
+
+# Large Parquet dataset
+fairway generate-data --size large --format parquet
+```
+
+## Schema Inference
+
+Auto-generate schema from your data:
+
+```bash
+# From a single file
+fairway generate-schema data/raw/example.csv
+
+# From a partitioned directory
+fairway generate-schema data/raw/partitioned_data/
+```
+
+## Configuration
+
+Your pipeline is configured in `config/fairway.yaml`:
+
+```yaml
+dataset_name: "{name}"
+engine: "{engine_type}"
+
+sources:
+  - name: "my_source"
+    path: "data/raw/my_data.csv"
+    format: "csv"
+    schema:
+      id: "int"
+      value: "double"
+
+validations:
+  level1:
+    min_rows: 100
+    check_column_count: true
+
+enrichment:
+  geocode: true
+```
+
+## Running Your Pipeline
+
+### Local (DuckDB)
+```bash
+make run
+```
+
+### Slurm Cluster (PySpark)
+```bash
+make run-hpc
+```
+
+### Custom Slurm Resources
+```bash
+fairway run --config config/fairway.yaml --slurm \\
+  --cpus 8 --mem 32G --time 04:00:00 --nodes 4
+```
+"""
+
+SBATCH_TEMPLATE = """#!/bin/bash
+#SBATCH --job-name=fairway_{job_name_suffix}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --mem={mem}
+#SBATCH --time={time}
+#SBATCH --account={account}
+#SBATCH --partition={partition}
+#SBATCH --output=logs/slurm/fairway_%j.log
+
+module load Nextflow
+# Pass the spark master if we have one
+SPARK_URL_ARG=""
+if [ ! -z "$SPARK_MASTER_URL" ]; then
+    SPARK_URL_ARG="--spark_master $SPARK_MASTER_URL"
+fi
+
+# Pass through Apptainer binds calculated by the CLI
+export APPTAINER_BIND="{apptainer_bind}"
+
+nextflow run main.nf -profile {profile} \\
+    --config {config} \\
+    --batch_size {batch_size} \\
+    --slurm_nodes {nodes} \\
+    --slurm_cpus_per_task {cpus} \\
+    --slurm_mem {mem} \\
+    --slurm_time {time} \\
+    --slurm_partition {partition} \\
+    --account {account} \\
+    $SPARK_URL_ARG
+"""
