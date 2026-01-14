@@ -551,6 +551,7 @@ nextflow.enable.dsl=2
 
 params.config = "config/fairway.yaml"
 params.batch_size = 30
+params.spark_master = null
 
 process run_fairway {
     publishDir "${params.outdir}", mode: 'copy'
@@ -562,8 +563,9 @@ process run_fairway {
     path "data/final/*"
 
     script:
+    def master_arg = params.spark_master ? "--spark_master ${params.spark_master}" : ""
     """
-    fairway run --config ${config_file}
+    fairway run --config ${config_file} ${master_arg}
     """
 }
 

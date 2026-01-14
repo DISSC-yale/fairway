@@ -529,6 +529,72 @@ def shell(config, image, bind):
     except FileNotFoundError:
         click.echo("Error: 'apptainer' command not found. Is Apptainer installed?", err=True)
 
+@main.command()
+@click.option('--user', default=None, help='Filter by user (default: current user).')
+@click.option('--job-id', help='Filter by job ID.')
+def status(user, job_id):
+    """Show the status of submitted Slurm jobs (wrapper around squeue)."""
+    # Check for active Spark cluster info
+    master_path = os.path.expanduser("~/spark_master_url.txt")
+    job_id_path = os.path.expanduser("~/cluster_job_id.txt")
+    
+    if os.path.exists(master_path) and os.path.exists(job_id_path):
+        with open(master_path, 'r') as f:
+            master_url = f.read().strip()
+        with open(job_id_path, 'r') as f:
+            cluster_job_id = f.read().strip()
+        
+        click.echo("Found active Spark cluster:")
+        click.echo(f"  Slurm Job ID: {cluster_job_id}")
+        click.echo(f"  Master URL:   {master_url}")
+        click.echo("")
+
+    cmd = ['squeue']
+    
+    if job_id:
+        cmd.extend(['--jobs', job_id])
+    else:
+        # Default to current user if no user specified
+        if not user:
+            import getpass
+            user = getpass.getuser()
+        cmd.extend(['--user', user])
+        
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError:
+        click.echo("Error: 'squeue' command not found. Are you on a system with Slurm?", err=True)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error checking status: {e}", err=True)
+
+
+@main.command()
+@click.argument('job_id', required=False)
+@click.option('--all', 'kill_all', is_flag=True, help='Cancel all your running jobs.')
+def kill(job_id, kill_all):
+    """Cancel a Slurm job (wrapper around scancel)."""
+    if kill_all:
+        if not click.confirm("Are you sure you want to cancel ALL your running jobs?"):
+            return
+        
+        import getpass
+        user = getpass.getuser()
+        cmd = ['scancel', '--user', user]
+        click.echo(f"Cancelling all jobs for user {user}...")
+        
+    elif job_id:
+        cmd = ['scancel', job_id]
+        click.echo(f"Cancelling job {job_id}...")
+    else:
+        raise click.ClickException("Must specify JOB_ID or --all.")
+
+    try:
+        subprocess.run(cmd, check=True)
+        click.echo("Done.")
+    except FileNotFoundError:
+        click.echo("Error: 'scancel' command not found. Are you on a system with Slurm?", err=True)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error cancelling job: {e}", err=True)
 
 if __name__ == '__main__':
     main()
