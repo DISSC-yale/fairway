@@ -91,28 +91,9 @@ def init(name, engine):
         click.echo(f"  Created directory: {d}")
 
     # Create config.yaml
-    config_content = f"""dataset_name: "{name}"
-engine: "{'pyspark' if engine == 'spark' else 'duckdb'}"
-storage:
-  raw_dir: "data/raw"
-  intermediate_dir: "data/intermediate"
-  final_dir: "data/final"
-
-sources:
-  - name: "example_source"
-    path: "data/raw/example.csv"
-    format: "csv"
-    schema:
-      id: "BIGINT"
-      value: "DOUBLE"
-
-validations:
-  level1:
-    min_rows: 1
-
-enrichment:
-  geocode: false
-"""
+    from .templates import FAIRWAY_YAML_TEMPLATE
+    engine_val = 'pyspark' if engine == 'spark' else 'duckdb'
+    config_content = FAIRWAY_YAML_TEMPLATE.format(name=name, engine=engine_val)
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
         f.write(config_content)
     click.echo("  Created file: config/fairway.yaml")
@@ -141,15 +122,14 @@ dynamic_allocation:
         f.write(spark_config_content)
     click.echo("  Created file: config/spark.yaml")
 
-    # Create requirements.txt
-    # Assuming installation from git source for now, as reflected in other parts of the CLI
-    reqs_content = f"git+https://github.com/DISSC-yale/fairway.git#egg=fairway[{'spark' if engine == 'spark' else 'duckdb'}]\n"
+    # Create requirements.txt from template
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, REQUIREMENTS_TEMPLATE, FAIRWAY_YAML_TEMPLATE
+    
     with open(os.path.join(name, 'requirements.txt'), 'w') as f:
-        f.write(reqs_content)
+        f.write(REQUIREMENTS_TEMPLATE)
     click.echo("  Created file: requirements.txt")
 
     # Write nextflow.config from template
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:
         f.write(NEXTFLOW_CONFIG)
     click.echo("  Created file: nextflow.config (customize profiles here)")
@@ -486,8 +466,9 @@ def generate_schema(file_path, output):
 @click.option('--account', default=None, help='Slurm account (overrides spark.yaml).')
 @click.option('--partition', default=None, help='Slurm partition (overrides spark.yaml).')
 @click.option('--batch-size', default=30, help='Max parallel jobs.')
+@click.option('--dev-path', default=None, help='Path to local fairway source code to bind mount for development (HPC/Container).')
 @click.option('--dry-run', is_flag=True, help='Generate script but do not submit.')
-def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size, dry_run):
+def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size, dev_path, dry_run):
     """Run the fairway ingestion pipeline."""
     import yaml
     
@@ -615,6 +596,7 @@ trap cleanup_spark EXIT
 {spark_cleanup}
 
 module load Nextflow
+module load Apptainer
 # Pass the spark master if we have one
 SPARK_URL_ARG=""
 if [ ! -z "$SPARK_MASTER_URL" ]; then
@@ -623,6 +605,13 @@ fi
 
 # Pass through Apptainer binds calculated by the CLI
 export APPTAINER_BIND="{os.environ.get('APPTAINER_BIND', '')}"
+
+# Check for local container image
+CONTAINER_ARG=""
+if [ -f "fairway.sif" ]; then
+    echo "Found local fairway.sif, using it..."
+    CONTAINER_ARG="--container $(pwd)/fairway.sif"
+fi
 
 echo "Starting Fairway Pipeline..."
 echo "Config: {config}"
@@ -638,7 +627,9 @@ nextflow run main.nf -profile {profile} \\
     --slurm_time {time} \\
     --slurm_partition {partition} \\
     --account {account} \\
-    $SPARK_URL_ARG
+    {f"--dev_path {dev_path} \\" if dev_path else ""}
+    $SPARK_URL_ARG \\
+    $CONTAINER_ARG
 
 echo "Fairway Pipeline Completed."
 """
@@ -668,8 +659,16 @@ echo "Fairway Pipeline Completed."
                 '--slurm_time', time,
                 '--slurm_partition', partition
             ]
+            if dev_path:
+                cmd.extend(['--dev_path', dev_path])
+
             if master_url:
                 cmd.extend(['--spark_master', master_url])
+            
+            # Check for local container
+            if os.path.exists("fairway.sif"):
+                click.echo(f"Found local fairway.sif, using it...")
+                cmd.extend(['--container', os.path.abspath("fairway.sif")])
 
             if nextflow_path:
                 cmd.insert(0, 'nextflow')

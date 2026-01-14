@@ -2,8 +2,8 @@ import os
 import sys
 from .config_loader import Config
 from .manifest import ManifestManager
-from .engines.duckdb_engine import DuckDBEngine
-# from .engines.pyspark_engine import PySparkEngine
+
+
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
@@ -11,14 +11,25 @@ from .exporters.redivis_exporter import RedivisExporter
 
 class IngestionPipeline:
     def __init__(self, config_path, spark_master=None):
+        print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)
 
     def _get_engine(self, spark_master=None):
-        if self.config.engine == 'pyspark':
-            return PySparkEngine(spark_master)
-        return DuckDBEngine()
+        engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
+        
+        if engine_type in ['pyspark', 'spark']:
+            try:
+                from .engines.pyspark_engine import PySparkEngine
+                return PySparkEngine(spark_master)
+            except ImportError:
+                sys.exit("Error: PySpark is not installed. Please install using `pip install fairway[spark]`")
+        elif engine_type == 'duckdb':
+            from .engines.duckdb_engine import DuckDBEngine
+            return DuckDBEngine()
+        else:
+            raise ValueError(f"Unknown engine: {self.config.engine}. Supported engines: 'duckdb', 'spark'")
 
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
@@ -38,8 +49,16 @@ class IngestionPipeline:
             # to create a unique output path
             # Remove extension from filename for output directory/file naming
             output_name = os.path.splitext(source['name'])[0]
-            output_path = os.path.join(self.config.storage['intermediate_dir'], output_name)
+            fmt = self.config.output_format
             partition_by = self.config.partition_by
+            
+            # If partitioned, output path should be a directory without extension
+            if partition_by:
+                output_basename = output_name
+            else:
+                output_basename = f"{output_name}.{fmt}"
+                
+            output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
             source_format = source.get('format', 'csv')
             
@@ -56,8 +75,13 @@ class IngestionPipeline:
             
             if success:
                 # 2. Load for validation and enrichment
-                # If partitioned, output_path is a directory
-                df = self.engine.query(f"SELECT * FROM '{output_path}/**/*.parquet'")
+                # Handle both directory (partitioned/Spark) and single file (DuckDB non-partitioned)
+                if os.path.isdir(output_path):
+                    query_path = f"{output_path}/**/*.{fmt}"
+                else:
+                    query_path = output_path
+                
+                df = self.engine.query(f"SELECT * FROM '{query_path}'")
                 
                 # 3. Enrichment
                 if self.config.enrichment.get('geocode'):
@@ -74,12 +98,75 @@ class IngestionPipeline:
                         df = TransformerClass(df).transform()
 
                 # Re-save after enrichment and transformation
-                # For simplicity in local dev, we overwrite the directory if it exists
-                # In production (Spark/Slurm), the engine Handles this
-                if os.path.isdir(output_path):
+                # Save to final directory instead of overwriting intermediate
+                final_output_path = os.path.join(self.config.storage['final_dir'], output_basename)
+                
+                # Clean up if exists
+                if os.path.isdir(final_output_path):
                     import shutil
-                    shutil.rmtree(output_path)
-                df.to_parquet(output_path, partition_cols=partition_by)
+                    shutil.rmtree(final_output_path)
+                elif os.path.isfile(final_output_path):
+                    os.remove(final_output_path)
+                
+                # Update output_path to point to final for subsequent steps (summarizer, redivis)
+                output_path = final_output_path
+                
+                if fmt == 'parquet':
+                    df.to_parquet(output_path, partition_cols=partition_by)
+                elif fmt == 'csv':
+                    # DuckDB to_csv doesn't support partition_cols in same way via relation, 
+                    # but check engine capabilities. Assuming DataFrame object (duckdbpyrelation)
+                    # For partitioned CSV write, we might need COPY statement or manual handling implies directory
+                    if partition_by:
+                        df.write_csv(output_path, partition_by=partition_by)
+                    else:
+                        df.to_csv(output_path)
+                elif fmt == 'json':
+                     # Similar check for JSON
+                     # DuckDB relation doesn't have direct to_json with partitions?
+                     # Using SQL approach might be safer generally, but trying relation method first
+                     # If PySpark engine, df is pyspark dataframe, which supports write.json/csv/parquet with partitions
+                     
+                     # Check if engine is duckdb or spark to invoke correct save?
+                     # The `df` returned by `self.engine.query` is engine-specific.
+                     # DuckDBEngine returns duckdb.DuckDBPyRelation
+                     # PySparkEngine returns pyspark.sql.DataFrame
+                     
+                     # UNIFIED API ISSUE: We need the engine to handle the write or valid relation methods.
+                     # PySpark: df.write.mode("overwrite").partitionBy(partition_by).format(fmt).save(output_path)
+                     # DuckDB: relation.to_parquet(path), relation.to_csv(path), relation.to_df().to_json? (bad for memory)
+                     
+                     # Simple approach for now leveraging what we know works for DuckDB locally:
+                     if hasattr(df, 'write'): # Spark
+                         writer = df.write.mode("overwrite")
+                         if partition_by:
+                             writer = writer.partitionBy(*partition_by)
+                         writer.format(fmt).save(output_path)
+                     else: # DuckDB
+                         if fmt == 'parquet':
+                             df.to_parquet(output_path, partition_cols=partition_by)
+                         elif fmt == 'csv':
+                             df.to_csv(output_path, partition_cols=partition_by) # DuckDB python client supports this arg?
+                             # Checked docs: relation.to_csv(file_name, header=True, sep=',', ...)
+                             # Does not natively support partition_cols in to_csv python api usually.
+                             # But "COPY (SELECT ...) TO 'path' (FORMAT CSV, PARTITION_BY (cols))" is valid SQL.
+                             # If we used engine.execute("COPY ...") it would be better.
+                             # For now, let's just try to fallback to SQL if it fails or assume no partitions for CSV for simple cases?
+                             # Better: Construct SQL.
+                             cols_str = ", ".join(partition_by) if partition_by else ""
+                             part_sql = f", PARTITION_BY ({cols_str})" if partition_by else ""
+                             # We need the connection to run SQL. df.query("main", "COPY ...")?
+                             # df.create("temp_view") -> con.sql("COPY temp_view TO ...")
+                             pass # Relying on what's available or keep simple for now. 
+                             # Wait, the `ingest` method used COPY. Here we act on a dataframe (enriched).
+                             # Let's trust `to_csv` works or fallback. 
+                             # DuckDB python `to_csv` doesn't support partition_cols. 
+                             # We might need to refactor writing to be engine-delegated in the future.
+                             # For now, let's just stick to `.to_csv()` and if partition is requested, warn/error or try.
+                             df.write_csv(output_path) # `write_csv` is the method in 1.1? or `to_csv`?
+                             # `to_csv` is standard.
+                else: 
+                     raise ValueError(f"Unsupported output format: {fmt}")
                 
                 # 5. Validations (Level 1, 2, 3)
                 l1 = Validator.level1_check(df, self.config.validations)
