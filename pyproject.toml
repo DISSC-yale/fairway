@@ -22,11 +22,13 @@ dependencies = [
     "fsspec",
     "mkdocs-material",
     "pandas",
+    "tabulate",
 ]
 
 [project.optional-dependencies]
 spark = [
-    "pyspark",
+    "pyspark>=4.1.1",
+    "pandas",
     "numpy",
     "pyarrow",
 ]
@@ -44,7 +46,7 @@ test-data-gen = [
     "numpy",
 ]
 all = [
-    "pyspark",
+    "pyspark>=4.1.1",
     "duckdb",
     "redivis",
     "numpy",

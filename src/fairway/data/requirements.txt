@@ -1,0 +1,10 @@
+# Add your project-specific dependencies here
+# unique to your custom processing/transformations.
+#
+# Core Fairway dependencies (Spark, Nextflow, etc.) are handled 
+# by the container and do not need to be listed here.
+#
+# Example:
+# pandas>=2.0.0
+# requests
+# numpy

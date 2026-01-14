@@ -1,18 +1,8 @@
-try:
-    from importlib import resources
-except ImportError:
-    import importlib_resources as resources
+import importlib.resources
+from . import data
 
 def _read_data_file(filename):
-    try:
-        # Python 3.9+
-        return resources.files('fairway.data').joinpath(filename).read_text()
-    except (AttributeError, TypeError):
-        # Python 3.8 fallback or older importlib
-        with resources.path('fairway.data', filename) as p:
-            with open(p, 'r') as f:
-                return f.read()
-
+    return importlib.resources.read_text(data, filename)
 
 
 NEXTFLOW_CONFIG = _read_data_file('nextflow.config')
@@ -22,9 +12,20 @@ MAIN_NF = _read_data_file('main.nf')
 
 APPTAINER_DEF = _read_data_file('Apptainer.def')
 
-DOCKERFILE_TEMPLATE = _read_data_file('Dockerfile')
+DOCKERFILE_TEMPLATE = """FROM python:3.10-slim-bookworm
+
+RUN apt-get update && apt-get install -y git openjdk-17-jre-headless
+RUN pip install --upgrade pip
+RUN pip install git+https://github.com/DISSC-yale/fairway.git
+
+ENTRYPOINT ["fairway"]
+"""
 
 MAKEFILE_TEMPLATE = _read_data_file('Makefile')
+
+REQUIREMENTS_TEMPLATE = _read_data_file('requirements.txt')
+
+FAIRWAY_YAML_TEMPLATE = _read_data_file('fairway.yaml.tpl')
 
 # Script to be placed in scripts/fairway-hpc.sh during init
 FAIRWAY_HPC_SH_TEMPLATE = r"""#!/bin/bash
@@ -51,6 +52,7 @@ set -e
 MODULES_BASE=(
     "Nextflow/25.04.6"
     "Python/3.10.8-GCCcore-12.2.0"
+    "Apptainer/1.1.8"
 )
 
 MODULES_SPARK=(

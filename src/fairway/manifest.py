@@ -18,11 +18,28 @@ class ManifestManager:
         with open(self.manifest_path, 'w') as f:
             json.dump(self.manifest, f, indent=2)
 
-    def get_file_hash(self, file_path):
+    def get_file_hash(self, path):
         sha256_hash = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
+        
+        if os.path.isdir(path):
+            # For directories, hash all files in consistent order
+            for root, dirs, files in os.walk(path):
+                # Sort to ensure consistent order
+                dirs.sort() 
+                for file in sorted(files):
+                    file_path = os.path.join(root, file)
+                    # Update with relative path to capture structure changes
+                    rel_path = os.path.relpath(file_path, path)
+                    sha256_hash.update(rel_path.encode('utf-8'))
+                    
+                    with open(file_path, "rb") as f:
+                        for byte_block in iter(lambda: f.read(4096), b""):
+                            sha256_hash.update(byte_block)
+        else:
+            with open(path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+                    
         return sha256_hash.hexdigest()
 
     def should_process(self, file_path):

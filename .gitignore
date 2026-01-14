@@ -10,3 +10,4 @@ htmlcov/
 dist/
 build/
 .pytest_cache/
+mock_apptainer

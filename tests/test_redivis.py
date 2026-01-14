@@ -3,8 +3,8 @@ from unittest.mock import MagicMock, patch
 import os
 import sys
 
-# Add src to path
-sys.path.append(os.path.abspath('src'))
+# Add src to path if needed (though pytest adds it automatically if layout is standard)
+# sys.path.append(os.path.abspath('src')) - relying on installed package or pytest path
 
 # Mock redivis module before importing exporter
 import sys
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 mock_redivis = MagicMock()
 sys.modules['redivis'] = mock_redivis
 
-from exporters.redivis_exporter import RedivisExporter
+from fairway.exporters.redivis_exporter import RedivisExporter
 
 class TestRedivisExporter(unittest.TestCase):
     def setUp(self):
