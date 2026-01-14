@@ -47,11 +47,18 @@ class IngestionPipeline:
             
             # Use source name (which is the basename of the file in expanded sources)
             # to create a unique output path
-            # Remove extension from filename for output directory/file naming but add .parquet
+            # Remove extension from filename for output directory/file naming
             output_name = os.path.splitext(source['name'])[0]
             fmt = self.config.output_format
-            output_path = os.path.join(self.config.storage['intermediate_dir'], f"{output_name}.{fmt}")
             partition_by = self.config.partition_by
+            
+            # If partitioned, output path should be a directory without extension
+            if partition_by:
+                output_basename = output_name
+            else:
+                output_basename = f"{output_name}.{fmt}"
+                
+            output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
             source_format = source.get('format', 'csv')
             
@@ -91,13 +98,18 @@ class IngestionPipeline:
                         df = TransformerClass(df).transform()
 
                 # Re-save after enrichment and transformation
-                # For simplicity in local dev, we overwrite the directory if it exists
-                # In production (Spark/Slurm), the engine Handles this
-                if os.path.isdir(output_path):
+                # Save to final directory instead of overwriting intermediate
+                final_output_path = os.path.join(self.config.storage['final_dir'], output_basename)
+                
+                # Clean up if exists
+                if os.path.isdir(final_output_path):
                     import shutil
-                    shutil.rmtree(output_path)
-                elif os.path.isfile(output_path):
-                    os.remove(output_path)
+                    shutil.rmtree(final_output_path)
+                elif os.path.isfile(final_output_path):
+                    os.remove(final_output_path)
+                
+                # Update output_path to point to final for subsequent steps (summarizer, redivis)
+                output_path = final_output_path
                 
                 if fmt == 'parquet':
                     df.to_parquet(output_path, partition_cols=partition_by)

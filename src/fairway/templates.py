@@ -25,6 +25,8 @@ MAKEFILE_TEMPLATE = _read_data_file('Makefile')
 
 REQUIREMENTS_TEMPLATE = _read_data_file('requirements.txt')
 
+FAIRWAY_YAML_TEMPLATE = _read_data_file('fairway.yaml.tpl')
+
 # Script to be placed in scripts/fairway-hpc.sh during init
 FAIRWAY_HPC_SH_TEMPLATE = r"""#!/bin/bash
 # =============================================================================
