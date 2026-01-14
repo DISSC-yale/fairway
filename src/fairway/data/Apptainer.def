@@ -23,13 +23,8 @@ From: python:3.10-slim-bookworm
     curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" | tar -xz -C /opt
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
     
-    # Install project dependencies
-    if [ -f /opt/requirements.txt ]; then
-        pip install --no-cache-dir -r /opt/requirements.txt
-    else
-        # Fallback: install from git (specific branch for testing)
-        pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git@query-engine-refactor#egg=fairway[all]"
-    fi
+
+    pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
 
 %files
     requirements.txt /opt/requirements.txt

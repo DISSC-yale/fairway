@@ -614,6 +614,7 @@ trap cleanup_spark EXIT
 {spark_cleanup}
 
 module load Nextflow
+module load Apptainer
 # Pass the spark master if we have one
 SPARK_URL_ARG=""
 if [ ! -z "$SPARK_MASTER_URL" ]; then
@@ -622,6 +623,13 @@ fi
 
 # Pass through Apptainer binds calculated by the CLI
 export APPTAINER_BIND="{os.environ.get('APPTAINER_BIND', '')}"
+
+# Check for local container image
+CONTAINER_ARG=""
+if [ -f "fairway.sif" ]; then
+    echo "Found local fairway.sif, using it..."
+    CONTAINER_ARG="--container $(pwd)/fairway.sif"
+fi
 
 echo "Starting Fairway Pipeline..."
 echo "Config: {config}"
@@ -637,7 +645,8 @@ nextflow run main.nf -profile {profile} \\
     --slurm_time {time} \\
     --slurm_partition {partition} \\
     --account {account} \\
-    $SPARK_URL_ARG
+    $SPARK_URL_ARG \\
+    $CONTAINER_ARG
 
 echo "Fairway Pipeline Completed."
 """
@@ -669,6 +678,11 @@ echo "Fairway Pipeline Completed."
             ]
             if master_url:
                 cmd.extend(['--spark_master', master_url])
+            
+            # Check for local container
+            if os.path.exists("fairway.sif"):
+                click.echo(f"Found local fairway.sif, using it...")
+                cmd.extend(['--container', os.path.abspath("fairway.sif")])
 
             if nextflow_path:
                 cmd.insert(0, 'nextflow')

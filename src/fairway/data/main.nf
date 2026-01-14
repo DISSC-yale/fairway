@@ -2,7 +2,7 @@ nextflow.enable.dsl=2
 
 params.config = "config/example_config.yaml"
 params.outdir = "data"
-params.container = "ingestion_framework:latest"
+params.container = "docker://ghcr.io/dissc-yale/fairway:latest"
 params.spark_master = null
 params.batch_size = 30
 params.slurm_nodes = 1

@@ -1,16 +1,18 @@
 try:
     import pyspark.sql.functions as F
     from pyspark.sql import SparkSession
-except ImportError:
+except ImportError as e:
     SparkSession = None
     F = None
+    _spark_import_error = e
 
 import random
 
 class PySparkEngine:
     def __init__(self, spark_master=None):
         if SparkSession is None:
-            raise ImportError("PySpark is not installed. Please install fairway[spark] or fairway[all].")
+            additional_info = f" Original error: {_spark_import_error}" if '_spark_import_error' in globals() else ""
+            raise ImportError(f"PySpark is not installed or failed to load. Please install fairway[spark] or fairway[all].{additional_info}")
         builder = SparkSession.builder.appName("fairway-ingestion")
         if spark_master:
             builder = builder.master(spark_master)

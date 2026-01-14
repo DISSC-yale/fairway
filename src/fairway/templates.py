@@ -50,6 +50,7 @@ set -e
 MODULES_BASE=(
     "Nextflow/25.04.6"
     "Python/3.10.8-GCCcore-12.2.0"
+    "Apptainer/1.1.8"
 )
 
 MODULES_SPARK=(
