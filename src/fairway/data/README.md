@@ -33,6 +33,19 @@ make run
 ```bash
 make run-hpc
 ```
+*Note: This automatically detects if you are using Spark or DuckDB. If Spark, it handles cluster provisioning for you.*
+
+### 5. Manual Spark Management (Debugging)
+
+If you need to manually manage the Spark cluster on HPC:
+
+```bash
+# Start cluster
+fairway spark start --slurm-nodes 2
+
+# Stop cluster
+fairway spark stop
+```
 
 **Containerized execution:**
 ```bash
