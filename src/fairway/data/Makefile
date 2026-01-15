@@ -10,7 +10,12 @@ run: ## Run the pipeline locally (Orchestrator)
 
 # Run on HPC (wraps sbatch submission via Nextflow)
 run-hpc: ## Run on Slurm with Spark (Orchestrator)
-	nextflow run main.nf -profile slurm
+	@echo "Starting Spark Cluster..."
+	@fairway spark start
+	@export SPARK_MASTER=$$(cat ~/spark_master_url.txt); \
+	echo "Spark Master: $$SPARK_MASTER"; \
+	nextflow run main.nf -profile slurm --spark_master $$SPARK_MASTER || (fairway spark stop && exit 1)
+	@fairway spark stop
 
 # Run worker manually (for debugging)
 run-worker: ## Run the ingestion worker directly (no Nextflow)

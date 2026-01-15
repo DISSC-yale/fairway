@@ -264,26 +264,67 @@ def generate_schema(file_path, output):
     except Exception as e:
         click.echo(f"Error inferring schema: {e}", err=True)
 
+@main.group()
+def spark():
+    """Manage Spark clusters."""
+    pass
+
+@spark.command()
+@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of worker nodes.')
+@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per node.')
+@click.option('--slurm-mem', 'mem', default=None, help='Memory per node.')
+@click.option('--slurm-time', 'time', default=None, help='Time limit.')
+@click.option('--account', default=None, help='Slurm account.')
+@click.option('--partition', default=None, help='Slurm partition.')
+def start(nodes, cpus, mem, time, account, partition):
+    """Start a Spark cluster on Slurm."""
+    import yaml
+    
+    # Load defaults from spark.yaml
+    spark_yaml_path = 'config/spark.yaml'
+    spark_defaults = {}
+    if os.path.exists(spark_yaml_path):
+        with open(spark_yaml_path, 'r') as f:
+            spark_defaults = yaml.safe_load(f) or {}
+
+    # effective resources
+    nodes = nodes or spark_defaults.get('nodes', 2)
+    cpus = cpus or spark_defaults.get('cpus_per_node', 32)
+    mem = mem or spark_defaults.get('mem_per_node', '200G')
+    account = account or spark_defaults.get('account', 'borzekowski')
+    partition = partition or spark_defaults.get('partition', 'day')
+    time = time or spark_defaults.get('time', '24:00:00')
+
+    from .engines.slurm_cluster import SlurmSparkManager
+    spark_cfg = {
+        'slurm_nodes': nodes,
+        'slurm_cpus_per_node': cpus,
+        'slurm_mem_per_node': mem,
+        'slurm_account': account,
+        'slurm_time': time,
+        'slurm_partition': partition
+    }
+    
+    spark_manager = SlurmSparkManager(spark_cfg)
+    spark_master = spark_manager.start_cluster()
+    click.echo(f"Spark cluster started. Master URL: {spark_master}")
+
+@spark.command()
+def stop():
+    """Stop the running Spark cluster."""
+    from .engines.slurm_cluster import SlurmSparkManager
+    spark_manager = SlurmSparkManager({})
+    spark_manager.stop_cluster()
+
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
-@click.option('--with-spark', is_flag=True, help='Provision an ephemeral Spark-on-Slurm cluster before running.')
-@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='[Spark] Number of worker nodes.')
-@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='[Spark] CPUs per node.')
-@click.option('--slurm-mem', 'mem', default=None, help='[Spark] Memory per node.')
-@click.option('--slurm-time', 'time', default=None, help='[Spark] Time limit.')
-@click.option('--account', default=None, help='[Spark] Slurm account.')
-@click.option('--partition', default=None, help='[Spark] Slurm partition.')
-def run(config, spark_master, with_spark, nodes, cpus, mem, time, account, partition):
+def run(config, spark_master):
     """Run the ingestion pipeline (Worker Mode).
     
     This command executes the pipeline directly on the current machine.
-    It does NOT launch Nextflow or submit Slurm jobs for the pipeline itself.
-    
-    If --with-spark is specified, it will provision an ephemeral Spark cluster
-    using Slurm before execution.
+    It does NOT launch Nextflow or submit Slurm jobs.
     """
-    import yaml
     from .config_loader import Config
     from .pipeline import IngestionPipeline
     
@@ -294,58 +335,10 @@ def run(config, spark_master, with_spark, nodes, cpus, mem, time, account, parti
 
     cfg = Config(config)
     
-    # Spark Setup
-    spark_manager = None
-    
-    # Determine if we should start a cluster
-    # 1. User flagged --with-spark
-    # 2. Config engine is spark and we are in a Slurm environment (implicit)
-    #    But usually we want explicit opt-in for cluster creation to avoid accidents.
-    #    Let's stick to explicit --with-spark OR if config suggests it? 
-    #    For now, stick to flags to be safe.
-    
-    if with_spark:
-        # Load defaults from spark.yaml
-        spark_yaml_path = 'config/spark.yaml'
-        spark_defaults = {}
-        if os.path.exists(spark_yaml_path):
-            with open(spark_yaml_path, 'r') as f:
-                spark_defaults = yaml.safe_load(f) or {}
-
-        # effective resources
-        nodes = nodes or spark_defaults.get('nodes', 2)
-        cpus = cpus or spark_defaults.get('cpus_per_node', 32)
-        mem = mem or spark_defaults.get('mem_per_node', '200G')
-        account = account or spark_defaults.get('account', 'borzekowski')
-        partition = partition or spark_defaults.get('partition', 'day')
-        time = time or spark_defaults.get('time', '24:00:00')
-
-        from .engines.slurm_cluster import SlurmSparkManager
-        spark_cfg = {
-            'slurm_nodes': nodes,
-            'slurm_cpus_per_node': cpus,
-            'slurm_mem_per_node': mem,
-            'slurm_account': account,
-            'slurm_time': time,
-            'slurm_partition': partition
-        }
-        
-        click.echo("Provisioning Spark cluster via Slurm...")
-        spark_manager = SlurmSparkManager(spark_cfg)
-        spark_master = spark_manager.start_cluster()
-        click.echo(f"Spark cluster started at: {spark_master}")
-
-    try:
-        # Execute Pipeline
-        click.echo(f"Starting pipeline execution using config: {config}")
-        pipeline = IngestionPipeline(config, spark_master=spark_master)
-        pipeline.run()
-        click.echo("Pipeline execution completed successfully.")
-        
-    finally:
-        if spark_manager:
-            click.echo("Tearing down Spark cluster...")
-            spark_manager.stop_cluster()
+    click.echo(f"Starting pipeline execution using config: {config}")
+    pipeline = IngestionPipeline(config, spark_master=spark_master)
+    pipeline.run()
+    click.echo("Pipeline execution completed successfully.")
 
 @main.command()
 def eject():
