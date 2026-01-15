@@ -40,11 +40,11 @@ PROFILES := standard
 # Internal run target (wraps nextflow)
 # Internal run target (wraps nextflow)
 run-internal: bootstrap
-	@# Attempt module load if available
-	-@command -v module >/dev/null 2>&1 && module load Nextflow 2>/dev/null || true
-	@# Determine binary to use
-	$(eval NXF_CMD := $(shell if [ -x "./nextflow" ]; then echo "./nextflow"; else echo "nextflow"; fi))
-	$(NXF_CMD) run main.nf -profile $(PROFILES) -resume
+	@# Attempt module load if available and run
+	@if command -v module >/dev/null 2>&1; then module load Nextflow 2>/dev/null || true; fi; \
+	NXF_CMD=$$(if [ -x "./nextflow" ]; then echo "./nextflow"; else echo "nextflow"; fi); \
+	CONTAINER_ARG=$$(if [ -f "$$(pwd)/fairway.sif" ]; then echo "--container_image $$(pwd)/fairway.sif"; else echo ""; fi); \
+	$$NXF_CMD run main.nf -profile $(PROFILES) -resume $$CONTAINER_ARG
 
 # Run locally (Interactive)
 run: ## Run the pipeline locally

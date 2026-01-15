@@ -29,8 +29,14 @@ echo "Using Nextflow: $NXF_CMD"
 echo "Apptainer Mode: $HAS_APPTAINER"
 
 # 3. Run Pipeline
+CONTAINER_ARG=""
+if [ -f "fairway.sif" ]; then
+    echo "Found local fairway.sif, using it."
+    CONTAINER_ARG="--container_image $(pwd)/fairway.sif"
+fi
+
 if [ "$HAS_APPTAINER" = "yes" ]; then
-    $NXF_CMD run main.nf -profile slurm,apptainer -resume
+    $NXF_CMD run main.nf -profile slurm,apptainer -resume $CONTAINER_ARG
 else
     $NXF_CMD run main.nf -profile slurm -resume
 fi
