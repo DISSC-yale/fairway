@@ -12,6 +12,16 @@ params.slurm_time = "24:00:00"
 params.slurm_partition = "day"
 params.account = "borzekowski"
 
+import org.yaml.snakeyaml.Yaml
+
+def configPath = params.config
+def configFile = new File(configPath)
+def appConfig = new Yaml().load(configFile.text)
+
+// Default to 'data/intermediate' and 'data/final' if not specified, but prefer config
+def intermediateDir = appConfig.storage?.intermediate_dir ?: 'data/intermediate'
+def finalDir = appConfig.storage?.final_dir ?: 'data/final'
+
 process RUN_INGESTION {
     maxForks params.batch_size
     tag "Ingesting ${params.config}"
@@ -23,8 +33,8 @@ process RUN_INGESTION {
     path config_file
 
     output:
-    path "intermediate/*"
-    path "final/*"
+    path "${intermediateDir}/*"
+    path "${finalDir}/*"
     path "fmanifest.json"
 
     script:

@@ -553,6 +553,16 @@ params.config = "config/fairway.yaml"
 params.batch_size = 30
 params.spark_master = null
 
+import org.yaml.snakeyaml.Yaml
+
+def configPath = params.config
+def configFile = new File(configPath)
+def appConfig = new Yaml().load(configFile.text)
+
+// Default to 'data/intermediate' and 'data/final' if not specified, but prefer config
+def intermediateDir = appConfig.storage?.intermediate_dir ?: 'data/intermediate'
+def finalDir = appConfig.storage?.final_dir ?: 'data/final'
+
 process run_fairway {
     publishDir "${params.outdir}", mode: 'copy'
     
@@ -560,7 +570,8 @@ process run_fairway {
     path config_file
 
     output:
-    path "data/final/*"
+    path "${intermediateDir}/*"
+    path "${finalDir}/*"
 
     script:
     def master_arg = params.spark_master ? "--spark_master ${params.spark_master}" : ""

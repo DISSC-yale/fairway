@@ -145,6 +145,7 @@ class IngestionPipeline:
                     errors = l1['errors'] + l2['errors']
                     print(f"Validations failed for {source['name']}: {errors}")
                     self.manifest.update_manifest(input_path, status="failed", metadata={"errors": errors})
+                    raise Exception(f"Validations failed for {source['name']}. Errors: {errors}")
 
 if __name__ == "__main__":
     import argparse
