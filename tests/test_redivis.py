@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 mock_redivis = MagicMock()
 sys.modules['redivis'] = mock_redivis
 
-from exporters.redivis_exporter import RedivisExporter
+from fairway.exporters.redivis_exporter import RedivisExporter
 
 class TestRedivisExporter(unittest.TestCase):
     def setUp(self):
