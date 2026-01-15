@@ -11,32 +11,9 @@
 # This script is submitted to Slurm to run the Nextflow orchestrator on a
 # compute node (preventing login node usage for long-running processes).
 
-HAS_APPTAINER="$1"
-
-# 1. Load Nextflow (Module check)
-if command -v module >/dev/null 2>&1; then
-    module load Nextflow 2>/dev/null || true
-fi
-
-# 2. Determine Nextflow binary
-if [ -x "./nextflow" ]; then
-    export NXF_CMD="./nextflow"
-else
-    export NXF_CMD="nextflow"
-fi
-
-echo "Using Nextflow: $NXF_CMD"
-echo "Apptainer Mode: $HAS_APPTAINER"
-
-# 3. Run Pipeline
-CONTAINER_ARG=""
-if [ -f "fairway.sif" ]; then
-    echo "Found local fairway.sif, using it."
-    CONTAINER_ARG="--container_image $(pwd)/fairway.sif"
-fi
-
+# 3. Run Pipeline via Shared Script
 if [ "$HAS_APPTAINER" = "yes" ]; then
-    $NXF_CMD run main.nf -profile slurm,apptainer -resume $CONTAINER_ARG
+    ./scripts/run_pipeline.sh -profile slurm,apptainer -resume
 else
-    $NXF_CMD run main.nf -profile slurm -resume
+    ./scripts/run_pipeline.sh -profile slurm -resume
 fi

@@ -9,7 +9,14 @@ Initialized by fairway on {timestamp}
 > **Note:** If you are using a virtual environment, ensure it is activated (`source .venv/bin/activate`) before running commands.
 
 
-### 1. Generate Test Data
+### 1. Environment Setup (HPC)
+
+If running on an HPC cluster, load the required modules easily:
+```bash
+source scripts/fairway-hpc.sh setup
+```
+
+### 2. Generate Test Data
 
 ```bash
 fairway generate-data --size small --partitioned

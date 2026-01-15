@@ -1,11 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# fairway-hpc.sh - HPC Module Management and Job Submission for Fairway
+# fairway-hpc.sh - User Environment Setup Helper
 # =============================================================================
 # 
-# This script helps manage module loading and job submission for Fairway
-# on HPC clusters running Slurm. Supports both module-based and Apptainer
-# container-based execution.
+# PURPOSE: This is a USER-FACING utility to set up your shell environment
+# on HPC clusters (like Yale Grace).
+#
+# USE THIS SCRIPT TO:
+# - Load necessary modules (Python, Nextflow, Spark) via 'setup' commands.
+#
+# DO NOT confuse this with 'scripts/run_pipeline.sh', which is the internal
+# runner used by the system.
 #
 # Usage:
 #   source fairway-hpc.sh setup           # Load required modules
@@ -38,6 +43,7 @@ CONTAINER_LOCAL="fairway.sif"
 MODULES_BASE=(
     "Nextflow/25.04.6"
     "Python/3.10.8-GCCcore-12.2.0"
+    "Apptainer/1.1.8"
 )
 
 MODULES_SPARK=(

@@ -7,6 +7,10 @@ This project was initialized with the **{engine_type}** engine.
 *   `config/`: Configuration files (datasets, checks, spark resources)
 *   `data/`: Data storage (raw, intermediate, final)
 *   `src/transformations/`: Custom Python transformation logic
+*   `scripts/`: Helper scripts for execution
+    *   `fairway-hpc.sh`: **User Utility** - Use this to setup your environment (load modules).
+    *   `run_pipeline.sh`: **Internal Runner** - Used by Makefile/Driver to launch Nextflow. Do not run directly.
+    *   `driver.sh`: Slurm batch script for submitting the pipeline.
 *   `logs/`: Execution logs
 
 ## Environment Setup
