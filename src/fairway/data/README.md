@@ -32,11 +32,17 @@ Edit `config/fairway.yaml` to define your data sources, validations, and enrichm
 make run
 ```
 
-**Slurm cluster:**
+**Slurm cluster (Interactive):**
 ```bash
 make run-hpc
 ```
-*Note: This automatically detects if you are using Spark or DuckDB. If Spark, it handles cluster provisioning for you.*
+*Runs Nextflow on the login node, submitting tasks to Slurm.*
+
+**Slurm cluster (Driver Job - Recommended):**
+```bash
+make submit-hpc
+```
+*Submits Nextflow itself as a job ("Fire-and-Forget").*
 
 ### 5. Manual Spark Management (Debugging)
 

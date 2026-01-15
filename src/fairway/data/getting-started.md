@@ -24,14 +24,17 @@ source .venv/bin/activate
 Use the Makefile shortcuts:
 
 *   `make run`: Run locally (validation + ingestion)
-*   `make run-hpc`: Submit to Slurm (Auto-detects Engine)
+*   `make run-hpc`: Run on Login Node (Interactive)
+*   `make submit-hpc`: Submit Driver Job (Fire-and-Forget)
 
 ## HPC vs Local Execution
 
 - **Local (`make run`)**: Runs everything on the current machine. Great for small data (DuckDB) or testing.
-- **HPC (`make run-hpc`)**:
-    - **DuckDB**: Submits a single Slurm job.
-    - **Spark**: Automatically provisions an ephemeral Spark cluster, submits the job, and tears it down.
+- **HPC Interactive (`make run-hpc`)**:
+    - Runs Nextflow on the login node. Output streams to your terminal.
+- **HPC Driver Job (`make submit-hpc`)**:
+    - Submits Nextflow itself as a job. Logs are written to `logs/driver_*.log`.
+    - Best for long-running pipelines.
 
 ## Configuration
 

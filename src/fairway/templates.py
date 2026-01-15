@@ -2,6 +2,11 @@
 
 These are loaded from src/fairway/data/ to ensure they're available
 when fairway is installed via pip.
+
+Note on Templates Policy:
+All templates MUST be stored as static files in `src/fairway/data/` and loaded
+via `_read_data_file`. This file acts as a loader. Do not hardcode large
+templates as strings in this file.
 """
 
 import sys
@@ -37,5 +42,6 @@ CONFIG_TEMPLATE = _read_data_file('fairway.yaml')
 SPARK_YAML_TEMPLATE = _read_data_file('spark.yaml')
 
 TRANSFORM_TEMPLATE = _read_data_file('example_transform.py')
+DRIVER_TEMPLATE = _read_data_file('driver.sh')
 README_TEMPLATE = _read_data_file('README.md')
 DOCS_TEMPLATE = _read_data_file('getting-started.md')

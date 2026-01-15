@@ -80,6 +80,7 @@ def init(name, engine):
         'data/final',
         'src/transformations',
         'docs',
+        'scripts',
         'logs/slurm',
         'logs/nextflow'
     ]
@@ -140,6 +141,18 @@ def init(name, engine):
     with open(os.path.join(name, 'README.md'), 'w') as f:
         f.write(readme_content)
     click.echo("  Created file: README.md")
+
+    # Create scripts/driver.sh and scripts/fairway-hpc.sh
+    from .templates import DRIVER_TEMPLATE, HPC_SCRIPT
+    with open(os.path.join(name, 'scripts', 'driver.sh'), 'w') as f:
+        f.write(DRIVER_TEMPLATE)
+    os.chmod(os.path.join(name, 'scripts', 'driver.sh'), 0o755)
+    click.echo("  Created file: scripts/driver.sh")
+
+    with open(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 'w') as f:
+        f.write(HPC_SCRIPT)
+    os.chmod(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 0o755)
+    click.echo("  Created file: scripts/fairway-hpc.sh")
 
     # Create docs/getting-started.md
     docs_content = DOCS_TEMPLATE.format(

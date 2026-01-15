@@ -69,6 +69,15 @@ fairway run --config config/my_config.yaml --profile slurm --slurm --account my_
 ```
 *Note: The `--slurm` flag submits a controller job. The `--profile slurm` tells Nextflow/Fairway to use Slurm executors.*
 
+**Using the Makefile (Recommended)**
+```bash
+# Interactive (Nextflow on login node)
+make run-hpc
+
+# Driver Job (Nextflow on compute node)
+make submit-hpc
+```
+
 ## Documentation
 
 For comprehensive guides and API details, please refer to the documentation in the `docs/` directory:
