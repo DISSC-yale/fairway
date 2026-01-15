@@ -6,6 +6,9 @@ Initialized by fairway on {timestamp}
 
 ## Quick Start
 
+> **Note:** If you are using a virtual environment, ensure it is activated (`source .venv/bin/activate`) before running commands.
+
+
 ### 1. Generate Test Data
 
 ```bash

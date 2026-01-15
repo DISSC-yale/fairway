@@ -27,7 +27,7 @@ sources:
     path: "data/raw/sales_partitioned"
     
     # regex pattern to extract metadata from filenames
-    # naming_pattern: "sales_(?P<year>\\d{4})_(?P<month>\\d{2}).csv"
+    # naming_pattern: "sales_(?P<year>\\d{{4}})_(?P<month>\\d{{2}}).csv"
     
     # Input format: 'csv', 'json', 'parquet'
     format: "csv"

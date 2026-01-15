@@ -9,6 +9,16 @@ This project was initialized with the **{engine_type}** engine.
 *   `src/transformations/`: Custom Python transformation logic
 *   `logs/`: Execution logs
 
+## Environment Setup
+
+If you installed Fairway in a virtual environment, ensure it is active before running commands:
+
+```bash
+# Example
+source .venv/bin/activate
+```
+
+
 ## Running the Pipeline
 
 Use the Makefile shortcuts:

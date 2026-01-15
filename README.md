@@ -26,6 +26,9 @@ To install Fairway, ensure you have Python 3.10+ installed.
 ### 1. Initialize a Project
 Create a new Fairway project with the required directory structure:
 
+> **Note:** If you are using a virtual environment, ensure it is activated first.
+
+
 ```bash
 fairway init my_new_project
 cd my_new_project
