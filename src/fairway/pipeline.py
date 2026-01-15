@@ -138,7 +138,7 @@ class IngestionPipeline:
                                 schema=source.get('schema')
                             )
                             # Sync dataset level metadata if available
-                            exporter.update_dataset_metadata(description=f"Frolf dataset: {self.config.dataset_name}")
+                            exporter.update_dataset_metadata(description=f"Dataset: {self.config.dataset_name}")
                         except Exception as e:
                             print(f"Redivis export failed for {source['name']}: {e}")
                 else:
