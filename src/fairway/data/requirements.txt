@@ -1,1 +1,0 @@
-git+https://github.com/DISSC-yale/fairway.git#egg=fairway[{extra}]

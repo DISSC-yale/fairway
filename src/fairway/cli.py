@@ -90,7 +90,7 @@ def init(name, engine):
 
     # Create config.yaml
     engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, REQS_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
     config_content = CONFIG_TEMPLATE.format(name=name, engine_type=engine_type)
     
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
@@ -108,12 +108,7 @@ def init(name, engine):
         f.write(SPARK_YAML_TEMPLATE)
     click.echo("  Created file: config/spark.yaml")
 
-    # Create requirements.txt
-    extra = 'spark' if engine == 'spark' else 'duckdb'
-    reqs_content = REQS_TEMPLATE.format(extra=extra)
-    with open(os.path.join(name, 'requirements.txt'), 'w') as f:
-        f.write(reqs_content)
-    click.echo("  Created file: requirements.txt")
+
 
     # Write nextflow.config from template
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:

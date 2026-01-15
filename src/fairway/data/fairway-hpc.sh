@@ -91,8 +91,7 @@ load_modules() {
     echo "Python: $(which python)"
     echo ""
     echo "To install fairway in your environment:"
-    echo "  pip install --user -r requirements.txt"
-    echo "  # Or manually: pip install --user git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
+    echo "  pip install --user git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
 }
 
 load_spark_modules() {

@@ -35,7 +35,7 @@ MAIN_NF = _read_data_file('main.nf')
 MAKEFILE_TEMPLATE = _read_data_file('Makefile')
 CONFIG_TEMPLATE = _read_data_file('fairway.yaml')
 SPARK_YAML_TEMPLATE = _read_data_file('spark.yaml')
-REQS_TEMPLATE = _read_data_file('requirements.txt')
+
 TRANSFORM_TEMPLATE = _read_data_file('example_transform.py')
 README_TEMPLATE = _read_data_file('README.md')
 DOCS_TEMPLATE = _read_data_file('getting-started.md')

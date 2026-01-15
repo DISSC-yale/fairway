@@ -7,7 +7,8 @@ From: python:3.10-slim-bookworm
     Description Fairway - Portable Data Ingestion Framework
 
 %files
-    requirements.txt /opt/requirements.txt
+    # No external files needed currently
+
 
 %post
     # Fail fast on any error
