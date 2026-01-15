@@ -3,7 +3,7 @@ import sys
 from .config_loader import Config
 from .manifest import ManifestManager
 from .engines.duckdb_engine import DuckDBEngine
-# from .engines.pyspark_engine import PySparkEngine
+from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
@@ -147,12 +147,3 @@ class IngestionPipeline:
                     self.manifest.update_manifest(input_path, status="failed", metadata={"errors": errors})
                     raise Exception(f"Validations failed for {source['name']}. Errors: {errors}")
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("config", help="Path to config file")
-    parser.add_argument("--spark_master", help="Spark master URL", default=None)
-    args = parser.parse_args()
-    
-    pipeline = IngestionPipeline(args.config, spark_master=args.spark_master)
-    pipeline.run()

@@ -96,6 +96,12 @@ def init(name, engine):
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
         f.write(config_content)
     click.echo("  Created file: config/fairway.yaml")
+    
+    # Write .dockerignore
+    from .templates import DOCKERIGNORE
+    with open(os.path.join(name, '.dockerignore'), 'w') as f:
+        f.write(DOCKERIGNORE)
+    click.echo("  Created file: .dockerignore")
 
     # Create spark.yaml with defaults
     with open(os.path.join(name, 'config', 'spark.yaml'), 'w') as f:
@@ -260,50 +266,61 @@ def generate_schema(file_path, output):
 
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
-@click.option('--profile', default='standard', help='Nextflow profile to use.')
-@click.option('--slurm', is_flag=True, help='Run as a Slurm batch job (allocates a controller node).')
-@click.option('--with-spark', is_flag=True, help='Automatically provision a Spark-on-Slurm cluster.')
-@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per task/node (overrides spark.yaml).')
-@click.option('--slurm-mem', 'mem', default=None, help='Memory per node (overrides spark.yaml).')
-@click.option('--slurm-time', 'time', default=None, help='Time limit (overrides spark.yaml).')
-@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of nodes (overrides spark.yaml).')
-@click.option('--account', default=None, help='Slurm account (overrides spark.yaml).')
-@click.option('--partition', default=None, help='Slurm partition (overrides spark.yaml).')
-@click.option('--batch-size', default=30, help='Max parallel jobs.')
-def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size):
-    """Run the fairway ingestion pipeline."""
-    import yaml
+@click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
+@click.option('--with-spark', is_flag=True, help='Provision an ephemeral Spark-on-Slurm cluster before running.')
+@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='[Spark] Number of worker nodes.')
+@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='[Spark] CPUs per node.')
+@click.option('--slurm-mem', 'mem', default=None, help='[Spark] Memory per node.')
+@click.option('--slurm-time', 'time', default=None, help='[Spark] Time limit.')
+@click.option('--account', default=None, help='[Spark] Slurm account.')
+@click.option('--partition', default=None, help='[Spark] Slurm partition.')
+def run(config, spark_master, with_spark, nodes, cpus, mem, time, account, partition):
+    """Run the ingestion pipeline (Worker Mode).
     
-    # Auto-discover config if not specified
+    This command executes the pipeline directly on the current machine.
+    It does NOT launch Nextflow or submit Slurm jobs for the pipeline itself.
+    
+    If --with-spark is specified, it will provision an ephemeral Spark cluster
+    using Slurm before execution.
+    """
+    import yaml
+    from .config_loader import Config
+    from .pipeline import IngestionPipeline
+    
+    # Auto-discover config
     if config is None:
         config = discover_config()
         click.echo(f"Auto-discovered config: {config}")
-    
-    # Load spark.yaml for defaults
-    spark_yaml_path = 'config/spark.yaml'
-    spark_defaults = {}
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
-    
-    # Merge: CLI args > spark.yaml > hardcoded defaults
-    nodes = nodes or spark_defaults.get('nodes', 2)
-    cpus = cpus or spark_defaults.get('cpus_per_node', 32)
-    mem = mem or spark_defaults.get('mem_per_node', '200G')
-    account = account or spark_defaults.get('account', 'borzekowski')
-    partition = partition or spark_defaults.get('partition', 'day')
-    time = time or spark_defaults.get('time', '24:00:00')
-    
-    # Load main config to check engine
-    from .config_loader import Config
+
     cfg = Config(config)
     
+    # Spark Setup
     spark_manager = None
-    master_url = None
     
-    if profile == 'slurm' and (with_spark or cfg.engine == 'pyspark'):
+    # Determine if we should start a cluster
+    # 1. User flagged --with-spark
+    # 2. Config engine is spark and we are in a Slurm environment (implicit)
+    #    But usually we want explicit opt-in for cluster creation to avoid accidents.
+    #    Let's stick to explicit --with-spark OR if config suggests it? 
+    #    For now, stick to flags to be safe.
+    
+    if with_spark:
+        # Load defaults from spark.yaml
+        spark_yaml_path = 'config/spark.yaml'
+        spark_defaults = {}
+        if os.path.exists(spark_yaml_path):
+            with open(spark_yaml_path, 'r') as f:
+                spark_defaults = yaml.safe_load(f) or {}
+
+        # effective resources
+        nodes = nodes or spark_defaults.get('nodes', 2)
+        cpus = cpus or spark_defaults.get('cpus_per_node', 32)
+        mem = mem or spark_defaults.get('mem_per_node', '200G')
+        account = account or spark_defaults.get('account', 'borzekowski')
+        partition = partition or spark_defaults.get('partition', 'day')
+        time = time or spark_defaults.get('time', '24:00:00')
+
         from .engines.slurm_cluster import SlurmSparkManager
-        # Pass the CLI-provided resources to the spark manager
         spark_cfg = {
             'slurm_nodes': nodes,
             'slurm_cpus_per_node': cpus,
@@ -312,105 +329,22 @@ def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition,
             'slurm_time': time,
             'slurm_partition': partition
         }
-        spark_manager = SlurmSparkManager(spark_cfg)
-        master_url = spark_manager.start_cluster()
-        # Set environment variable for the pipeline to discover the master
-        os.environ['SPARK_MASTER_URL'] = master_url
-
-    # Calculate Apptainer bind paths from config
-    bind_paths = _get_apptainer_binds(cfg)
-    
-    if bind_paths:
-        bind_str = ','.join(sorted(list(bind_paths)))
-        click.echo(f"Auto-binding paths for Apptainer: {bind_str}")
         
-        # Merge with existing binds if any
-        existing_binds = os.environ.get('APPTAINER_BIND', '')
-        if existing_binds:
-            os.environ['APPTAINER_BIND'] = f"{existing_binds},{bind_str}"
-        else:
-            os.environ['APPTAINER_BIND'] = bind_str
+        click.echo("Provisioning Spark cluster via Slurm...")
+        spark_manager = SlurmSparkManager(spark_cfg)
+        spark_master = spark_manager.start_cluster()
+        click.echo(f"Spark cluster started at: {spark_master}")
 
     try:
-        if slurm:
-            click.echo("Submitting fairway pipeline as a Slurm batch job...")
-            # Template for sbatch script (Controller node)
-            from .templates import SBATCH_TEMPLATE
-            sbatch_content = SBATCH_TEMPLATE.format(
-                job_name_suffix=os.path.basename(config),
-                nodes=1,
-                cpus=cpus,
-                mem=mem,
-                time=time,
-                account=account,
-                partition=partition,
-                config=config,
-                profile=profile,
-                batch_size=batch_size,
-                apptainer_bind=os.environ.get('APPTAINER_BIND', '')
-            )
-            with open('run_fairway_slurm.sh', 'w') as f:
-                f.write(sbatch_content)
-            
-            subprocess.run(['sbatch', 'run_fairway_slurm.sh'])
-        else:
-            click.echo(f"Running fairway pipeline with config: {config}, profile: {profile}")
-            
-            # Check for nextflow
-            nextflow_path = shutil.which('nextflow')
-            
-            cmd = [
-                'run', 'main.nf', 
-                '-profile', profile, 
-                '--config', config,
-                '--batch_size', str(batch_size),
-                '--slurm_nodes', str(nodes),
-                '--slurm_cpus_per_task', str(cpus),
-                '--slurm_mem', mem,
-                '--slurm_time', time,
-                '--slurm_partition', partition
-            ]
-            if master_url:
-                cmd.extend(['--spark_master', master_url])
-
-            if nextflow_path:
-                cmd.insert(0, 'nextflow')
-                subprocess.run(cmd)
-            else:
-                # Nextflow not found, check for Apptainer
-                apptainer_path = shutil.which('apptainer')
-                if not apptainer_path:
-                    raise click.ClickException(
-                        "Nextflow not found on PATH. Apptainer also not found. "
-                        "Please install Nextflow or Apptainer to run the pipeline."
-                    )
-                
-                click.echo("Nextflow not found locally. Falling back to Apptainer execution...")
-                
-                # Determine image
-                container_image = "fairway.sif" if os.path.exists("fairway.sif") else "docker://ghcr.io/dissc-yale/fairway:latest"
-                
-                # Construct Apptainer command
-                apptainer_cmd = ['apptainer', 'exec']
-                
-                # Ensure we bind the current directory and any auto-discovered paths
-                # Note: os.environ['APPTAINER_BIND'] might have been set above, but apptainer exec 
-                # respects the env var, so we don't strictly need to pass --bind if the env var is set.
-                # However, we MUST ensure the current working directory is bound so main.nf is visible.
-                # Apptainer usually binds $PWD by default, but let's be safe if we want robustness.
-                # Implicit binding of $PWD is standard in Apptainer.
-                
-                # If the env var was set by us earlier (line 531), it will be inherited by subprocess.run
-                
-                apptainer_cmd.append(container_image)
-                apptainer_cmd.append('nextflow')
-                apptainer_cmd.extend(cmd)
-                
-                subprocess.run(apptainer_cmd)
+        # Execute Pipeline
+        click.echo(f"Starting pipeline execution using config: {config}")
+        pipeline = IngestionPipeline(config, spark_master=spark_master)
+        pipeline.run()
+        click.echo("Pipeline execution completed successfully.")
+        
     finally:
-        if spark_manager and not slurm:
-            # Only stop if we are running in the current terminal session
-            # If we submitted via sbatch, the controller script should handle cleanup
+        if spark_manager:
+            click.echo("Tearing down Spark cluster...")
             spark_manager.stop_cluster()
 
 @main.command()
@@ -431,6 +365,13 @@ def eject():
     with open('Dockerfile', 'w') as f:
         f.write(DOCKERFILE_TEMPLATE)
     click.echo("  Created file: Dockerfile (Docker container definition)")
+
+    # Write .dockerignore from template
+    from .templates import DOCKERIGNORE
+    if not os.path.exists('.dockerignore') or click.confirm('.dockerignore already exists. Overwrite?'):
+        with open('.dockerignore', 'w') as f:
+            f.write(DOCKERIGNORE)
+        click.echo("  Created file: .dockerignore")
 
 
 @main.command()
