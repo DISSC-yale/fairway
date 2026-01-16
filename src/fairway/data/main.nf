@@ -29,6 +29,12 @@ process run_fairway {
     script:
     def master_arg = params.spark_master ? "--spark-master ${params.spark_master}" : ""
     """
+    # Link the data directory from the launch context to the work directory
+    # so that relative paths in fairway.yaml (like 'data/raw/...') resolve correctly.
+    if [ -d "${workflow.launchDir}/data" ]; then
+        ln -s "${workflow.launchDir}/data" data
+    fi
+
     # Using 'fairway run' as a worker process
     # It will handle Spark provisioning (if --with-spark is implicit or passed in config) 
     # and then execute the pipeline.

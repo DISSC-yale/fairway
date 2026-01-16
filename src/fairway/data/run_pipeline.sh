@@ -13,6 +13,16 @@ set -e
 # - Finding the correct Nextflow binary
 # - Automatically detecting and using a local 'fairway.sif' container image
 
+# 0. Load Virtual Environment (if specificed)
+if [ -n "$FAIRWAY_VENV" ]; then
+    if [ -f "$FAIRWAY_VENV/bin/activate" ]; then
+        echo "Activating virtual environment: $FAIRWAY_VENV"
+        source "$FAIRWAY_VENV/bin/activate"
+    else
+        echo "Warning: FAIRWAY_VENV set to $FAIRWAY_VENV but activate script not found."
+    fi
+fi
+
 # 1. Load Nextflow (Module check)
 if command -v module >/dev/null 2>&1; then
     # Only load if not already in path or if we want to ensure latest

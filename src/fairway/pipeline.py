@@ -23,6 +23,12 @@ class IngestionPipeline:
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
         
+        if not self.config.sources:
+             print("WARNING: No sources found to process! Check your config path patterns and ensuring data exists.")
+             print(f"  Configured sources: {self.config.data.get('sources', [])}")
+             # We could raise an exception here if we want to force failure
+             # raise ValueError("No sources found matching patterns in config.")
+
         for source in self.config.sources:
             input_path = source['path']
             # Using fsspec for URI-aware existance check would be better, 

@@ -28,7 +28,17 @@ bootstrap:
 # Execution Profiles
 # ==============================================================================
 # Detect Apptainer availability
-HAS_APPTAINER := $(shell if [ -f Apptainer.def ] || [ -f fairway.sif ]; then echo "yes"; else echo "no"; fi)
+# USE_APPTAINER can be: auto (default), yes, no
+USE_APPTAINER ?= auto
+FAIRWAY_VENV ?=
+
+ifeq ($(USE_APPTAINER), yes)
+    HAS_APPTAINER := yes
+else ifeq ($(USE_APPTAINER), no)
+    HAS_APPTAINER := no
+else
+    HAS_APPTAINER := $(shell if [ -f Apptainer.def ] || [ -f fairway.sif ]; then echo "yes"; else echo "no"; fi)
+endif
 
 # Base profiles
 PROFILES := standard
@@ -41,7 +51,7 @@ PROFILES := standard
 # Internal run target (wraps nextflow)
 run-internal: bootstrap
 	@# Delegate to shared script
-	./scripts/run_pipeline.sh -profile $(PROFILES) -resume
+	export FAIRWAY_VENV=$(FAIRWAY_VENV); ./scripts/run_pipeline.sh -profile $(PROFILES) -resume
 
 # Run locally (Interactive)
 run: ## Run the pipeline locally
@@ -61,7 +71,7 @@ run-hpc: ## Run on Slurm (Login Node - Orchestrator stays here)
 # Submit Driver Job (Fire-and-Forget)
 submit-hpc: bootstrap ## Submit the Nextflow orchestrator as a Slurm job
 	@echo "Submitting driver job..."
-	@sbatch scripts/driver.sh $(HAS_APPTAINER)
+	@FAIRWAY_VENV=$(FAIRWAY_VENV) sbatch scripts/driver.sh $(HAS_APPTAINER)
 
 # Run worker manually (for debugging)
 run-worker: ## Run the ingestion worker directly (no Nextflow)

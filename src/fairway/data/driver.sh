@@ -12,6 +12,10 @@
 # compute node (preventing login node usage for long-running processes).
 
 # 3. Run Pipeline via Shared Script
+# Capture Makefile argument if provided (prioritize $1, fallback to env var)
+HAS_APPTAINER=${1:-$HAS_APPTAINER}
+export FAIRWAY_VENV=$FAIRWAY_VENV
+
 if [ "$HAS_APPTAINER" = "yes" ]; then
     ./scripts/run_pipeline.sh -profile slurm,apptainer -resume
 else
