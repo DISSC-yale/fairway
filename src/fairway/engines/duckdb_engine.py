@@ -91,7 +91,7 @@ class DuckDBEngine:
 
     def read_result(self, path):
         """
-        Reads a Parquet result from the given path (directory or file) into a Pandas DataFrame.
+        Reads a Parquet result from the given path into a DuckDB Relation (Lazy).
         """
         # Recursively read all parquet files in the path
-        return self.con.execute(f"SELECT * FROM '{path}/**/*.parquet'").df()
+        return self.con.sql(f"SELECT * FROM '{path}/**/*.parquet'")

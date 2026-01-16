@@ -62,7 +62,8 @@ class PySparkEngine:
 
     def read_result(self, path):
         """
-        Reads a Parquet result from the given path into a Pandas DataFrame.
+        Reads a Parquet result from the given path into a Spark DataFrame (Lazy).
         Spark handles directory recursion and schema discovery automatically.
+        Enables 'mergeSchema' to handle evolving schemas across partitions.
         """
-        return self.spark.read.parquet(path).toPandas()
+        return self.spark.read.option("mergeSchema", "true").parquet(path)

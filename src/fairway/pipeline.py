@@ -68,13 +68,22 @@ class IngestionPipeline:
             
             if success:
                 # 2. Load for validation and enrichment
-                # If partitioned, output_path is a directory
                 df = self.engine.read_result(output_path)
                 
+                is_spark = self.config.engine == 'pyspark'
+                
+                # If DuckDB/Local, convert to Pandas for now to maintain compatibility with existing
+                # enrichment/validation until we port those to pure SQL/DuckDB.
+                if not is_spark and hasattr(df, 'df'):
+                     df = df.df()
+
                 # 3. Enrichment
                 if self.config.enrichment.get('geocode'):
                     print(f"Enriching {source['name']} with geospatial data...")
-                    df = Enricher.enrich_dataframe(df)
+                    if is_spark:
+                        df = Enricher.enrich_spark(df)
+                    else:
+                        df = Enricher.enrich_dataframe(df)
                 
                 # 4. Custom Transformations (Phase III)
                 transform_script = self.config.data.get('transformation')
@@ -86,16 +95,25 @@ class IngestionPipeline:
                         df = TransformerClass(df).transform()
 
                 # Re-save after enrichment and transformation
-                # For simplicity in local dev, we overwrite the directory if it exists
-                # In production (Spark/Slurm), the engine Handles this
-                if os.path.isdir(output_path):
-                    import shutil
-                    shutil.rmtree(output_path)
-                df.to_parquet(output_path, partition_cols=partition_by)
-                
-                # 5. Validations (Level 1, 2, 3)
-                l1 = Validator.level1_check(df, self.config.validations)
-                l2 = Validator.level2_check(df, self.config.validations)
+                if is_spark:
+                     # Spark writes are actions.
+                     df.write.mode("overwrite").partitionBy(*partition_by) if partition_by else df.write.mode("overwrite").parquet(output_path)
+                     # Reload for validation to ensure we validate the materialized data
+                     df = self.engine.read_result(output_path)
+                else:
+                    # Pandas/DuckDB path
+                    if os.path.isdir(output_path):
+                        import shutil
+                        shutil.rmtree(output_path)
+                    df.to_parquet(output_path, partition_cols=partition_by)
+
+                # 5. Validations
+                if is_spark:
+                    l1 = Validator.level1_check_spark(df, self.config.validations)
+                    l2 = Validator.level2_check_spark(df, self.config.validations)
+                else:
+                    l1 = Validator.level1_check(df, self.config.validations)
+                    l2 = Validator.level2_check(df, self.config.validations)
                 
                 if l1['passed'] and l2['passed']:
                     print(f"Validations passed for {source['name']}")
@@ -121,10 +139,16 @@ class IngestionPipeline:
                     summary_path = os.path.join(self.config.storage['final_dir'], f"{source['name']}_summary.csv")
                     report_path = os.path.join(self.config.storage['final_dir'], f"{source['name']}_report.md")
                     
-                    summary_df = Summarizer.generate_summary_table(df, summary_path)
+                    if is_spark:
+                         summary_df = Summarizer.generate_summary_spark(df, summary_path)
+                         # Count for stats
+                         row_count = df.count()
+                    else:
+                         summary_df = Summarizer.generate_summary_table(df, summary_path)
+                         row_count = len(df)
                     
                     stats = {
-                        "row_count": len(df),
+                        "row_count": row_count,
                         "config_path": sys.argv[1],
                         "status": "success"
                     }
