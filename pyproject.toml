@@ -62,4 +62,4 @@ fairway = "fairway.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-fairway = ["data/*", "data/.dockerignore"]
+fairway = ["data/*", "data/scripts/*", "data/.dockerignore"]
