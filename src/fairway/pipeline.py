@@ -45,9 +45,14 @@ class IngestionPipeline:
             # Remove extension from filename for output directory/file naming
             output_name = os.path.splitext(source['name'])[0]
             output_path = os.path.join(self.config.storage['intermediate_dir'], output_name)
+            
+            # Ensure parent storage directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             partition_by = self.config.partition_by
             metadata = source.get('metadata', {})
             source_format = source.get('format', 'csv')
+            hive_partitioning = source.get('hive_partitioning', False)
             
             # For partitioning, DuckDB creates a directory. 
             # We use the name of the source (already unique due to expansion)
@@ -57,7 +62,8 @@ class IngestionPipeline:
                 format=source_format,
                 partition_by=partition_by,
                 metadata=metadata,
-                target_rows=self.config.target_rows
+                target_rows=self.config.target_rows,
+                hive_partitioning=hive_partitioning
             )
             
             if success:

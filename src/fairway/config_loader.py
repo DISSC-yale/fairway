@@ -5,6 +5,7 @@ import re
 
 class Config:
     def __init__(self, config_path):
+        self.config_path = config_path # Store for relative path resolution
         with open(config_path, 'r') as f:
             self.data = yaml.safe_load(f)
         
@@ -46,36 +47,72 @@ class Config:
     def _expand_sources(self, raw_sources):
         """Discovers files and extracts metadata via regex if patterns are provided."""
         expanded = []
+        # Base config directory for relative path resolution
+        config_dir = os.path.dirname(os.path.abspath(self.config_path)) if hasattr(self, 'config_path') else os.getcwd()
+
         for src in raw_sources:
             path_pattern = src.get('path_pattern') or src.get('path')
             naming_pattern = src.get('naming_pattern')
+            hive_partitioning = src.get('hive_partitioning', False)
             
             if not path_pattern:
                 continue
 
-            # Glob discovery
-            files = glob.glob(path_pattern, recursive=True)
-            
-            # Resolve schema once if possible, or for each if dynamic?
-            # For now, simplistic: resolve usage of schema field
+            # Resolve path relative to config file if it's not absolute
+            if not os.path.isabs(path_pattern):
+                # Try relative to config dir first
+                resolved_path = os.path.join(config_dir, path_pattern)
+                # If that doesn't exist, maybe it is relative to CWD? 
+                # But prioritizing config_dir is safer for reproducibility.
+                # If neither exists, we'll likely fail later, but let's stick to resolved_path for glob/check.
+                # However, for globbing we might need to be careful.
+                # If the user ran from CWD and the path depends on CWD, this change might break it.
+                # Let's check existence.
+                if not os.path.exists(resolved_path) and not glob.glob(resolved_path):
+                     # If not found relative to config, try CWD (backward compatibility)
+                     if os.path.exists(path_pattern) or glob.glob(path_pattern):
+                         resolved_path = path_pattern
+            else:
+                resolved_path = path_pattern
+
             raw_schema = src.get('schema')
             resolved_schema = self._load_schema(raw_schema)
 
-            for f in files:
-                metadata = {}
-                if naming_pattern:
-                    match = re.search(naming_pattern, os.path.basename(f))
-                    if match:
-                        metadata = match.groupdict()
-                
-                # Create a specific source entry for each file
-                expanded.append({
-                    'name': src.get('name', os.path.basename(f)),
-                    'path': f,
+            if hive_partitioning:
+                 # Treat the directory as a single source unit
+                 if not os.path.exists(resolved_path) and not os.path.isdir(resolved_path):
+                      print(f"WARNING: Hive partitioned source path not found: {resolved_path}")
+                      continue
+                 
+                 expanded.append({
+                    'name': src.get('name', os.path.basename(resolved_path)),
+                    'path': resolved_path,
                     'format': src.get('format', 'csv'),
-                    'metadata': metadata,
-                    'schema': resolved_schema
+                    'metadata': {},
+                    'schema': resolved_schema,
+                    'hive_partitioning': True
                 })
+
+            else:
+                # Glob discovery
+                files = glob.glob(resolved_path, recursive=True)
+                
+                for f in files:
+                    metadata = {}
+                    if naming_pattern:
+                        match = re.search(naming_pattern, os.path.basename(f))
+                        if match:
+                            metadata = match.groupdict()
+                    
+                    # Create a specific source entry for each file
+                    expanded.append({
+                        'name': src.get('name', os.path.basename(f)),
+                        'path': f,
+                        'format': src.get('format', 'csv'),
+                        'metadata': metadata,
+                        'schema': resolved_schema,
+                        'hive_partitioning': False
+                    })
         return expanded
 
     def get_source_by_name(self, name):

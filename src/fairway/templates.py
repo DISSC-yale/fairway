@@ -31,7 +31,7 @@ def _read_data_file(filename):
                 return f.read()
         raise e
 
-HPC_SCRIPT = _read_data_file('fairway-hpc.sh')
+HPC_SCRIPT = _read_data_file('scripts/fairway-hpc.sh')
 APPTAINER_DEF = _read_data_file('Apptainer.def')
 DOCKERFILE_TEMPLATE = _read_data_file('Dockerfile')
 DOCKERIGNORE = _read_data_file('.dockerignore')
@@ -42,7 +42,7 @@ CONFIG_TEMPLATE = _read_data_file('fairway.yaml')
 SPARK_YAML_TEMPLATE = _read_data_file('spark.yaml')
 
 TRANSFORM_TEMPLATE = _read_data_file('example_transform.py')
-DRIVER_TEMPLATE = _read_data_file('driver.sh')
-RUN_PIPELINE_SCRIPT = _read_data_file('run_pipeline.sh')
+DRIVER_TEMPLATE = _read_data_file('scripts/driver.sh')
+RUN_PIPELINE_SCRIPT = _read_data_file('scripts/run_pipeline.sh')
 README_TEMPLATE = _read_data_file('README.md')
 DOCS_TEMPLATE = _read_data_file('getting-started.md')

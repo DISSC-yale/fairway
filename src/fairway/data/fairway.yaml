@@ -25,6 +25,7 @@ sources:
     # Path to the input data. Supports glob patterns or directories.
     # Pointing to the root of a partitioned dataset lets the engine handle discovery.
     path: "data/raw/sales_partitioned"
+    hive_partitioning: true
     
     # regex pattern to extract metadata from filenames
     # naming_pattern: "sales_(?P<year>\\d{{4}})_(?P<month>\\d{{2}}).csv"

@@ -15,12 +15,11 @@ class Validator:
             
         return results
 
-    @staticmethod
     def level2_check(df, config):
         """
         Schema and distribution checks.
         """
-        checks = config.get('level2', {})
+        checks = config.get('level2') or {}
         results = {"passed": True, "errors": []}
         
         if checks.get('check_nulls'):

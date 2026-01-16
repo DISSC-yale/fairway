@@ -13,12 +13,12 @@ class DuckDBEngine:
         self.con.execute("INSTALL httpfs; LOAD httpfs;")
         self.con.execute("INSTALL aws; LOAD aws;") # Or gcs if needed
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None, **kwargs):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None, hive_partitioning=False, **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
         if format == 'csv':
-            return self._ingest_csv(input_path, output_path, partition_by, metadata)
+            return self._ingest_csv(input_path, output_path, partition_by, metadata, hive_partitioning)
         elif format == 'json':
             return self._ingest_json(input_path, output_path, partition_by, metadata)
         elif format == 'parquet':
@@ -26,12 +26,30 @@ class DuckDBEngine:
         else:
             raise ValueError(f"Unsupported format for DuckDB engine: {format}")
 
-    def _ingest_csv(self, input_path, output_path, partition_by=None, metadata=None):
+    def _ingest_csv(self, input_path, output_path, partition_by=None, metadata=None, hive_partitioning=False):
         """
         Converts CSV to Parquet using DuckDB, with metadata injection.
         """
         # Load data
-        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto('{input_path}')")
+        if hive_partitioning:
+             # When hive partitioning is enabled, we need to ensure we read recursively 
+             # and enable the option.
+             # If input_path is a directory, append '/**/*.csv' logic or similar if implicit?
+             # DuckDB read_csv_auto usually handles directories if glob is provided.
+             # But if the user provided a directory path without a glob, we might need to append keys.
+             # However, assuming config_loader passed the directory path directly for hive_partitioning=True.
+             # We should probably append '/**/*.csv' or just '**' if the user didn't provide a pattern.
+
+             # Check if input path looks like a glob. If not, make it recursive.
+             if '*' not in input_path:
+                 read_path = os.path.join(input_path, "**/*.csv")
+             else:
+                 read_path = input_path
+             
+             self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto('{read_path}', hive_partitioning=1)")
+        else:
+             self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto('{input_path}')")
+        
         return self._write_to_parquet(output_path, partition_by, metadata)
 
     def _ingest_json(self, input_path, output_path, partition_by=None, metadata=None):

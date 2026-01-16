@@ -16,7 +16,7 @@ class PySparkEngine:
             builder = builder.master(spark_master)
         self.spark = builder.getOrCreate()
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, target_rows=500000):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, target_rows=500000, hive_partitioning=False, **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
@@ -25,6 +25,9 @@ class PySparkEngine:
         
         if format == 'csv':
             reader = reader.option("header", "true").option("inferSchema", "true")
+            if hive_partitioning:
+                # Ensure recursive file lookup creates the correct partition discovery
+                reader = reader.option("recursiveFileLookup", "true")
             
         df = reader.load(input_path)
         

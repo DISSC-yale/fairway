@@ -29,10 +29,26 @@ process run_fairway {
     script:
     def master_arg = params.spark_master ? "--spark-master ${params.spark_master}" : ""
     """
-    # Link the data directory from the launch context to the work directory
-    # so that relative paths in fairway.yaml (like 'data/raw/...') resolve correctly.
-    if [ -d "${workflow.launchDir}/data" ]; then
-        ln -s "${workflow.launchDir}/data" data
+    # Dynamic Data Discovery
+    # Traverse up directory tree to find 'data' directory (Project Root)
+    search_dir="${workflow.launchDir}"
+    found_data=""
+    
+    # Check up to 5 levels up
+    for i in {1..5}; do
+        if [ -d "\$search_dir/data/raw" ]; then
+            found_data="\$search_dir/data"
+            break
+        fi
+        # Move up one level
+        search_dir="\$(dirname "\$search_dir")"
+    done
+    
+    if [ -n "\$found_data" ]; then
+        echo "Found data directory at: \$found_data"
+        ln -s "\$found_data" data
+    else
+        echo "WARNING: Could not find 'data' directory in hierarchy of launchDir."
     fi
 
     # Using 'fairway run' as a worker process
