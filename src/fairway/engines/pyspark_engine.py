@@ -33,7 +33,6 @@ class PySparkEngine:
         
         # Inject metadata if available (e.g. state from filename)
         if metadata:
-            from pyspark.sql import functions as F
             for key, val in metadata.items():
                 df = df.withColumn(key, F.lit(val))
 
