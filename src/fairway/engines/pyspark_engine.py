@@ -59,3 +59,10 @@ class PySparkEngine:
         # In a real Spark pipeline, we'd stay in Spark DataFrames
         # For fairway's current design, we collect to Pandas for localized enrichment/validation
         return self.spark.sql(query).toPandas()
+
+    def read_result(self, path):
+        """
+        Reads a Parquet result from the given path into a Pandas DataFrame.
+        Spark handles directory recursion and schema discovery automatically.
+        """
+        return self.spark.read.parquet(path).toPandas()

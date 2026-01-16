@@ -69,7 +69,7 @@ class IngestionPipeline:
             if success:
                 # 2. Load for validation and enrichment
                 # If partitioned, output_path is a directory
-                df = self.engine.query(f"SELECT * FROM '{output_path}/**/*.parquet'")
+                df = self.engine.read_result(output_path)
                 
                 # 3. Enrichment
                 if self.config.enrichment.get('geocode'):
