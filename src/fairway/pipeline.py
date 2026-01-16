@@ -34,7 +34,7 @@ class IngestionPipeline:
             # Using fsspec for URI-aware existance check would be better, 
             # for now keeping it simple but URI-ready in engines
             
-            if not self.manifest.should_process(input_path):
+            if not self.manifest.should_process(input_path, source_name=source['name']):
                 print(f"Skipping {input_path} (already processed and hash matches)")
                 continue
 
@@ -130,7 +130,7 @@ class IngestionPipeline:
                     }
                     Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
 
-                    self.manifest.update_manifest(input_path, status="success", metadata=stats)
+                    self.manifest.update_manifest(input_path, status="success", metadata=stats, source_name=source['name'])
                     
                     # 7. Redivis Export
                     if self.config.redivis:
@@ -156,6 +156,6 @@ class IngestionPipeline:
                 else:
                     errors = l1['errors'] + l2['errors']
                     print(f"Validations failed for {source['name']}: {errors}")
-                    self.manifest.update_manifest(input_path, status="failed", metadata={"errors": errors})
+                    self.manifest.update_manifest(input_path, status="failed", metadata={"errors": errors}, source_name=source['name'])
                     raise Exception(f"Validations failed for {source['name']}. Errors: {errors}")
 
