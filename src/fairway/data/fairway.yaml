@@ -5,6 +5,7 @@
 dataset_name: "{name}"
 
 # Execution Engine: 'duckdb' (local/single-node) or 'pyspark' (distributed)
+# Options: 'duckdb', 'pyspark'
 # Default is 'duckdb' if not specified.
 engine: "{engine_type}" 
 
@@ -31,6 +32,7 @@ sources:
     # naming_pattern: "sales_(?P<year>\\d{{4}})_(?P<month>\\d{{2}}).csv"
     
     # Input format: 'csv', 'json', 'parquet'
+    # Options: 'csv', 'json', 'parquet'
     format: "csv"
     
     # Schema definition (Optional but recommended for strict validation)

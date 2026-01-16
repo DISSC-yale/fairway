@@ -10,7 +10,13 @@ class Config:
             self.data = yaml.safe_load(f)
         
         self.dataset_name = self.data.get('dataset_name')
+        
+        # Engine Validation
         self.engine = self.data.get('engine', 'duckdb')
+        valid_engines = {'duckdb', 'pyspark'}
+        if self.engine not in valid_engines:
+            raise ValueError(f"Invalid engine: '{self.engine}'. Must be one of {valid_engines}")
+
         self.storage = self.data.get('storage', {})
         self.sources = self._expand_sources(self.data.get('sources', []))
         self.validations = self.data.get('validations', {})
@@ -84,10 +90,15 @@ class Config:
                       print(f"WARNING: Hive partitioned source path not found: {resolved_path}")
                       continue
                  
+                 source_format = src.get('format', 'csv')
+                 valid_formats = {'csv', 'json', 'parquet'}
+                 if source_format not in valid_formats:
+                      raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
+
                  expanded.append({
                     'name': src.get('name', os.path.basename(resolved_path)),
                     'path': resolved_path,
-                    'format': src.get('format', 'csv'),
+                    'format': source_format,
                     'metadata': {},
                     'schema': resolved_schema,
                     'hive_partitioning': True
@@ -105,10 +116,15 @@ class Config:
                             metadata = match.groupdict()
                     
                     # Create a specific source entry for each file
+                    source_format = src.get('format', 'csv')
+                    valid_formats = {'csv', 'json', 'parquet'}
+                    if source_format not in valid_formats:
+                         raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
+
                     expanded.append({
                         'name': src.get('name', os.path.basename(f)),
                         'path': f,
-                        'format': src.get('format', 'csv'),
+                        'format': source_format,
                         'metadata': metadata,
                         'schema': resolved_schema,
                         'hive_partitioning': False
