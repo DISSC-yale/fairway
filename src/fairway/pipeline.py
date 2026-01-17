@@ -11,14 +11,25 @@ from .exporters.redivis_exporter import RedivisExporter
 
 class IngestionPipeline:
     def __init__(self, config_path, spark_master=None):
+        print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)
 
     def _get_engine(self, spark_master=None):
-        if self.config.engine == 'pyspark':
-            return PySparkEngine(spark_master)
-        return DuckDBEngine()
+        engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
+        
+        if engine_type in ['pyspark', 'spark']:
+            try:
+                from .engines.pyspark_engine import PySparkEngine
+                return PySparkEngine(spark_master)
+            except ImportError:
+                sys.exit("Error: PySpark is not installed. Please install using `pip install fairway[spark]`")
+        elif engine_type == 'duckdb':
+            from .engines.duckdb_engine import DuckDBEngine
+            return DuckDBEngine()
+        else:
+            raise ValueError(f"Unknown engine: {self.config.engine}. Supported engines: 'duckdb', 'spark'")
 
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
@@ -50,6 +61,14 @@ class IngestionPipeline:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             partition_by = self.config.partition_by
+            
+            # If partitioned, output path should be a directory without extension
+            if partition_by:
+                output_basename = output_name
+            else:
+                output_basename = f"{output_name}.{fmt}"
+                
+            output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
             source_format = source.get('format', 'csv')
             hive_partitioning = source.get('hive_partitioning', False)

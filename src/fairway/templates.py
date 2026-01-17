@@ -1,4 +1,5 @@
-"""Template files for fairway init command.
+import importlib.resources
+from . import data
 
 These are loaded from src/fairway/data/ to ensure they're available
 when fairway is installed via pip.

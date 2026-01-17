@@ -2,6 +2,7 @@ import click
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from .generate_test_data import generate_test_data
 
@@ -82,7 +83,8 @@ def init(name, engine):
         'docs',
         'scripts',
         'logs/slurm',
-        'logs/nextflow'
+        'logs/nextflow',
+        'scripts'
     ]
     
     for d in directories:
@@ -125,6 +127,12 @@ def init(name, engine):
     with open(os.path.join(name, 'Makefile'), 'w') as f:
         f.write(MAKEFILE_TEMPLATE)
     click.echo("  Created file: Makefile")
+    
+    from .templates import FAIRWAY_HPC_SH_TEMPLATE
+    with open(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 'w') as f:
+        f.write(FAIRWAY_HPC_SH_TEMPLATE)
+    os.chmod(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 0o755)
+    click.echo("  Created file: scripts/fairway-hpc.sh")
 
     # Create example transformation
     with open(os.path.join(name, 'src', 'transformations', 'example_transform.py'), 'w') as f:
@@ -543,5 +551,99 @@ def kill(job_id, kill_all):
     except subprocess.CalledProcessError as e:
         click.echo(f"Error cancelling job: {e}", err=True)
 
+@main.command()
+def status():
+    """Show status of fairway jobs (wraps squeue)."""
+    click.echo(f"Fairway jobs for user: {os.environ.get('USER', 'unknown')}")
+    try:
+        user = os.environ.get('USER')
+        if not user:
+            click.echo("Error: USER environment variable not set.", err=True)
+            return
+
+        # Using -o to format output similar to the script
+        # %.10i %.20j %.8T %.10M %.6D %R
+        subprocess.run([
+            "squeue", 
+            "-u", user, 
+            "--name=fairway*", 
+            "-o", "%.10i %.20j %.8T %.10M %.6D %R"
+        ], check=True)
+    except subprocess.CalledProcessError:
+        click.echo("Error running squeue. Is Slurm available?", err=True)
+    except FileNotFoundError:
+        click.echo("squeue command not found.", err=True)
+
+@main.command()
+@click.argument('job_id')
+def cancel(job_id):
+    """Cancel a fairway job (wraps scancel)."""
+    click.echo(f"Cancelling job: {job_id}")
+    try:
+        subprocess.run(["scancel", job_id], check=True)
+        click.echo("Job cancelled.")
+    except subprocess.CalledProcessError:
+        click.echo(f"Error cancelling job {job_id}.", err=True)
+    except FileNotFoundError:
+        click.echo("scancel command not found.", err=True)
+
+@main.command()
+def build():
+    """Build the Apptainer container from local Apptainer.def."""
+    container_local = "fairway.sif"
+    
+    if os.path.exists(container_local):
+        if not click.confirm(f"Container {container_local} already exists. Overwrite?"):
+            return
+
+    # Auto-eject if missing
+    if not os.path.exists("Apptainer.def"):
+        click.echo("Apptainer.def not found. Creating from template...", err=True)
+        from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE
+        with open('Apptainer.def', 'w') as f:
+            f.write(APPTAINER_DEF)
+        click.echo("  Created file: Apptainer.def")
+        
+        # Also create Dockerfile for completeness, though not used here
+        if not os.path.exists('Dockerfile'):
+            with open('Dockerfile', 'w') as f:
+                f.write(DOCKERFILE_TEMPLATE)
+            click.echo("  Created file: Dockerfile")
+
+    click.echo("Building from local Apptainer.def...")
+    cmd = ["apptainer", "build", "--force", container_local, "Apptainer.def"]
+    
+    try:
+        subprocess.run(cmd, check=True)
+        click.echo(f"\nContainer built successfully: {container_local}")
+    except subprocess.CalledProcessError:
+        click.echo("\nError: Container build failed.", err=True)
+    except FileNotFoundError:
+        click.echo("apptainer command not found. Is Apptainer installed?", err=True)
+
+@main.command()
+def pull():
+    """Pull (mirror) the Apptainer container from the registry."""
+    container_local = "fairway.sif"
+    container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
+    
+    if os.path.exists(container_local):
+        if not click.confirm(f"Container {container_local} already exists. Overwrite?"):
+            return
+
+    click.echo(f"Pulling from registry: {container_image}...")
+    cmd = ["apptainer", "pull", "--force", container_local, container_image]
+    
+    try:
+        subprocess.run(cmd, check=True)
+        click.echo(f"\nContainer pulled successfully: {container_local}")
+    except subprocess.CalledProcessError:
+        click.echo("\nError: Container pull failed.", err=True)
+        click.echo("If you see an auth error, run: source scripts/fairway-hpc.sh registry-login", err=True)
+    except FileNotFoundError:
+        click.echo("apptainer command not found. Is Apptainer installed?", err=True)
+
+
 if __name__ == '__main__':
     main()
+

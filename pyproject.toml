@@ -21,6 +21,8 @@ dependencies = [
     "pyyaml",
     "fsspec",
     "mkdocs-material",
+    "pandas",
+    "tabulate",
 ]
 
 [project.optional-dependencies]
@@ -32,25 +34,21 @@ spark = [
 ]
 duckdb = [
     "duckdb",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
 redivis = [
     "redivis",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
 test-data-gen = [
-    "pandas",
     "numpy",
 ]
 all = [
-    "pyspark",
+    "pyspark>=4.1.1",
     "duckdb",
     "redivis",
-    "pandas",
     "numpy",
     "pyarrow",
 ]
@@ -61,5 +59,9 @@ fairway = "fairway.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.package-data]
-fairway = ["data/*", "data/scripts/*", "data/.dockerignore"]
+fairway = ["data/*"]
+"fairway.data" = ["*"]
