@@ -96,4 +96,4 @@ performance:
 # Custom Transformation Script (Optional)
 # Path to a python script with a custom transformer class
 # data:
-#   transformation: "src/fairway/transformations/custom_cleaner.py"
+#   transformation: "src/transformations/example_transform.py"
