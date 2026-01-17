@@ -1,17 +1,55 @@
 try:
     import pyspark.sql.functions as F
     from pyspark.sql import SparkSession
-except ImportError:
+except ImportError as e:
     SparkSession = None
     F = None
+    _spark_import_error = e
+
+except ImportError as e:
+    SparkSession = None
+    F = None
+    _spark_import_error = e
 
 import random
+import os
+import re
+
 
 class PySparkEngine:
     def __init__(self, spark_master=None):
         if SparkSession is None:
-            raise ImportError("PySpark is not installed. Please install fairway[spark] or fairway[all].")
+            additional_info = f" Original error: {_spark_import_error}" if '_spark_import_error' in globals() else ""
+            raise ImportError(f"PySpark is not installed or failed to load. Please install fairway[spark] or fairway[all].{additional_info}")
         builder = SparkSession.builder.appName("fairway-ingestion")
+        # Add JVM options for modern Java (17+) compatibility
+        # Java 25 requires explicitly opening javax.security.auth and others
+        jvm_options_list = [
+            "--add-opens=java.base/java.lang=ALL-UNNAMED",
+            "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+            "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+            "--add-opens=java.base/java.io=ALL-UNNAMED",
+            "--add-opens=java.base/java.net=ALL-UNNAMED",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--add-opens=java.base/java.util=ALL-UNNAMED",
+            "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+            "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+            "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+            "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+            "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+            "--add-opens=java.base/javax.security.auth=ALL-UNNAMED"
+        ]
+        jvm_options = " ".join(jvm_options_list)
+        
+        # Ensure these options are passed to the driver via env if not already set (relying on builder config is sometimes insufficient)
+        import os
+        if 'PYSPARK_SUBMIT_ARGS' not in os.environ:
+             os.environ['PYSPARK_SUBMIT_ARGS'] = f'--driver-java-options "{jvm_options}" pyspark-shell'
+
+        builder = builder.config("spark.driver.extraJavaOptions", jvm_options) \
+                         .config("spark.executor.extraJavaOptions", jvm_options)
+
         if spark_master:
             builder = builder.master(spark_master)
         self.spark = builder.getOrCreate()
@@ -31,6 +69,7 @@ class PySparkEngine:
             
         df = reader.load(input_path)
         
+        # Inject metadata if available (e.g. state from filename)
         # Inject metadata if available (e.g. state from filename)
         if metadata:
             for key, val in metadata.items():
@@ -58,6 +97,30 @@ class PySparkEngine:
         """Mock query interface for pipeline compatibility (usually returns Pandas)."""
         # In a real Spark pipeline, we'd stay in Spark DataFrames
         # For fairway's current design, we collect to Pandas for localized enrichment/validation
+        
+        # Intercept DuckDB-style "SELECT * FROM 'path'" queries
+        match = re.search(r"SELECT\s+\*\s+FROM\s+'([^']*)'", query, re.IGNORECASE)
+        if match:
+             path = match.group(1)
+             try:
+                 # Clean up recursive glob for Spark to ensure partition discovery works best on the dir
+                 # e.g. 'data/.../**/*.parquet' -> 'data/...'
+                 if path.endswith("/**/*.parquet"):
+                     path = path.replace("/**/*.parquet", "")
+                 elif path.endswith("/**/*.csv"):
+                     path = path.replace("/**/*.csv", "")
+                     
+                 # Spark doesn't support 'FROM "file"' syntax in SQL directly for all versions/configs
+                 # But we can easily route this to spark.read
+                 if ".parquet" in path or os.path.isdir(path):
+                      return self.spark.read.parquet(path).toPandas()
+                 elif ".csv" in path:
+                      return self.spark.read.option("header", "true").csv(path).toPandas()
+                 elif ".json" in path:
+                      return self.spark.read.json(path).toPandas()
+             except Exception as e:
+                 print(f"WARNING: Failed to optimize file query '{query}': {e}. Falling back to SQL.")
+
         return self.spark.sql(query).toPandas()
 
     def read_result(self, path):

@@ -22,8 +22,8 @@ class Config:
         self.validations = self.data.get('validations', {})
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
-        self.partition_by = self.data.get('partition_by', [])
         self.redivis = self.data.get('redivis', {})
+        self.output_format = self.storage.get('format', 'parquet').lower()
         
         # Performance/Optimizations
         performance = self.data.get('performance', {})
@@ -41,13 +41,19 @@ class Config:
                 raise FileNotFoundError(f"Schema file not found: {schema_ref}")
             
             with open(schema_ref, 'r') as f:
+                data = None
                 if schema_ref.endswith('.yaml') or schema_ref.endswith('.yml'):
-                    return yaml.safe_load(f)
+                    data = yaml.safe_load(f)
                 elif schema_ref.endswith('.json'):
                     import json
-                    return json.load(f)
+                    data = json.load(f)
                 else:
                     raise ValueError(f"Unsupported schema file format: {schema_ref}")
+                
+                # Handle generate-schema output format
+                if isinstance(data, dict) and 'columns' in data:
+                    return data['columns']
+                return data
         return schema_ref or {}
 
     def _expand_sources(self, raw_sources):
