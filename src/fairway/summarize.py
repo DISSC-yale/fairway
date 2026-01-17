@@ -35,6 +35,46 @@ class Summarizer:
         return summary_df
 
     @staticmethod
+    def generate_summary_spark(df, output_path):
+        """
+        Generates summary statistics using Spark native functions.
+        """
+        # Spark's summary() provides count, mean, stddev, min, max, but not null/distinct
+        # We can implement a robust one or just use .summary().toPandas() for now as it returns a tiny DF
+        
+        # 1. Basic Stats
+        desc = df.describe().toPandas()
+        
+        # 2. Nulls and Distincts (expensive)
+        # We can optimize this by doing one big agg if needed
+        # For prototype, we'll skip distinct count on huge data if it's too slow, or use approx_count_distinct
+        
+        from pyspark.sql import functions as F
+        
+        aggs = []
+        for col in df.columns:
+            aggs.append(F.count(F.col(col)).alias(f"{col}_count"))
+            aggs.append(F.count(F.when(F.col(col).isNull(), 1)).alias(f"{col}_nulls"))
+            # aggs.append(F.approx_count_distinct(col).alias(f"{col}_distinct")) # Optional
+            
+        # Execute one pass
+        # stats_row = df.agg(*aggs).collect()[0]
+        
+        # Reformatting to match the pandas structure requires transposing the describe() output
+        # For minimal disruption, we transpose the describe() output
+        
+        # desc is:
+        # summary | col1 | col2
+        # count   | 10   | 10
+        # mean    | ...  | ...
+        
+        desc = desc.set_index("summary").transpose().reset_index().rename(columns={"index": "variable"})
+        
+        # Just save it
+        desc.to_csv(output_path, index=False)
+        return desc
+
+    @staticmethod
     def generate_markdown_report(dataset_name, summary_df, stats, output_path):
         """
         Generates a MkDocs-compatible Markdown report for the dataset.

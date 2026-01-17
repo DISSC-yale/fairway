@@ -26,6 +26,9 @@ To install Fairway, ensure you have Python 3.10+ installed.
 ### 1. Initialize a Project
 Create a new Fairway project with the required directory structure:
 
+> **Note:** If you are using a virtual environment, ensure it is activated first.
+
+
 ```bash
 fairway init my_new_project
 cd my_new_project
@@ -65,6 +68,15 @@ Run the pipeline as a job on a Slurm cluster:
 fairway run --config config/my_config.yaml --profile slurm --slurm --account my_account
 ```
 *Note: The `--slurm` flag submits a controller job. The `--profile slurm` tells Nextflow/Fairway to use Slurm executors.*
+
+**Using the Makefile (Recommended)**
+```bash
+# Interactive (Nextflow on login node)
+make run-hpc
+
+# Driver Job (Nextflow on compute node)
+make submit-hpc
+```
 
 ## Documentation
 

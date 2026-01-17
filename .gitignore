@@ -1,6 +1,6 @@
-site/
+/site/
 /data/
-logs/
+/logs/
 __pycache__/
 *.pyc
 *.egg-info/

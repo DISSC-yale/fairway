@@ -1,48 +1,64 @@
+#!/usr/bin/env nextflow
+
 nextflow.enable.dsl=2
 
-params.config = "config/example_config.yaml"
-params.outdir = "data"
-params.container = "docker://ghcr.io/dissc-yale/fairway:latest"
+params.config = "config/fairway.yaml"
 params.spark_master = null
-params.batch_size = 30
-params.slurm_nodes = 1
-params.slurm_cpus_per_task = 4
-params.slurm_mem = "16G"
-params.slurm_time = "24:00:00"
-params.slurm_partition = "day"
 
+import org.yaml.snakeyaml.Yaml
 
-params.dev_path = null
+def configPath = params.config
+def configFile = new File(configPath)
+def appConfig = new Yaml().load(configFile.text)
 
-process RUN_INGESTION {
-    maxForks params.batch_size
-    tag "Ingesting ${params.config}"
-    publishDir "${params.outdir}", mode: 'copy'
+// Default to 'data/intermediate' and 'data/final' if not specified, but prefer config
+def intermediateDir = appConfig.storage?.intermediate_dir ?: 'data/intermediate'
+def finalDir = appConfig.storage?.final_dir ?: 'data/final'
 
-    container params.container
-    containerOptions { params.dev_path ? "--bind ${params.dev_path}:/opt/fairway/src" : "" }
-
+process run_fairway {
+    publishDir "${params.outdir}/intermediate", mode: 'copy', pattern: "${intermediateDir}/*", saveAs: { fn -> new File(fn).name }
+    publishDir "${params.outdir}/final", mode: 'copy', pattern: "${finalDir}/*", saveAs: { fn -> new File(fn).name }
+    
     input:
     path config_file
-    path src
 
     output:
-    path "data/intermediate/*", optional: true
-    path "data/final/*", optional: true
-    path "data/fmanifest.json", optional: true
+    path "${intermediateDir}/*"
+    path "${finalDir}/*"
 
     script:
-    // Only pass spark_master if set; explicitly ignored by DuckDB engine in pipeline.py
-    def spark_arg = params.spark_master ? "--spark_master \"${params.spark_master}\"" : ""
-    def python_path_prepend = params.dev_path ? "/opt/fairway/src:" : ""
+    def master_arg = params.spark_master ? "--spark-master ${params.spark_master}" : ""
     """
-    export PYTHONPATH=${python_path_prepend}\$(pwd)/src:\$PYTHONPATH
-    python3 -m fairway.pipeline ${config_file} ${spark_arg}
+    # Dynamic Data Discovery
+    # Traverse up directory tree to find 'data' directory (Project Root)
+    search_dir="${workflow.launchDir}"
+    found_data=""
+    
+    # Check up to 5 levels up
+    for i in {1..5}; do
+        if [ -d "\$search_dir/data/raw" ]; then
+            found_data="\$search_dir/data"
+            break
+        fi
+        # Move up one level
+        search_dir="\$(dirname "\$search_dir")"
+    done
+    
+    if [ -n "\$found_data" ]; then
+        echo "Found data directory at: \$found_data"
+        ln -s "\$found_data" data
+    else
+        echo "WARNING: Could not find 'data' directory in hierarchy of launchDir."
+    fi
+
+    # Using 'fairway run' as a worker process
+    # It will handle Spark provisioning (if --with-spark is implicit or passed in config) 
+    # and then execute the pipeline.
+    fairway run --config ${config_file} ${master_arg}
     """
 }
 
 workflow {
     config_ch = Channel.fromPath(params.config)
-    src_ch = Channel.fromPath("src")
-    RUN_INGESTION(config_ch, src_ch)
+    run_fairway(config_ch)
 }
