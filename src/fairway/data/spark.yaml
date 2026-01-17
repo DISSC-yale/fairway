@@ -1,0 +1,18 @@
+# Spark cluster configuration
+# Override these values for your HPC environment
+
+nodes: 2
+cpus_per_node: 32
+mem_per_node: "200G"
+
+# Slurm-specific
+account: "borzekowski"
+partition: "day"
+time: "24:00:00"
+
+# Spark dynamic allocation
+dynamic_allocation:
+  enabled: true
+  min_executors: 5
+  max_executors: 150
+  initial_executors: 15

@@ -1,84 +1,90 @@
-.PHONY: help setup install test clean generate-data generate-schema run run-slurm docs status cancel pull build shell
+# Fairway Project Makefile
+.PHONY: all run run-hpc submit-hpc clean test shell bootstrap
 
-# Default target
-.DEFAULT_GOAL := help
+# Default: Run locally
+all: run
 
-# Configuration
-VENV := .venv
-BIN := $(VENV)/bin
-PYTHON := $(BIN)/python
+# ==============================================================================
+# Helper: Bootstrap Nextflow (Zero-Dependency)
+# ==============================================================================
+# If 'nextflow' is not in PATH, download it to the current directory
+NXF_VER := 23.10.1
+NXF_VER := 23.10.1
 
-# Detect Fairway executable (use venv if exists, else system)
-ifneq (,$(wildcard $(BIN)/fairway))
-    FAIRWAY := $(BIN)/fairway
+bootstrap:
+	@if command -v nextflow >/dev/null 2>&1; then \
+		echo "Nextflow check: Found in PATH used $$(which nextflow)"; \
+	elif [ -x "./nextflow" ]; then \
+		echo "Nextflow check: Found ./nextflow"; \
+	elif command -v module >/dev/null 2>&1 && module avail Nextflow 2>&1 | grep -q -i "nextflow"; then \
+		echo "Nextflow check: Module detected. Will attempt load."; \
+	else \
+		echo "Nextflow not found. Downloading..."; \
+		curl -s https://get.nextflow.io | bash; \
+		chmod +x nextflow; \
+	fi
+
+# ==============================================================================
+# Execution Profiles
+# ==============================================================================
+# Detect Apptainer availability
+# USE_APPTAINER can be: auto (default), yes, no
+USE_APPTAINER ?= auto
+FAIRWAY_VENV ?=
+
+ifeq ($(USE_APPTAINER), yes)
+    HAS_APPTAINER := yes
+else ifeq ($(USE_APPTAINER), no)
+    HAS_APPTAINER := no
 else
-    FAIRWAY := fairway
+    HAS_APPTAINER := $(shell if [ -f Apptainer.def ] || [ -f fairway.sif ]; then echo "yes"; else echo "no"; fi)
 endif
 
-help: ## Show this help message
-	@echo "Usage: make [target]"
-	@echo ""
-	@echo "Targets:"
-	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+# Base profiles
+PROFILES := standard
 
-setup: ## Create virtual environment and install dependencies
-	@echo "Checking/Creating virtual environment in $(VENV)..."
-	@test -d $(VENV) || python3 -m venv $(VENV)
-	@echo "Installing dependencies..."
-	@if [ -f requirements.txt ]; then $(BIN)/pip install -r requirements.txt; fi
-	@if [ -f pyproject.toml ] || [ -f setup.py ]; then $(BIN)/pip install -e .; fi
-	@echo ""
-	@echo "Setup complete."
-	@echo "----------------------------------------------------------------"
-	@echo "To activate the environment: source $(VENV)/bin/activate"
-	@echo "To load HPC modules:         source scripts/fairway-hpc.sh setup"
-	@echo "----------------------------------------------------------------"
+# ==============================================================================
+# Commands
+# ==============================================================================
 
-install: ## Install the package in editable mode (assumes active env or uses system)
-	pip install -e .
+# Internal run target (wraps nextflow)
+# Internal run target (wraps nextflow)
+run-internal: bootstrap
+	@# Delegate to shared script
+	export FAIRWAY_VENV=$(FAIRWAY_VENV); ./scripts/run_pipeline.sh -profile $(PROFILES) -resume
 
-test: ## Run the test suite
-	$(BIN)/pytest tests || pytest tests
+# Run locally (Interactive)
+run: ## Run the pipeline locally
+	$(MAKE) run-internal PROFILES=standard
 
-clean: ## Remove build artifacts and temporary files
-	rm -rf build/ dist/ *.egg-info .pytest_cache .coverage $(VENV)
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
-
-generate-data: ## Generate test data (default: size=small, partitioned=True)
-	$(FAIRWAY) generate-data --size small --partitioned
-
-generate-schema: ## Generate schema from data (requires FILE=<path>)
-	@if [ -z "$(FILE)" ]; then \
-		echo "Error: FILE argument is required. Usage: make generate-schema FILE=<path_to_file>"; \
-		exit 1; \
+# Run on HPC (Interactive on Login Node)
+run-hpc: PROFILES := slurm
+run-hpc: ## Run on Slurm (Login Node - Orchestrator stays here)
+	@if [ "$(HAS_APPTAINER)" = "yes" ]; then \
+		echo "Detected Apptainer. Enabling container execution..."; \
+		$(MAKE) run-internal PROFILES=slurm,apptainer; \
+	else \
+		echo "No Apptainer detected. Using modules..."; \
+		$(MAKE) run-internal PROFILES=slurm; \
 	fi
-	$(FAIRWAY) generate-schema $(FILE)
 
-run: ## Run the pipeline locally (auto-discovers config)
-	$(FAIRWAY) run
+# Submit Driver Job (Fire-and-Forget)
+submit-hpc: bootstrap ## Submit the Nextflow orchestrator as a Slurm job
+	@echo "Submitting driver job..."
+	@FAIRWAY_VENV=$(FAIRWAY_VENV) sbatch scripts/driver.sh $(HAS_APPTAINER)
 
-run-slurm: ## Run the pipeline on Slurm (requires Slurm environment)
-	$(FAIRWAY) run --profile slurm --slurm
+# Run worker manually (for debugging)
+run-worker: ## Run the ingestion worker directly (no Nextflow)
+	fairway run
 
-status: ## Show status of Fairway jobs on Slurm
-	$(FAIRWAY) status
+# Enter a shell inside the container
+shell: ## Enter a shell inside the ecosystem
+	fairway shell
 
-cancel: ## Cancel a Fairway job (usage: make cancel JOB_ID=12345)
-	@if [ -z "$(JOB_ID)" ]; then \
-		echo "Error: JOB_ID argument is required. Usage: make cancel JOB_ID=<job_id>"; \
-		exit 1; \
-	fi
-	$(FAIRWAY) cancel $(JOB_ID)
+# Build the container
+build: ## Build the container image
+	fairway build
 
-pull: ## Pull (mirror) the Apptainer container from registry
-	$(FAIRWAY) pull
-
-build: ## Build the Apptainer container from local definition
-	$(FAIRWAY) build
-
-shell: ## Enter interactive container shell
-	$(FAIRWAY) shell
-
-docs: ## Build and serve documentation using mkdocs
-	mkdocs serve
+# Clean up artifacts
+clean: ## Clean logs and temp data
+	rm -rf logs/ .nextflow* work/ .nextflow_driver.sh

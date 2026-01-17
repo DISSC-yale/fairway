@@ -2,8 +2,8 @@ import os
 import sys
 from .config_loader import Config
 from .manifest import ManifestManager
-
-
+from .engines.duckdb_engine import DuckDBEngine
+from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
@@ -34,12 +34,18 @@ class IngestionPipeline:
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
         
+        if not self.config.sources:
+             print("WARNING: No sources found to process! Check your config path patterns and ensuring data exists.")
+             print(f"  Configured sources: {self.config.data.get('sources', [])}")
+             # We could raise an exception here if we want to force failure
+             # raise ValueError("No sources found matching patterns in config.")
+
         for source in self.config.sources:
             input_path = source['path']
             # Using fsspec for URI-aware existance check would be better, 
             # for now keeping it simple but URI-ready in engines
             
-            if not self.manifest.should_process(input_path):
+            if not self.manifest.should_process(input_path, source_name=source['name']):
                 print(f"Skipping {input_path} (already processed and hash matches)")
                 continue
 
@@ -49,7 +55,11 @@ class IngestionPipeline:
             # to create a unique output path
             # Remove extension from filename for output directory/file naming
             output_name = os.path.splitext(source['name'])[0]
-            fmt = self.config.output_format
+            output_path = os.path.join(self.config.storage['intermediate_dir'], output_name)
+            
+            # Ensure parent storage directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             partition_by = self.config.partition_by
             
             # If partitioned, output path should be a directory without extension
@@ -61,6 +71,7 @@ class IngestionPipeline:
             output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
             source_format = source.get('format', 'csv')
+            hive_partitioning = source.get('hive_partitioning', False)
             
             # For partitioning, DuckDB creates a directory. 
             # We use the name of the source (already unique due to expansion)
@@ -70,23 +81,28 @@ class IngestionPipeline:
                 format=source_format,
                 partition_by=partition_by,
                 metadata=metadata,
-                target_rows=self.config.target_rows
+                target_rows=self.config.target_rows,
+                hive_partitioning=hive_partitioning
             )
             
             if success:
                 # 2. Load for validation and enrichment
-                # Handle both directory (partitioned/Spark) and single file (DuckDB non-partitioned)
-                if os.path.isdir(output_path):
-                    query_path = f"{output_path}/**/*.{fmt}"
-                else:
-                    query_path = output_path
+                df = self.engine.read_result(output_path)
                 
-                df = self.engine.query(f"SELECT * FROM '{query_path}'")
+                is_spark = self.config.engine == 'pyspark'
                 
+                # If DuckDB/Local, convert to Pandas for now to maintain compatibility with existing
+                # enrichment/validation until we port those to pure SQL/DuckDB.
+                if not is_spark and hasattr(df, 'df'):
+                     df = df.df()
+
                 # 3. Enrichment
                 if self.config.enrichment.get('geocode'):
                     print(f"Enriching {source['name']} with geospatial data...")
-                    df = Enricher.enrich_dataframe(df)
+                    if is_spark:
+                        df = Enricher.enrich_spark(df)
+                    else:
+                        df = Enricher.enrich_dataframe(df)
                 
                 # 4. Custom Transformations (Phase III)
                 transform_script = self.config.data.get('transformation')
@@ -98,97 +114,66 @@ class IngestionPipeline:
                         df = TransformerClass(df).transform()
 
                 # Re-save after enrichment and transformation
-                # Save to final directory instead of overwriting intermediate
-                final_output_path = os.path.join(self.config.storage['final_dir'], output_basename)
-                
-                # Clean up if exists
-                if os.path.isdir(final_output_path):
-                    import shutil
-                    shutil.rmtree(final_output_path)
-                elif os.path.isfile(final_output_path):
-                    os.remove(final_output_path)
-                
-                # Update output_path to point to final for subsequent steps (summarizer, redivis)
-                output_path = final_output_path
-                
-                if fmt == 'parquet':
+                if is_spark:
+                     # Spark writes are actions.
+                     df.write.mode("overwrite").partitionBy(*partition_by) if partition_by else df.write.mode("overwrite").parquet(output_path)
+                     # Reload for validation to ensure we validate the materialized data
+                     df = self.engine.read_result(output_path)
+                else:
+                    # Pandas/DuckDB path
+                    if os.path.isdir(output_path):
+                        import shutil
+                        shutil.rmtree(output_path)
                     df.to_parquet(output_path, partition_cols=partition_by)
-                elif fmt == 'csv':
-                    # DuckDB to_csv doesn't support partition_cols in same way via relation, 
-                    # but check engine capabilities. Assuming DataFrame object (duckdbpyrelation)
-                    # For partitioned CSV write, we might need COPY statement or manual handling implies directory
-                    if partition_by:
-                        df.write_csv(output_path, partition_by=partition_by)
-                    else:
-                        df.to_csv(output_path)
-                elif fmt == 'json':
-                     # Similar check for JSON
-                     # DuckDB relation doesn't have direct to_json with partitions?
-                     # Using SQL approach might be safer generally, but trying relation method first
-                     # If PySpark engine, df is pyspark dataframe, which supports write.json/csv/parquet with partitions
-                     
-                     # Check if engine is duckdb or spark to invoke correct save?
-                     # The `df` returned by `self.engine.query` is engine-specific.
-                     # DuckDBEngine returns duckdb.DuckDBPyRelation
-                     # PySparkEngine returns pyspark.sql.DataFrame
-                     
-                     # UNIFIED API ISSUE: We need the engine to handle the write or valid relation methods.
-                     # PySpark: df.write.mode("overwrite").partitionBy(partition_by).format(fmt).save(output_path)
-                     # DuckDB: relation.to_parquet(path), relation.to_csv(path), relation.to_df().to_json? (bad for memory)
-                     
-                     # Simple approach for now leveraging what we know works for DuckDB locally:
-                     if hasattr(df, 'write'): # Spark
-                         writer = df.write.mode("overwrite")
-                         if partition_by:
-                             writer = writer.partitionBy(*partition_by)
-                         writer.format(fmt).save(output_path)
-                     else: # DuckDB
-                         if fmt == 'parquet':
-                             df.to_parquet(output_path, partition_cols=partition_by)
-                         elif fmt == 'csv':
-                             df.to_csv(output_path, partition_cols=partition_by) # DuckDB python client supports this arg?
-                             # Checked docs: relation.to_csv(file_name, header=True, sep=',', ...)
-                             # Does not natively support partition_cols in to_csv python api usually.
-                             # But "COPY (SELECT ...) TO 'path' (FORMAT CSV, PARTITION_BY (cols))" is valid SQL.
-                             # If we used engine.execute("COPY ...") it would be better.
-                             # For now, let's just try to fallback to SQL if it fails or assume no partitions for CSV for simple cases?
-                             # Better: Construct SQL.
-                             cols_str = ", ".join(partition_by) if partition_by else ""
-                             part_sql = f", PARTITION_BY ({cols_str})" if partition_by else ""
-                             # We need the connection to run SQL. df.query("main", "COPY ...")?
-                             # df.create("temp_view") -> con.sql("COPY temp_view TO ...")
-                             pass # Relying on what's available or keep simple for now. 
-                             # Wait, the `ingest` method used COPY. Here we act on a dataframe (enriched).
-                             # Let's trust `to_csv` works or fallback. 
-                             # DuckDB python `to_csv` doesn't support partition_cols. 
-                             # We might need to refactor writing to be engine-delegated in the future.
-                             # For now, let's just stick to `.to_csv()` and if partition is requested, warn/error or try.
-                             df.write_csv(output_path) # `write_csv` is the method in 1.1? or `to_csv`?
-                             # `to_csv` is standard.
-                else: 
-                     raise ValueError(f"Unsupported output format: {fmt}")
-                
-                # 5. Validations (Level 1, 2, 3)
-                l1 = Validator.level1_check(df, self.config.validations)
-                l2 = Validator.level2_check(df, self.config.validations)
+
+                # 5. Validations
+                if is_spark:
+                    l1 = Validator.level1_check_spark(df, self.config.validations)
+                    l2 = Validator.level2_check_spark(df, self.config.validations)
+                else:
+                    l1 = Validator.level1_check(df, self.config.validations)
+                    l2 = Validator.level2_check(df, self.config.validations)
                 
                 if l1['passed'] and l2['passed']:
                     print(f"Validations passed for {source['name']}")
                     
+                    # Move/Copy to final directory
+                    final_output_path = os.path.join(self.config.storage['final_dir'], os.path.basename(output_path))
+                    if os.path.exists(final_output_path):
+                        import shutil
+                        if os.path.isdir(final_output_path):
+                            shutil.rmtree(final_output_path)
+                        else:
+                            os.remove(final_output_path)
+                    
+                    import shutil
+                    if os.path.isdir(output_path):
+                        shutil.copytree(output_path, final_output_path)
+                    else:
+                        shutil.copy2(output_path, final_output_path)
+                    
+                    print(f"Data finalized at {final_output_path}")
+
                     # 6. Summarization and Reporting
                     summary_path = os.path.join(self.config.storage['final_dir'], f"{source['name']}_summary.csv")
                     report_path = os.path.join(self.config.storage['final_dir'], f"{source['name']}_report.md")
                     
-                    summary_df = Summarizer.generate_summary_table(df, summary_path)
+                    if is_spark:
+                         summary_df = Summarizer.generate_summary_spark(df, summary_path)
+                         # Count for stats
+                         row_count = df.count()
+                    else:
+                         summary_df = Summarizer.generate_summary_table(df, summary_path)
+                         row_count = len(df)
                     
                     stats = {
-                        "row_count": len(df),
+                        "row_count": row_count,
                         "config_path": sys.argv[1],
                         "status": "success"
                     }
                     Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
 
-                    self.manifest.update_manifest(input_path, status="success", metadata=stats)
+                    self.manifest.update_manifest(input_path, status="success", metadata=stats, source_name=source['name'])
                     
                     # 7. Redivis Export
                     if self.config.redivis:
@@ -208,20 +193,12 @@ class IngestionPipeline:
                                 schema=source.get('schema')
                             )
                             # Sync dataset level metadata if available
-                            exporter.update_dataset_metadata(description=f"Frolf dataset: {self.config.dataset_name}")
+                            exporter.update_dataset_metadata(description=f"Dataset: {self.config.dataset_name}")
                         except Exception as e:
                             print(f"Redivis export failed for {source['name']}: {e}")
                 else:
                     errors = l1['errors'] + l2['errors']
                     print(f"Validations failed for {source['name']}: {errors}")
-                    self.manifest.update_manifest(input_path, status="failed", metadata={"errors": errors})
+                    self.manifest.update_manifest(input_path, status="failed", metadata={"errors": errors}, source_name=source['name'])
+                    raise Exception(f"Validations failed for {source['name']}. Errors: {errors}")
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("config", help="Path to config file")
-    parser.add_argument("--spark_master", help="Spark master URL", default=None)
-    args = parser.parse_args()
-    
-    pipeline = IngestionPipeline(args.config, spark_master=args.spark_master)
-    pipeline.run()

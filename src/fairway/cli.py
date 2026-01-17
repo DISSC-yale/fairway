@@ -81,6 +81,7 @@ def init(name, engine):
         'data/final',
         'src/transformations',
         'docs',
+        'scripts',
         'logs/slurm',
         'logs/nextflow',
         'scripts'
@@ -91,43 +92,26 @@ def init(name, engine):
         click.echo(f"  Created directory: {d}")
 
     # Create config.yaml
-    from .templates import FAIRWAY_YAML_TEMPLATE
-    engine_val = 'pyspark' if engine == 'spark' else 'duckdb'
-    config_content = FAIRWAY_YAML_TEMPLATE.format(name=name, engine=engine_val)
+    engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
+    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+    config_content = CONFIG_TEMPLATE.format(name=name, engine_type=engine_type)
+    
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
         f.write(config_content)
     click.echo("  Created file: config/fairway.yaml")
+    
+    # Write .dockerignore
+    from .templates import DOCKERIGNORE
+    with open(os.path.join(name, '.dockerignore'), 'w') as f:
+        f.write(DOCKERIGNORE)
+    click.echo("  Created file: .dockerignore")
 
     # Create spark.yaml with defaults
-    spark_config_content = """# Spark cluster configuration
-# Override these values for your HPC environment
-
-nodes: 2
-cpus_per_node: 32
-mem_per_node: "200G"
-
-# Slurm-specific
-account: "borzekowski"
-partition: "day"
-time: "24:00:00"
-
-# Spark dynamic allocation
-dynamic_allocation:
-  enabled: true
-  min_executors: 5
-  max_executors: 150
-  initial_executors: 15
-"""
     with open(os.path.join(name, 'config', 'spark.yaml'), 'w') as f:
-        f.write(spark_config_content)
+        f.write(SPARK_YAML_TEMPLATE)
     click.echo("  Created file: config/spark.yaml")
 
-    # Create requirements.txt from template
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, REQUIREMENTS_TEMPLATE, FAIRWAY_YAML_TEMPLATE
-    
-    with open(os.path.join(name, 'requirements.txt'), 'w') as f:
-        f.write(REQUIREMENTS_TEMPLATE)
-    click.echo("  Created file: requirements.txt")
+
 
     # Write nextflow.config from template
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:
@@ -151,202 +135,49 @@ dynamic_allocation:
     click.echo("  Created file: scripts/fairway-hpc.sh")
 
     # Create example transformation
-    transform_content = """
-def example_transform(df):
-    \"\"\"
-    An example transformation function.
-    Args:
-        df: Input DataFrame (pandas or spark)
-    Returns:
-        Transformed DataFrame
-    \"\"\"
-    # Example logic
-    return df
-"""
     with open(os.path.join(name, 'src', 'transformations', 'example_transform.py'), 'w') as f:
-        f.write(transform_content.strip())
+        f.write(TRANSFORM_TEMPLATE.strip())
     click.echo("  Created file: src/transformations/example_transform.py")
 
     # Create README.md with usage examples
-    readme_content = f"""# {name}
 
-Initialized by fairway on {datetime.now().isoformat()}
-
-**Engine**: {engine}
-
-## Quick Start
-    
-### 0. Load Environment (HPC Only)
-
-On an HPC system, load the required modules first:
-```bash
-source scripts/fairway-hpc.sh setup
-```
-
-### 1. Generate Test Data
-
-```bash
-fairway generate-data --size small --partitioned
-```
-
-### 2. Generate Schema (optional)
-
-```bash
-fairway generate-schema data/raw/your_data.csv
-```
-
-### 3. Update Configuration
-
-Edit `config/fairway.yaml` to define your data sources, validations, and enrichments.
-
-### 4. Run the Pipeline
-
-**Local execution:**
-```bash
-make run
-```
-
-**Slurm cluster:**
-```bash
-make run-hpc
-```
-
-**Containerized execution:**
-```bash
-fairway run --config config/fairway.yaml --profile apptainer
-```
-*Note: This pulls the default container. To customize the environment, run `fairway eject`.*
-
-## Extending the Pipeline
-
-To add a post-processing step (e.g., reshaping), edit `main.nf`. For example:
-
-```groovy
-process RESHAPE {{
-    input:
-    path "data/final/*"
- 
-    output:
-    path "data/reshaped/*"
- 
-    script:
-    \"\"\"
-    python3 src/reshape.py ...
-    \"\"\"
-}}
-
-workflow {{
-    // ... existing ...
-    RESHAPE(run_fairway.out)
-}}
-```
-
-## Customization
-
-To customize the Apptainer container or Dockerfile:
-1. Run `fairway eject` to generate `Apptainer.def` and `Dockerfile`.
-2. Edit the generated files.
-3. Build locally (fairway will automatically favor local definitions).
-
-## Project Structure
-
-- `config/` - Pipeline configuration files
-- `data/raw/` - Input data files
-- `data/intermediate/` - Intermediate processing outputs
-- `data/final/` - Final processed data
-- `src/transformations/` - Custom transformation scripts
-- `docs/` - Project documentation
-- `logs/` - Execution logs
-- `Makefile` - Convenience commands
-
-## Documentation
-
-See the [fairway documentation](https://github.com/DISSC-yale/fairway) for more details.
-"""
+    readme_content = README_TEMPLATE.format(
+        name=name,
+        timestamp=datetime.now().isoformat(),
+        engine=engine
+    )
     with open(os.path.join(name, 'README.md'), 'w') as f:
         f.write(readme_content)
     click.echo("  Created file: README.md")
 
+    # Create scripts/driver.sh and scripts/fairway-hpc.sh
+    from .templates import DRIVER_TEMPLATE, HPC_SCRIPT, RUN_PIPELINE_SCRIPT
+    with open(os.path.join(name, 'scripts', 'driver.sh'), 'w') as f:
+        f.write(DRIVER_TEMPLATE)
+    os.chmod(os.path.join(name, 'scripts', 'driver.sh'), 0o755)
+    click.echo("  Created file: scripts/driver.sh")
+
+    with open(os.path.join(name, 'scripts', 'run_pipeline.sh'), 'w') as f:
+        f.write(RUN_PIPELINE_SCRIPT)
+    os.chmod(os.path.join(name, 'scripts', 'run_pipeline.sh'), 0o755)
+    click.echo("  Created file: scripts/run_pipeline.sh")
+
+    with open(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 'w') as f:
+        f.write(HPC_SCRIPT)
+    os.chmod(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 0o755)
+    click.echo("  Created file: scripts/fairway-hpc.sh")
+
     # Create docs/getting-started.md
-    docs_content = f"""# Getting Started with {name}
-
-## Prerequisites
-
-- Python 3.9+
-- fairway installed (`pip install git+https://github.com/DISSC-yale/fairway.git`)
-
-## Generating Test Data
-
-Create sample data to test your pipeline:
-
-```bash
-# Small partitioned CSV dataset
-fairway generate-data --size small --partitioned
-
-# Large Parquet dataset
-fairway generate-data --size large --format parquet
-```
-
-## Schema Inference
-
-Auto-generate schema from your data:
-
-```bash
-# From a single file
-fairway generate-schema data/raw/example.csv
-
-# From a partitioned directory
-fairway generate-schema data/raw/partitioned_data/
-```
-
-## Configuration
-
-Your pipeline is configured in `config/fairway.yaml`:
-
-```yaml
-dataset_name: "{name}"
-engine: "{'pyspark' if engine == 'spark' else 'duckdb'}"
-
-sources:
-  - name: "my_source"
-    path: "data/raw/my_data.csv"
-    format: "csv"
-    schema:
-      id: "int"
-      value: "double"
-
-validations:
-  level1:
-    min_rows: 100
-    check_column_count: true
-
-enrichment:
-  geocode: true
-```
-
-## Running Your Pipeline
-
-### Local (DuckDB)
-```bash
-make run
-```
-
-### Slurm Cluster (PySpark)
-```bash
-make run-hpc
-```
-
-### Custom Slurm Resources
-```bash
-fairway run --config config/fairway.yaml --slurm \\
-  --cpus 8 --mem 32G --time 04:00:00 --nodes 4
-```
-"""
+    docs_content = DOCS_TEMPLATE.format(
+        name=name,
+        engine_type=engine_type
+    )
     with open(os.path.join(name, 'docs', 'getting-started.md'), 'w') as f:
         f.write(docs_content)
     click.echo("  Created file: docs/getting-started.md")
 
     click.echo(f"Project {name} initialized successfully.")
+
 
 @main.command()
 @click.option('--size', type=click.Choice(['small', 'large']), default='small', help='Size of dataset to generate.')
@@ -454,269 +285,81 @@ def generate_schema(file_path, output):
     except Exception as e:
         click.echo(f"Error inferring schema: {e}", err=True)
 
-@main.command()
-@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
-@click.option('--profile', default='standard', help='Nextflow profile to use.')
-@click.option('--slurm', is_flag=True, help='Run as a Slurm batch job (allocates a controller node).')
-@click.option('--with-spark', is_flag=True, help='Automatically provision a Spark-on-Slurm cluster.')
-@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per task/node (overrides spark.yaml).')
-@click.option('--slurm-mem', 'mem', default=None, help='Memory per node (overrides spark.yaml).')
-@click.option('--slurm-time', 'time', default=None, help='Time limit (overrides spark.yaml).')
-@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of nodes (overrides spark.yaml).')
-@click.option('--account', default=None, help='Slurm account (overrides spark.yaml).')
-@click.option('--partition', default=None, help='Slurm partition (overrides spark.yaml).')
-@click.option('--batch-size', default=30, help='Max parallel jobs.')
-@click.option('--dev-path', default=None, help='Path to local fairway source code to bind mount for development (HPC/Container).')
-@click.option('--dry-run', is_flag=True, help='Generate script but do not submit.')
-def run(config, profile, slurm, with_spark, cpus, mem, time, account, partition, nodes, batch_size, dev_path, dry_run):
-    """Run the fairway ingestion pipeline."""
+@main.group()
+def spark():
+    """Manage Spark clusters."""
+    pass
+
+@spark.command()
+@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of worker nodes.')
+@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per node.')
+@click.option('--slurm-mem', 'mem', default=None, help='Memory per node.')
+@click.option('--slurm-time', 'time', default=None, help='Time limit.')
+@click.option('--account', default=None, help='Slurm account.')
+@click.option('--partition', default=None, help='Slurm partition.')
+def start(nodes, cpus, mem, time, account, partition):
+    """Start a Spark cluster on Slurm."""
     import yaml
     
-    # Auto-discover config if not specified
-    if config is None:
-        config = discover_config()
-        click.echo(f"Auto-discovered config: {config}")
-    
-    # Load spark.yaml for defaults
+    # Load defaults from spark.yaml
     spark_yaml_path = 'config/spark.yaml'
     spark_defaults = {}
     if os.path.exists(spark_yaml_path):
         with open(spark_yaml_path, 'r') as f:
             spark_defaults = yaml.safe_load(f) or {}
-    
-    # Merge: CLI args > spark.yaml > hardcoded defaults
+
+    # effective resources
     nodes = nodes or spark_defaults.get('nodes', 2)
     cpus = cpus or spark_defaults.get('cpus_per_node', 32)
     mem = mem or spark_defaults.get('mem_per_node', '200G')
     account = account or spark_defaults.get('account', 'borzekowski')
     partition = partition or spark_defaults.get('partition', 'day')
     time = time or spark_defaults.get('time', '24:00:00')
+
+    from .engines.slurm_cluster import SlurmSparkManager
+    spark_cfg = {
+        'slurm_nodes': nodes,
+        'slurm_cpus_per_node': cpus,
+        'slurm_mem_per_node': mem,
+        'slurm_account': account,
+        'slurm_time': time,
+        'slurm_partition': partition
+    }
     
-    # Load main config to check engine
+    spark_manager = SlurmSparkManager(spark_cfg)
+    spark_master = spark_manager.start_cluster()
+    click.echo(f"Spark cluster started. Master URL: {spark_master}")
+
+@spark.command()
+def stop():
+    """Stop the running Spark cluster."""
+    from .engines.slurm_cluster import SlurmSparkManager
+    spark_manager = SlurmSparkManager({})
+    spark_manager.stop_cluster()
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
+@click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
+def run(config, spark_master):
+    """Run the ingestion pipeline (Worker Mode).
+    
+    This command executes the pipeline directly on the current machine.
+    It does NOT launch Nextflow or submit Slurm jobs.
+    """
     from .config_loader import Config
+    from .pipeline import IngestionPipeline
+    
+    # Auto-discover config
+    if config is None:
+        config = discover_config()
+        click.echo(f"Auto-discovered config: {config}")
+
     cfg = Config(config)
     
-    spark_manager = None
-    master_url = None
-    
-    if profile == 'slurm' and (with_spark or cfg.engine == 'pyspark'):
-        from .engines.slurm_cluster import SlurmSparkManager
-        # Pass the CLI-provided resources to the spark manager
-        spark_cfg = {
-            'slurm_nodes': nodes,
-            'slurm_cpus_per_node': cpus,
-            'slurm_mem_per_node': mem,
-            'slurm_account': account,
-            'slurm_time': time,
-            'slurm_partition': partition
-        }
-        spark_manager = SlurmSparkManager(spark_cfg)
-        master_url = spark_manager.start_cluster()
-        # Set environment variable for the pipeline to discover the master
-        os.environ['SPARK_MASTER_URL'] = master_url
-
-    # Calculate Apptainer bind paths from config
-    bind_paths = _get_apptainer_binds(cfg)
-    
-    if bind_paths:
-        bind_str = ','.join(sorted(list(bind_paths)))
-        click.echo(f"Auto-binding paths for Apptainer: {bind_str}")
-        
-        # Merge with existing binds if any
-        existing_binds = os.environ.get('APPTAINER_BIND', '')
-        if existing_binds:
-            os.environ['APPTAINER_BIND'] = f"{existing_binds},{bind_str}"
-        else:
-            os.environ['APPTAINER_BIND'] = bind_str
-
-    try:
-        if slurm:
-            if not dry_run:
-                click.echo("Submitting fairway pipeline as a Slurm batch job...")
-            else:
-                click.echo("Generating Slurm batch job script (Dry Run)...")
-                
-            # Pass dry_run to kwargs for use in the block below if needed, or just use local var
-            kwargs = {'dry_run': dry_run}
-            # Template for sbatch script (Controller node)
-    # Template for sbatch script (Controller node)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            job_name_safe = os.path.basename(config).replace('.', '_')
-            
-            # Ensure log dir exists
-            os.makedirs("logs/slurm", exist_ok=True)
-            
-            script_path = f"logs/slurm/fairway_{job_name_safe}_{timestamp}.sh"
-            
-            # Spark shutdown logic
-            spark_cleanup = ""
-            if master_url: # If using existing master
-               pass # We don't shut it down as we didn't start it here
-            elif spark_manager:
-               # We are starting a cluster inside the job (if we refactor slurm_cluster to be called from within the job)
-               # OR, if we started it here in CLI (current logic), we can't easily trap it in the batch job unless we pass the ID.
-               # Current logic: CLI starts cluster -> gets URL -> submits batch job -> waits (?) -> stops cluster.
-               # BUT: if --slurm is used, the CLI exits. Who stops the cluster?
-               # FIX: The Batch Job itself should start/stop the cluster OR we accept that the user must cancel it.
-               # Better FIX (as per plan): The generated batch script should trap EXIT and cancel the spark job.
-               # However, the Spark Cluster is currently started by Python `subprocess` in CLI *before* sbatch.
-               # This means the spark cluster job ID is known here `spark_manager.job_id_file`?
-               # We need to get the job ID from spark_manager to inject into the cleanup script.
-               
-               # Let's inspect spark_manager implementation. It writes job_id to a file.
-               # We can read it back or make spark_manager return it.
-               # For now, let's assume we can get it.
-               
-               # UPDATE: Since we can't easily change `slurm_cluster.py`'s return signature without checking,
-               # let's read the job_id_file if it exists.
-               job_id_file = os.path.expanduser("~/cluster_job_id.txt")
-               if os.path.exists(job_id_file):
-                   with open(job_id_file, 'r') as f:
-                       spark_cluster_id = f.read().strip()
-                   spark_cleanup = f"""
-# Clean up Spark cluster on exit
-cleanup_spark() {{
-    echo "Stopping Spark cluster (Job ID: {spark_cluster_id})..."
-    scancel {spark_cluster_id}
-}}
-trap cleanup_spark EXIT
-"""
-
-            sbatch_content = f"""#!/bin/bash
-#SBATCH --job-name=fairway_{job_name_safe}
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task={cpus}
-#SBATCH --mem={mem}
-#SBATCH --time={time}
-#SBATCH --account={account}
-#SBATCH --partition={partition}
-#SBATCH --output=logs/slurm/fairway_{job_name_safe}_%j.log
-
-{spark_cleanup}
-
-module load Nextflow
-module load Apptainer
-# Pass the spark master if we have one
-SPARK_URL_ARG=""
-if [ ! -z "$SPARK_MASTER_URL" ]; then
-    SPARK_URL_ARG="--spark_master $SPARK_MASTER_URL"
-fi
-
-# Pass through Apptainer binds calculated by the CLI
-export APPTAINER_BIND="{os.environ.get('APPTAINER_BIND', '')}"
-
-# Check for local container image
-CONTAINER_ARG=""
-if [ -f "fairway.sif" ]; then
-    echo "Found local fairway.sif, using it..."
-    CONTAINER_ARG="--container $(pwd)/fairway.sif"
-fi
-
-echo "Starting Fairway Pipeline..."
-echo "Config: {config}"
-echo "Profile: {profile}"
-echo "Spark Master: $SPARK_MASTER_URL"
-
-nextflow run main.nf -profile {profile} \\
-    --config {config} \\
-    --batch_size {batch_size} \\
-    --slurm_nodes {nodes} \\
-    --slurm_cpus_per_task {cpus} \\
-    --slurm_mem {mem} \\
-    --slurm_time {time} \\
-    --slurm_partition {partition} \\
-    --account {account} \\
-    {f"--dev_path {dev_path} \\" if dev_path else ""}
-    $SPARK_URL_ARG \\
-    $CONTAINER_ARG
-
-echo "Fairway Pipeline Completed."
-"""
-            with open(script_path, 'w') as f:
-                f.write(sbatch_content)
-            
-            click.echo(f"Generated submission script: {script_path}")
-            
-            if not kwargs.get('dry_run'):
-                subprocess.run(['sbatch', script_path], check=True)
-            else:
-                click.echo("Dry run: Skipping submission.")
-        else:
-            click.echo(f"Running fairway pipeline with config: {config}, profile: {profile}")
-            
-            # Check for nextflow
-            nextflow_path = shutil.which('nextflow')
-            
-            cmd = [
-                'run', 'main.nf', 
-                '-profile', profile, 
-                '--config', config,
-                '--batch_size', str(batch_size),
-                '--slurm_nodes', str(nodes),
-                '--slurm_cpus_per_task', str(cpus),
-                '--slurm_mem', mem,
-                '--slurm_time', time,
-                '--slurm_partition', partition
-            ]
-            if dev_path:
-                cmd.extend(['--dev_path', dev_path])
-
-            if master_url:
-                cmd.extend(['--spark_master', master_url])
-            
-            # Check for local container
-            if os.path.exists("fairway.sif"):
-                click.echo(f"Found local fairway.sif, using it...")
-                cmd.extend(['--container', os.path.abspath("fairway.sif")])
-
-            if nextflow_path:
-                cmd.insert(0, 'nextflow')
-                subprocess.run(cmd)
-            else:
-                # Nextflow not found, check for Apptainer
-                apptainer_path = shutil.which('apptainer')
-                if not apptainer_path:
-                    raise click.ClickException(
-                        "Nextflow not found on PATH. Apptainer also not found. "
-                        "Please install Nextflow or Apptainer to run the pipeline."
-                    )
-                
-                click.echo("Nextflow not found locally. Falling back to Apptainer execution...")
-                
-                # Determine image
-                container_image = "fairway.sif" if os.path.exists("fairway.sif") else "docker://ghcr.io/dissc-yale/fairway:latest"
-                
-                # Construct Apptainer command
-                apptainer_cmd = ['apptainer', 'exec']
-                
-                # Ensure we bind the current directory and any auto-discovered paths
-                # Note: os.environ['APPTAINER_BIND'] might have been set above, but apptainer exec 
-                # respects the env var, so we don't strictly need to pass --bind if the env var is set.
-                # However, we MUST ensure the current working directory is bound so main.nf is visible.
-                # Apptainer usually binds $PWD by default, but let's be safe if we want robustness.
-                # Implicit binding of $PWD is standard in Apptainer.
-                
-                # If the env var was set by us earlier (line 531), it will be inherited by subprocess.run
-                
-                apptainer_cmd.append(container_image)
-                apptainer_cmd.append('nextflow')
-                apptainer_cmd.extend(cmd)
-                
-                result = subprocess.run(apptainer_cmd)
-                if result.returncode != 0:
-                    click.echo("", err=True)
-                    click.echo("Error: Apptainer execution failed.", err=True)
-                    click.echo("If the container image could not be pulled, try building it locally:", err=True)
-                    click.echo("  1. fairway eject", err=True)
-                    click.echo("  2. fairway build", err=True)
-                    click.echo("  3. Run this command again.", err=True)
-                    sys.exit(result.returncode)
-    finally:
-        if spark_manager and not slurm:
-            # Only stop if we are running in the current terminal session
-            # If we submitted via sbatch, the controller script should handle cleanup
-            spark_manager.stop_cluster()
+    click.echo(f"Starting pipeline execution using config: {config}")
+    pipeline = IngestionPipeline(config, spark_master=spark_master)
+    pipeline.run()
+    click.echo("Pipeline execution completed successfully.")
 
 @main.command()
 def eject():
@@ -736,6 +379,58 @@ def eject():
     with open('Dockerfile', 'w') as f:
         f.write(DOCKERFILE_TEMPLATE)
     click.echo("  Created file: Dockerfile (Docker container definition)")
+
+    # Write .dockerignore from template
+    from .templates import DOCKERIGNORE
+    if not os.path.exists('.dockerignore') or click.confirm('.dockerignore already exists. Overwrite?'):
+        with open('.dockerignore', 'w') as f:
+            f.write(DOCKERIGNORE)
+        click.echo("  Created file: .dockerignore")
+
+
+@main.command()
+@click.option('--force', is_flag=True, help='Force rebuild (overwrite existing image).')
+def build(force):
+    """Build the container image (Apptainer preferred, falls back to Docker)."""
+    
+    # Check for Apptainer.def
+    if os.path.exists('Apptainer.def'):
+        click.echo("Found Apptainer.def. Building Apptainer image...")
+        
+        if os.path.exists("fairway.sif"):
+            if force:
+                click.echo("Overwriting existing fairway.sif...")
+                os.remove("fairway.sif")
+            else:
+                if not click.confirm("fairway.sif already exists. Overwrite?"):
+                    return
+
+        cmd = ["apptainer", "build", "fairway.sif", "Apptainer.def"]
+        try:
+            subprocess.run(cmd, check=True)
+            click.echo("\nBuild complete: fairway.sif")
+            click.echo("You can now run tasks with: fairway run --profile apptainer")
+        except subprocess.CalledProcessError as e:
+            raise click.ClickException(f"Apptainer build failed with exit code {e.returncode}")
+        except FileNotFoundError:
+             raise click.ClickException("Apptainer command not found.")
+             
+    elif os.path.exists("Dockerfile"):
+        click.echo("Found Dockerfile. Building Docker image...")
+        
+        cmd = ["docker", "build", "-t", "fairway", "."]
+        try:
+            subprocess.run(cmd, check=True)
+            click.echo("\nBuild complete: fairway:latest")
+        except subprocess.CalledProcessError as e:
+             raise click.ClickException(f"Docker build failed with exit code {e.returncode}")
+        except FileNotFoundError:
+             raise click.ClickException("Docker command not found.")
+    else:
+        raise click.ClickException(
+            "No container definition found. "
+            "Run 'fairway eject' to generate Apptainer.def and Dockerfile."
+        )
 
 
 @main.command()
@@ -789,6 +484,72 @@ def shell(config, image, bind):
     except FileNotFoundError:
         click.echo("Error: 'apptainer' command not found. Is Apptainer installed?", err=True)
 
+@main.command()
+@click.option('--user', default=None, help='Filter by user (default: current user).')
+@click.option('--job-id', help='Filter by job ID.')
+def status(user, job_id):
+    """Show the status of submitted Slurm jobs (wrapper around squeue)."""
+    # Check for active Spark cluster info
+    master_path = os.path.expanduser("~/spark_master_url.txt")
+    job_id_path = os.path.expanduser("~/cluster_job_id.txt")
+    
+    if os.path.exists(master_path) and os.path.exists(job_id_path):
+        with open(master_path, 'r') as f:
+            master_url = f.read().strip()
+        with open(job_id_path, 'r') as f:
+            cluster_job_id = f.read().strip()
+        
+        click.echo("Found active Spark cluster:")
+        click.echo(f"  Slurm Job ID: {cluster_job_id}")
+        click.echo(f"  Master URL:   {master_url}")
+        click.echo("")
+
+    cmd = ['squeue']
+    
+    if job_id:
+        cmd.extend(['--jobs', job_id])
+    else:
+        # Default to current user if no user specified
+        if not user:
+            import getpass
+            user = getpass.getuser()
+        cmd.extend(['--user', user])
+        
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError:
+        click.echo("Error: 'squeue' command not found. Are you on a system with Slurm?", err=True)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error checking status: {e}", err=True)
+
+
+@main.command()
+@click.argument('job_id', required=False)
+@click.option('--all', 'kill_all', is_flag=True, help='Cancel all your running jobs.')
+def kill(job_id, kill_all):
+    """Cancel a Slurm job (wrapper around scancel)."""
+    if kill_all:
+        if not click.confirm("Are you sure you want to cancel ALL your running jobs?"):
+            return
+        
+        import getpass
+        user = getpass.getuser()
+        cmd = ['scancel', '--user', user]
+        click.echo(f"Cancelling all jobs for user {user}...")
+        
+    elif job_id:
+        cmd = ['scancel', job_id]
+        click.echo(f"Cancelling job {job_id}...")
+    else:
+        raise click.ClickException("Must specify JOB_ID or --all.")
+
+    try:
+        subprocess.run(cmd, check=True)
+        click.echo("Done.")
+    except FileNotFoundError:
+        click.echo("Error: 'scancel' command not found. Are you on a system with Slurm?", err=True)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error cancelling job: {e}", err=True)
 
 @main.command()
 def status():

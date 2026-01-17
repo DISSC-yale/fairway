@@ -1,6 +1,15 @@
 Bootstrap: docker
 From: python:3.10-slim-bookworm
 
+%labels
+    Author DISSC-Yale
+    Version 1.0
+    Description Fairway - Portable Data Ingestion Framework
+
+%files
+    # No external files needed currently
+
+
 %post
     # Fail fast on any error
     set -e
@@ -18,23 +27,65 @@ From: python:3.10-slim-bookworm
     chmod +x /usr/local/bin/nextflow
     
     # Install Spark
-    export SPARK_VERSION=4.1.1
-    export HADOOP_VERSION=3
+    SPARK_VERSION=4.1.1
+    HADOOP_VERSION=3
     curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" | tar -xz -C /opt
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
     
+    # -------------------------------------------------------------------------
+    # Python Environment Setup (Venv to avoid host pollution)
+    # -------------------------------------------------------------------------
+    # Create a virtual environment to isolate our dependencies.
+    # This prevents conflicts with ~/.local/lib on the host when $HOME is bound.
+    python3 -m venv /opt/venv
 
-    pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git@query-engine-refactor#egg=fairway[all]"
+    # Upgrade tools inside the venv
+    /opt/venv/bin/pip install --upgrade pip setuptools wheel
 
-%files
-    requirements.txt /opt/requirements.txt
+    # Install fairway directly (which pulls in all dependencies from pyproject.toml)
+    # We use the [all] extra to ensure we get pyspark, duckdb, etc.
+    echo "Installing fairway[all]..."
+    /opt/venv/bin/pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
 
 %environment
     export LC_ALL=C
-    export PYTHONNOUSERSITE=1
     export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
     export SPARK_HOME=/opt/spark
-    export PATH=$PATH:/opt/spark/bin:/usr/local/bin
+    
+    # -------------------------------------------------------------------------
+    # Virtual Environment Configuration
+    # -------------------------------------------------------------------------
+    # Prepend venv to PATH so 'python' and 'pip' use the isolated environment
+    export VIRTUAL_ENV=/opt/venv
+    export PATH="/opt/venv/bin:$PATH:/opt/spark/bin:/usr/local/bin"
+
+    # CRITICAL: Tell Spark exactly which python to use for drivers and workers.
+    # This prevents it from accidentally picking up /usr/bin/python or a host python.
+    export PYSPARK_PYTHON=/opt/venv/bin/python
+    export PYSPARK_DRIVER_PYTHON=/opt/venv/bin/python
+
+    # Safety: Unset PYTHONPATH to prevent host packages from leaking in via binding
+    unset PYTHONPATH
 
 %runscript
+    # The PATH update in %environment ensures this runs from the venv
     exec fairway "$@"
+
+%help
+    Fairway - A portable data ingestion framework for research data.
+    
+    This container uses an internal virtual environment (/opt/venv) to isolate
+    dependencies. This prevents conflicts with host libraries when $HOME is bound.
+    
+    Usage:
+      apptainer run fairway.sif --help
+      apptainer run fairway.sif run --config config/mydata.yaml
+      apptainer exec fairway.sif fairway generate-schema data/raw/file.csv
+    
+    Building:
+      apptainer build fairway.sif Apptainer.def
+
+    Notes on Binding:
+      - By default, Apptainer binds $HOME. This is generally safe now due to the venv.
+      - If you use --no-home, ensure you explicitly bind paths for credentials 
+        (e.g., ~/.aws) or input data if they reside in your home directory.
