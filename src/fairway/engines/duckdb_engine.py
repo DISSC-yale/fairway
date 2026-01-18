@@ -88,8 +88,15 @@ class DuckDBEngine:
         """)
         return True
 
-    def query(self, query):
-        return self.con.execute(query).df()
+    def inspect(self, query, limit=None, as_pandas=True):
+        """
+        Inspect data using SQL (Control Plane only).
+        """
+        # DuckDB is already local, limit is less critical but kept for API consistency
+        df = self.con.execute(query).df()
+        if limit:
+             df = df.head(limit)
+        return df if as_pandas else df
 
     def read_result(self, path):
         """
