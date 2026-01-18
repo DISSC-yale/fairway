@@ -93,18 +93,17 @@ class PySparkEngine:
         writer.parquet(output_path)
         return True
 
-    def query(self, query):
-        """Mock query interface for pipeline compatibility (usually returns Pandas)."""
-        # In a real Spark pipeline, we'd stay in Spark DataFrames
-        # For fairway's current design, we collect to Pandas for localized enrichment/validation
-        
+    def inspect(self, query, limit=100000, as_pandas=True):
+        """
+        Inspect data using SQL (Control Plane only).
+        WARNING: This pulls data to the driver. Always limited by default (100k rows) to prevent OOM.
+        """
         # Intercept DuckDB-style "SELECT * FROM 'path'" queries
         match = re.search(r"SELECT\s+\*\s+FROM\s+'([^']*)'", query, re.IGNORECASE)
         if match:
              path = match.group(1)
              try:
                  # Clean up recursive glob for Spark to ensure partition discovery works best on the dir
-                 # e.g. 'data/.../**/*.parquet' -> 'data/...'
                  if path.endswith("/**/*.parquet"):
                      path = path.replace("/**/*.parquet", "")
                  elif path.endswith("/**/*.csv"):
@@ -113,15 +112,36 @@ class PySparkEngine:
                  # Spark doesn't support 'FROM "file"' syntax in SQL directly for all versions/configs
                  # But we can easily route this to spark.read
                  if ".parquet" in path or os.path.isdir(path):
-                      return self.spark.read.parquet(path).toPandas()
+                      df = self.spark.read.parquet(path)
                  elif ".csv" in path:
-                      return self.spark.read.option("header", "true").csv(path).toPandas()
+                      df = self.spark.read.option("header", "true").csv(path)
                  elif ".json" in path:
-                      return self.spark.read.json(path).toPandas()
+                      df = self.spark.read.json(path)
+                 else:
+                      # Fallback
+                      df = self.spark.sql(query)
+                      
+                 if limit:
+                     print(f"Applying limit of {limit} rows to driver inspection.")
+                     df = df.limit(limit)
+                     
+                 if as_pandas:
+                     return df.toPandas()
+                 return df
+
              except Exception as e:
                  print(f"WARNING: Failed to optimize file query '{query}': {e}. Falling back to SQL.")
 
-        return self.spark.sql(query).toPandas()
+        # Standard SQL
+        df = self.spark.sql(query)
+        
+        if limit:
+            print(f"Applying limit of {limit} rows to driver inspection.")
+            df = df.limit(limit)
+            
+        if as_pandas:
+            return df.toPandas()
+        return df
 
     def read_result(self, path):
         """
