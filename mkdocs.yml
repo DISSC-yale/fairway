@@ -32,3 +32,11 @@ nav:
     - Supported Formats: supported_formats.md
   - Design Docs:
     - Flexible Ingestion RFC: design_docs/flexible_ingestion_rfc.md
+
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
