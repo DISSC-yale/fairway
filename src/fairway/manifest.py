@@ -18,7 +18,7 @@ class ManifestManager:
         with open(self.manifest_path, 'w') as f:
             json.dump(self.manifest, f, indent=2)
 
-    def get_file_hash(self, path):
+    def get_file_hash(self, file_path):
         sha256_hash = hashlib.sha256()
         
         if os.path.isdir(file_path):

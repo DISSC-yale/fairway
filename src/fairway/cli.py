@@ -128,11 +128,7 @@ def init(name, engine):
         f.write(MAKEFILE_TEMPLATE)
     click.echo("  Created file: Makefile")
     
-    from .templates import FAIRWAY_HPC_SH_TEMPLATE
-    with open(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 'w') as f:
-        f.write(FAIRWAY_HPC_SH_TEMPLATE)
-    os.chmod(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 0o755)
-    click.echo("  Created file: scripts/fairway-hpc.sh")
+
 
     # Create example transformation
     with open(os.path.join(name, 'src', 'transformations', 'example_transform.py'), 'w') as f:
@@ -526,7 +522,7 @@ def status(user, job_id):
 @main.command()
 @click.argument('job_id', required=False)
 @click.option('--all', 'kill_all', is_flag=True, help='Cancel all your running jobs.')
-def kill(job_id, kill_all):
+def cancel(job_id, kill_all):
     """Cancel a Slurm job (wrapper around scancel)."""
     if kill_all:
         if not click.confirm("Are you sure you want to cancel ALL your running jobs?"):
@@ -551,75 +547,7 @@ def kill(job_id, kill_all):
     except subprocess.CalledProcessError as e:
         click.echo(f"Error cancelling job: {e}", err=True)
 
-@main.command()
-def status():
-    """Show status of fairway jobs (wraps squeue)."""
-    click.echo(f"Fairway jobs for user: {os.environ.get('USER', 'unknown')}")
-    try:
-        user = os.environ.get('USER')
-        if not user:
-            click.echo("Error: USER environment variable not set.", err=True)
-            return
 
-        # Using -o to format output similar to the script
-        # %.10i %.20j %.8T %.10M %.6D %R
-        subprocess.run([
-            "squeue", 
-            "-u", user, 
-            "--name=fairway*", 
-            "-o", "%.10i %.20j %.8T %.10M %.6D %R"
-        ], check=True)
-    except subprocess.CalledProcessError:
-        click.echo("Error running squeue. Is Slurm available?", err=True)
-    except FileNotFoundError:
-        click.echo("squeue command not found.", err=True)
-
-@main.command()
-@click.argument('job_id')
-def cancel(job_id):
-    """Cancel a fairway job (wraps scancel)."""
-    click.echo(f"Cancelling job: {job_id}")
-    try:
-        subprocess.run(["scancel", job_id], check=True)
-        click.echo("Job cancelled.")
-    except subprocess.CalledProcessError:
-        click.echo(f"Error cancelling job {job_id}.", err=True)
-    except FileNotFoundError:
-        click.echo("scancel command not found.", err=True)
-
-@main.command()
-def build():
-    """Build the Apptainer container from local Apptainer.def."""
-    container_local = "fairway.sif"
-    
-    if os.path.exists(container_local):
-        if not click.confirm(f"Container {container_local} already exists. Overwrite?"):
-            return
-
-    # Auto-eject if missing
-    if not os.path.exists("Apptainer.def"):
-        click.echo("Apptainer.def not found. Creating from template...", err=True)
-        from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE
-        with open('Apptainer.def', 'w') as f:
-            f.write(APPTAINER_DEF)
-        click.echo("  Created file: Apptainer.def")
-        
-        # Also create Dockerfile for completeness, though not used here
-        if not os.path.exists('Dockerfile'):
-            with open('Dockerfile', 'w') as f:
-                f.write(DOCKERFILE_TEMPLATE)
-            click.echo("  Created file: Dockerfile")
-
-    click.echo("Building from local Apptainer.def...")
-    cmd = ["apptainer", "build", "--force", container_local, "Apptainer.def"]
-    
-    try:
-        subprocess.run(cmd, check=True)
-        click.echo(f"\nContainer built successfully: {container_local}")
-    except subprocess.CalledProcessError:
-        click.echo("\nError: Container build failed.", err=True)
-    except FileNotFoundError:
-        click.echo("apptainer command not found. Is Apptainer installed?", err=True)
 
 @main.command()
 def pull():
