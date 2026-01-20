@@ -102,5 +102,6 @@ class DuckDBEngine:
         """
         Reads a Parquet result from the given path into a DuckDB Relation (Lazy).
         """
-        # Recursively read all parquet files in the path
+        if os.path.isfile(path):
+             return self.con.sql(f"SELECT * FROM '{path}'")
         return self.con.sql(f"SELECT * FROM '{path}/**/*.parquet'")

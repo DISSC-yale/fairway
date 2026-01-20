@@ -107,6 +107,7 @@ class Config:
                     'format': source_format,
                     'metadata': {},
                     'schema': resolved_schema,
+                    'transformation': src.get('transformation'),
                     'hive_partitioning': True
                 })
 
@@ -133,6 +134,7 @@ class Config:
                         'format': source_format,
                         'metadata': metadata,
                         'schema': resolved_schema,
+                        'transformation': src.get('transformation'),
                         'hive_partitioning': False
                     })
         return expanded

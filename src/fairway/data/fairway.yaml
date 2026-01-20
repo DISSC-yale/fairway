@@ -94,6 +94,12 @@ performance:
 #   upload_merge_strategy: "append" # or 'replace', 'fail'
 
 # Custom Transformation Script (Optional)
-# Path to a python script with a custom transformer class
+# Can be specified per-source or globally (global is deprecated)
+# sources:
+#   - name: "sales"
+#     path: "data/raw/sales.csv"
+#     transformation: "src/transformations/sales_transform.py"
+
+# Global fallback (deprecated):
 # data:
 #   transformation: "src/transformations/example_transform.py"
