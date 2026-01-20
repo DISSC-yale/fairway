@@ -66,7 +66,8 @@ class IngestionPipeline:
             if partition_by:
                 output_basename = output_name
             else:
-                output_basename = f"{output_name}.{fmt}"
+                # We always ingest to Parquet in the intermediate layer
+                output_basename = f"{output_name}.parquet"
                 
             output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
@@ -104,27 +105,44 @@ class IngestionPipeline:
                     else:
                         df = Enricher.enrich_dataframe(df)
                 
-                # 4. Custom Transformations (Phase III)
-                transform_script = self.config.data.get('transformation')
+                # 4. Custom Transformations (Per-File > Global)
+                transform_script = source.get('transformation') or self.config.data.get('transformation')
+                
+                # Default validation target is the ingested path
+                validation_target_path = output_path
+                
                 if transform_script:
                     from .transformations.registry import load_transformer
                     TransformerClass = load_transformer(transform_script)
                     if TransformerClass:
                         print(f"Applying custom transformations from {transform_script}...")
                         df = TransformerClass(df).transform()
+                        
+                        # Write transformed data to a separate 'processed' path to preserve Ingested state
+                        # We append '_processed' to the name within the intermediate directory
+                        if partition_by:
+                            processed_basename = f"{output_name}_processed"
+                        else:
+                            processed_basename = f"{output_name}_processed.parquet"
+                            
+                        processed_path = os.path.join(self.config.storage['intermediate_dir'], processed_basename)
+                        
+                        if is_spark:
+                             # Spark writes are actions.
+                             df.write.mode("overwrite").partitionBy(*partition_by) if partition_by else df.write.mode("overwrite").parquet(processed_path)
+                             # Reload for validation
+                             df = self.engine.read_result(processed_path)
+                        else:
+                            # Pandas/DuckDB path
+                            if os.path.isdir(processed_path):
+                                import shutil
+                                shutil.rmtree(processed_path)
+                            df.to_parquet(processed_path, partition_cols=partition_by)
+                        
+                        # Update target for validation and finalization
+                        validation_target_path = processed_path
 
-                # Re-save after enrichment and transformation
-                if is_spark:
-                     # Spark writes are actions.
-                     df.write.mode("overwrite").partitionBy(*partition_by) if partition_by else df.write.mode("overwrite").parquet(output_path)
-                     # Reload for validation to ensure we validate the materialized data
-                     df = self.engine.read_result(output_path)
-                else:
-                    # Pandas/DuckDB path
-                    if os.path.isdir(output_path):
-                        import shutil
-                        shutil.rmtree(output_path)
-                    df.to_parquet(output_path, partition_cols=partition_by)
+                # Note: If no transformation, we validate the original output_path (Ingested data)
 
                 # 5. Validations
                 if is_spark:
@@ -138,7 +156,20 @@ class IngestionPipeline:
                     print(f"Validations passed for {source['name']}")
                     
                     # Move/Copy to final directory
-                    final_output_path = os.path.join(self.config.storage['final_dir'], os.path.basename(output_path))
+                    # Move/Copy to final directory
+                    # We want the final filename to match the source/output name, not the _processed name
+                    final_basename = f"{output_name}.{source_format}" if not partition_by else output_name
+                    # Note: source_format might be CSV, but we write PARQUET. 
+                    # Actually output_path construction above used fmt (which was missing in previous code context, but likely 'parquet')
+                    # Let's trust output_basename logic from earlier but apply to final dir
+                    
+                    if partition_by:
+                        final_basename = output_name
+                    else:
+                        final_basename = f"{output_name}.parquet" # We always write parquet final
+
+                    final_output_path = os.path.join(self.config.storage['final_dir'], final_basename)
+                    
                     if os.path.exists(final_output_path):
                         import shutil
                         if os.path.isdir(final_output_path):
@@ -147,10 +178,10 @@ class IngestionPipeline:
                             os.remove(final_output_path)
                     
                     import shutil
-                    if os.path.isdir(output_path):
-                        shutil.copytree(output_path, final_output_path)
+                    if os.path.isdir(validation_target_path):
+                        shutil.copytree(validation_target_path, final_output_path)
                     else:
-                        shutil.copy2(output_path, final_output_path)
+                        shutil.copy2(validation_target_path, final_output_path)
                     
                     print(f"Data finalized at {final_output_path}")
 
@@ -168,7 +199,7 @@ class IngestionPipeline:
                     
                     stats = {
                         "row_count": row_count,
-                        "config_path": sys.argv[1],
+                        "config_path": getattr(self.config, 'config_path', 'unknown'),
                         "status": "success"
                     }
                     Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
