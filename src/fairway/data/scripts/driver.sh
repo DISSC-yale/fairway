@@ -14,6 +14,15 @@
 # 3. Run Pipeline via Shared Script
 # Capture Makefile argument if provided (prioritize $1, fallback to env var)
 HAS_APPTAINER=${1:-$HAS_APPTAINER}
+
+# Fallback: If not explicitly set, check file existence (for manual submission)
+if [ -z "$HAS_APPTAINER" ]; then
+    if [ -f "Apptainer.def" ] || [ -f "fairway.sif" ]; then
+        HAS_APPTAINER="yes"
+    else
+        HAS_APPTAINER="no"
+    fi
+fi
 export FAIRWAY_VENV=$FAIRWAY_VENV
 
 # =============================================================================

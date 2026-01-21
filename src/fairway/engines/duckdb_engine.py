@@ -15,60 +15,89 @@ class DuckDBEngine:
         self.con.execute("INSTALL httpfs; LOAD httpfs;")
         self.con.execute("INSTALL aws; LOAD aws;") # Or gcs if needed
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None, hive_partitioning=False, **kwargs):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None, hive_partitioning=False, target_rows=None, schema=None, write_mode='overwrite', **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
         if format == 'csv':
-            return self._ingest_csv(input_path, output_path, partition_by, metadata, hive_partitioning)
+            return self._ingest_csv(input_path, output_path, partition_by, metadata, hive_partitioning, schema, write_mode, **kwargs)
         elif format == 'json':
-            return self._ingest_json(input_path, output_path, partition_by, metadata)
+            return self._ingest_json(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
         elif format == 'parquet':
-            return self._ingest_parquet(input_path, output_path, partition_by, metadata)
+            return self._ingest_parquet(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
         else:
             raise ValueError(f"Unsupported format for DuckDB engine: {format}")
 
-    def _ingest_csv(self, input_path, output_path, partition_by=None, metadata=None, hive_partitioning=False):
+    def _ingest_csv(self, input_path, output_path, partition_by=None, metadata=None, hive_partitioning=False, schema=None, write_mode='overwrite', **kwargs):
         """
         Converts CSV to Parquet using DuckDB, with metadata injection.
         """
-        # Load data
-        if hive_partitioning:
-             # When hive partitioning is enabled, we need to ensure we read recursively 
-             # and enable the option.
-             # If input_path is a directory, append '/**/*.csv' logic or similar if implicit?
-             # DuckDB read_csv_auto usually handles directories if glob is provided.
-             # But if the user provided a directory path without a glob, we might need to append keys.
-             # However, assuming config_loader passed the directory path directly for hive_partitioning=True.
-             # We should probably append '/**/*.csv' or just '**' if the user didn't provide a pattern.
-
-             # Check if input path looks like a glob. If not, make it recursive.
-             if '*' not in input_path:
-                 read_path = os.path.join(input_path, "**/*.csv")
-             else:
-                 read_path = input_path
-             
-             self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto('{read_path}', hive_partitioning=1)")
-        else:
-             self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto('{input_path}')")
+        # Construct read_csv_auto options
+        options = []
         
-        return self._write_to_parquet(output_path, partition_by, metadata)
+        # Handle header=False logic: if no header, we typically need to provide names/types from schema
+        if kwargs.get('header') is False and schema:
+            # DuckDB read_csv_auto can take names/types
+            # But the most robust way for read_csv_auto with no header is often to just let it infer or pass columns
+            # However, mapping kwargs directly:
+            pass
 
-    def _ingest_json(self, input_path, output_path, partition_by=None, metadata=None):
+        # Pass through arbitrary kwargs to the SQL function string
+        # e.g. read_csv_auto('path', header=False, delim='|')
+        # We need to format python kwargs to SQL text options
+        # e.g. header=False -> header=False
+        
+        # Explicit handling for common options to ensure correct types/formatting in SQL
+        if hive_partitioning:
+            kwargs['hive_partitioning'] = 1
+
+        if kwargs.get('header') is False and schema:
+             # If header is false, we try to use the schema keys as names if DuckDB supports it in read_csv_auto
+             # Actually, read_csv_auto supports 'names' list. 
+             kwargs['names'] = list(schema.keys())
+
+        for k, v in kwargs.items():
+            if isinstance(v, bool):
+                val = str(v).lower() # true/false
+            elif isinstance(v, str):
+                val = f"'{v}'"
+            elif isinstance(v, list):
+                # list -> ['a', 'b']
+                val = f"[{', '.join([f'{repr(x)}' for x in v])}]"
+            else:
+                val = v
+            options.append(f"{k}={val}")
+        
+        options_str = ", ".join(options)
+        if options_str:
+            options_str = ", " + options_str
+
+        # Check if input path looks like a glob. If not, make it recursive.
+        if '*' not in input_path and os.path.isdir(input_path):
+             read_path = os.path.join(input_path, "**/*.csv")
+        else:
+             read_path = input_path
+             
+        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto('{read_path}'{options_str})")
+        
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
+
+    def _ingest_json(self, input_path, output_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
         """
         Converts JSON to Parquet.
         """
+        # TODO: Pass kwargs to read_json_auto if needed
         self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_json_auto('{input_path}')")
-        return self._write_to_parquet(output_path, partition_by, metadata)
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
 
-    def _ingest_parquet(self, input_path, output_path, partition_by=None, metadata=None):
+    def _ingest_parquet(self, input_path, output_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
         """
         Pass-through Parquet ingestion (useful for unifying pipeline logic).
         """
         self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_parquet('{input_path}')")
-        return self._write_to_parquet(output_path, partition_by, metadata)
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
 
-    def _write_to_parquet(self, output_path, partition_by=None, metadata=None):
+    def _write_to_parquet(self, output_path, partition_by=None, metadata=None, write_mode='overwrite'):
         # Inject metadata columns if provided
         select_clause = "*"
         if metadata:
@@ -81,10 +110,23 @@ class DuckDBEngine:
             # DuckDB 1.0+ supports PARTITION_BY in COPY
             partition_clause = f", PARTITION_BY ({', '.join(partition_by)})"
             
+        # Determine overwrite behavior
+        # DuckDB's COPY ... (OVERWRITE TRUE) replaces the directory/file
+        # If write_mode='append', we should NOT use OVERWRITE TRUE. 
+        # However, DuckDB 0.9.x/1.0 COPY to parquet directory behavior works as append if OVERWRITE is not specified?
+        # Let's verify standard DuckDB behavior:
+        # COPY ... TO 'dir' (FORMAT PARQUET, PARTITION_BY ...) -> Writes new files into dir.
+        
+        overwrite_option = "OVERWRITE_OR_IGNORE TRUE" if write_mode == 'overwrite' else "OVERWRITE_OR_IGNORE FALSE" 
+        # Actually DuckDB syntax is typically: OVERWRITE TRUE/FALSE.
+        # If write_mode is 'append', we want OVERWRITE FALSE (default usually, or just don't specify)
+        
+        overwrite_val = "TRUE" if write_mode == 'overwrite' else "FALSE"
+
         self.con.execute(f"""
             COPY (SELECT {select_clause} FROM raw_data) 
             TO '{output_path}' 
-            (FORMAT PARQUET{partition_clause}, OVERWRITE TRUE)
+            (FORMAT PARQUET{partition_clause}, OVERWRITE {overwrite_val})
         """)
         return True
 
@@ -102,5 +144,6 @@ class DuckDBEngine:
         """
         Reads a Parquet result from the given path into a DuckDB Relation (Lazy).
         """
-        # Recursively read all parquet files in the path
+        if os.path.isfile(path):
+             return self.con.sql(f"SELECT * FROM '{path}'")
         return self.con.sql(f"SELECT * FROM '{path}/**/*.parquet'")

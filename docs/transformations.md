@@ -23,15 +23,32 @@ class MyTransformer:
 
 ## Registering the Transformer
 
-Link your transformer to a dataset in the YAML config:
+Link your transformer to a specific source in the YAML config. You can assign different transformers to different files.
 
 ```yaml
-data:
-  transformation: "my_transform"
+sources:
+  - name: "sales_data"
+    path: "data/raw/sales.csv"
+    transformation: "src/transformations/sales_cleaner.py"
+
+  - name: "customer_data"
+    path: "data/raw/customers.json"
+    transformation: "src/transformations/customer_flattener.py"
 ```
 
-fairway will dynamically load `MyTransformer` from `src/transformations/my_transform.py` and apply it to the data during Phase III of the pipeline.
+Fairway will dynamically load the specified script for each source.
+
+## Data Flow & State Preservation
+
+Fairway implements a "Researcher Data Flow" that preserves data at each stage:
+
+1.  **Raw**: Your original files in `data/raw/`.
+2.  **Ingested (Faithful)**: A direct Parquet conversion of the raw data, stored in `data/intermediate/{name}.parquet`. This is **always** created and preserved.
+3.  **Transformed (Processed)**: If a transformation script is provided, Fairway applies it to the Ingested data and saves the result to `data/intermediate/{name}_processed.parquet`.
+4.  **Final**: The validated dataset (Transformed or Ingested) is promoted to `data/final/`.
+
+This ensures you can always inspect the "Ingested" state to verify that the raw data was read correctly before any custom logic was applied.
 
 ## Transformation Lineage
 
-fairway tracks the lineage of transformed data products, ensuring you can always trace a final table back to the specific raw source file and transformation script version used to create it.
+Fairway tracks the lineage of transformed data products, ensuring you can always trace a final table back to the specific raw source file and transformation script version used to create it.

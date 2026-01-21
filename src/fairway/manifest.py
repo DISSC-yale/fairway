@@ -21,7 +21,27 @@ class ManifestManager:
     def get_file_hash(self, file_path):
         sha256_hash = hashlib.sha256()
         
-        if os.path.isdir(file_path):
+        # Check if glob pattern
+        import glob
+        if '*' in file_path:
+             files = sorted(glob.glob(file_path, recursive=True))
+             if not files:
+                 # If no files match, maybe return empty hash or special hash?
+                 # Or just hash the pattern itself to indicate "present but empty"?
+                 sha256_hash.update(b"empty_glob")
+             
+             for fpath in files:
+                 if os.path.isfile(fpath):
+                     relpath = os.path.relpath(fpath, os.path.dirname(file_path) or '.')
+                     sha256_hash.update(relpath.encode('utf-8'))
+                     try:
+                         with open(fpath, "rb") as f:
+                             for byte_block in iter(lambda: f.read(4096), b""):
+                                 sha256_hash.update(byte_block)
+                     except (IOError, OSError):
+                         pass
+        
+        elif os.path.isdir(file_path):
             # For directories, hash all files recursively, sorted by path
             for root, dirs, files in sorted(os.walk(file_path)):
                 for names in sorted(files):
@@ -37,9 +57,13 @@ class ManifestManager:
                         # Skip files we can't read
                         pass
         else:
-            with open(file_path, "rb") as f:
-                for byte_block in iter(lambda: f.read(4096), b""):
-                    sha256_hash.update(byte_block)
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    for byte_block in iter(lambda: f.read(4096), b""):
+                        sha256_hash.update(byte_block)
+            else:
+                 # File missing?
+                 pass
                     
         return sha256_hash.hexdigest()
 

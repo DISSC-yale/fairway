@@ -48,7 +48,7 @@ Key configuration elements include:
 - **Project Metadata**: Name, description, and owner.
 - **Engine**: Execution backend (e.g., `duckdb`, `pyspark`).
 - **Data Source**: Path and format of input data.
-- **Transformations**: Steps to clean or modify data.
+- **Transformations**: Steps to clean or modify data. Can be defined globally or per-source file.
 - **Sink**: Output destination and format.
 
 ### 3. Run the Pipeline
@@ -132,6 +132,7 @@ sources:
   - name: "sales"
     path: "data/raw/sales.csv"
     format: "csv"
+    transformation: "src/transformations/sales_cleaning.py"
     schema:
       id: "int"
       date: "date"
