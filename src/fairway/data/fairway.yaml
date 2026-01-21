@@ -45,6 +45,19 @@ sources:
       address: "STRING"
       year: "INTEGER"
       month: "INTEGER"
+
+    # Engine-specific read options (passed directly to read_csv/spark.read.options)
+    # read_options:
+    #   header: false
+    #   skip: 1 
+    #   delim: "|"
+    
+    # Preprocessing Configuration
+    # preprocess:
+    #   action: "unzip" # or path to script: "scripts/my_script.py"
+    #   scope: "per_file" # or 'global'
+    #   execution_mode: "driver" # or 'cluster' (requires pyspark)
+
   
     partition_by:
       - "year"
