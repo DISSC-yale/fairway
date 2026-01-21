@@ -152,10 +152,20 @@ class Config:
                     execution_mode = src.get('preprocess', {}).get('execution_mode', 'driver')
                     if execution_mode == 'cluster' and self.engine not in ['pyspark', 'spark']:
                          raise ValueError(f"Configuration Error: 'execution_mode: cluster' is only available with 'engine: pyspark'. Source: {src.get('name')}")
-
+                    
+                    # Determine source root for relocatability
+                    source_root_raw = src.get('root')
+                    source_root = None
+                    if source_root_raw:
+                        if not os.path.isabs(source_root_raw):
+                             source_root = os.path.join(config_dir, source_root_raw)
+                        else:
+                             source_root = source_root_raw
+                    
                     expanded.append({
                         'name': src.get('name', os.path.basename(f)),
                         'path': f,
+                        'root': source_root,
                         'format': source_format,
                         'metadata': metadata,
                         'schema': resolved_schema,
