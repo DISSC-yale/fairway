@@ -77,7 +77,8 @@ class Config:
                 continue
 
             # Resolve path relative to config file if it's not absolute
-            if not os.path.isabs(path_pattern):
+            # SKIP if 'root' is defined (let pipeline handle it)
+            if not os.path.isabs(path_pattern) and not src.get('root'):
                 # Try relative to config dir first
                 resolved_path = os.path.join(config_dir, path_pattern)
                 # If that doesn't exist, maybe it is relative to CWD? 
