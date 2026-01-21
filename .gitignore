@@ -11,3 +11,4 @@ dist/
 build/
 .pytest_cache/
 mock_apptainer
+tests/output
