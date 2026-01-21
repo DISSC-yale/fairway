@@ -49,6 +49,18 @@ class IngestionPipeline:
         mode = preprocess_config.get('execution_mode', 'driver') # 'driver' or 'cluster'
         
         print(f"Preprocessing {source['name']} with action='{action}', scope='{scope}', mode='{mode}'...")
+
+        # Temp Location Support
+        temp_loc = self.config.temp_location
+        batch_dir = None
+        if temp_loc:
+             import uuid
+             # Generate a unique batch directory for this preprocessing run
+             batch_id = str(uuid.uuid4())[:8]
+             batch_dir = os.path.join(temp_loc, f"fairway_batch_{batch_id}")
+             # Ensure the batch root exists (assuming shared FS)
+             os.makedirs(batch_dir, exist_ok=True)
+             print(f"INFO: Using global temp location: {batch_dir}")
         
         # Resolve input files
         # If input_path is a glob, we get all files.
@@ -63,6 +75,8 @@ class IngestionPipeline:
              
         # Resolve glob against the FULL path (root + relative_glob)
         files = glob.glob(full_input_path) if '*' in full_input_path else [full_input_path]
+        
+        print(f"DEBUG: Found {len(files)} candidates at {full_input_path}")
         
         if not files:
              print(f"WARNING: No files found for preprocessing at {full_input_path} (CWD: {os.getcwd()})")
@@ -86,7 +100,13 @@ class IngestionPipeline:
              file_name = os.path.basename(file_path)
              name_no_ext = os.path.splitext(file_name)[0]
              
-             output_dir = os.path.join(base_dir, f".preprocessed_{name_no_ext}")
+             if batch_dir:
+                  # Use the global temp batch directory
+                  output_dir = os.path.join(batch_dir, name_no_ext)
+             else:
+                  # Use default sibling directory
+                  output_dir = os.path.join(base_dir, f".preprocessed_{name_no_ext}")
+                  
              os.makedirs(output_dir, exist_ok=True)
              
              if action == 'unzip':
@@ -124,11 +144,16 @@ class IngestionPipeline:
              
              # Dispatch to cluster
              # Note: For custom scripts, ensure the script file is accessible on workers
+             print(f"INFO: Distributing preprocessing task for {len(files)} files to Spark cluster...")
              results = self.engine.distribute_task(files, process_file)
+             print(f"INFO: Cluster task complete. Processed {len(results)} items.")
              processed_paths = results
         else:
              # Driver mode
-             for f in files:
+             print(f"INFO: Running preprocessing locally for {len(files)} files...")
+             for i, f in enumerate(files):
+                 if i % 10 == 0:
+                     print(f"  Processed {i}/{len(files)}...")
                  processed_paths.append(process_file(f))
         
         # Return the new input path. 
@@ -147,11 +172,14 @@ class IngestionPipeline:
              return processed_paths[0]
         else:
              # If multiple, return the common structure... 
-             # This is tricky if they are scattered. 
-             # For common case: data/*.zip -> data/.preprocessed_*/
-             # Return data/.preprocessed_*/* (contents)
-             base = os.path.dirname(input_path)
-             return os.path.join(base, ".preprocessed_*", "*") 
+             if batch_dir:
+                  # If we used a batch dir, return everything inside it
+                  # Structure: batch_dir / <file_dir> / <contents>
+                  return os.path.join(batch_dir, "*", "*")
+             else:
+                  # Original logic: sibling directories
+                  base = os.path.dirname(input_path)
+                  return os.path.join(base, ".preprocessed_*", "*") 
 
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
@@ -229,6 +257,7 @@ class IngestionPipeline:
             write_mode = source.get('write_mode', 'overwrite')
             
             # For partitioning, DuckDB creates a directory. 
+            print(f"INFO: Starting ingestion for {source['name']} from {input_path} to {output_path}")
             success = self.engine.ingest(
                 input_path, 
                 output_path,
