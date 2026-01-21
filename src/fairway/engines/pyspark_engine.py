@@ -54,15 +54,27 @@ class PySparkEngine:
             builder = builder.master(spark_master)
         self.spark = builder.getOrCreate()
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, target_rows=500000, hive_partitioning=False, **kwargs):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
         # PySpark supports generic load with format option
         reader = self.spark.read.format(format)
         
+        # Apply Generic Read Options (passthrough)
+        # e.g. header='false', delim='|', quote='"'
+        if kwargs:
+            # filters out None values just in case
+            opts = {k: str(v) for k, v in kwargs.items() if v is not None}
+            reader = reader.options(**opts)
+
         if format == 'csv':
-            reader = reader.option("header", "true").option("inferSchema", "true")
+            # Default behavior if not overridden options
+            if 'header' not in kwargs:
+                 reader = reader.option("header", "true")
+            if 'inferSchema' not in kwargs:
+                 reader = reader.option("inferSchema", "true")
+                 
             if hive_partitioning:
                 # Ensure recursive file lookup creates the correct partition discovery
                 reader = reader.option("recursiveFileLookup", "true")
@@ -78,15 +90,18 @@ class PySparkEngine:
         if balanced and partition_by:
             # Salting logic inspired by data_l2 to prevent skew
             # Assuming ~500k rows per file is a good default, or user provided value
-            total_rows = df.count()
-            num_salts = max(1, total_rows // target_rows)
+            total_rows_approx = df.rdd.count() # Force count for salt calculation
+            if target_rows_per_file:
+                 target_rows = target_rows_per_file
+            
+            num_salts = max(1, total_rows_approx // target_rows)
             
             df = df.withColumn("salt", (F.rand() * num_salts).cast("int"))
             partition_cols = partition_by + ["salt"]
         else:
             partition_cols = partition_by
 
-        writer = df.write.mode("overwrite")
+        writer = df.write.mode(write_mode)
         if partition_cols:
             writer = writer.partitionBy(*partition_cols)
             
@@ -150,3 +165,27 @@ class PySparkEngine:
         Enables 'mergeSchema' to handle evolving schemas across partitions.
         """
         return self.spark.read.option("mergeSchema", "true").parquet(path)
+
+    def distribute_task(self, items, func):
+        """
+        Distributes a task (python function) across the Spark cluster using RDDs.
+        
+        Args:
+            items (list): List of items (e.g., file paths) to process.
+            func (callable): Python function that takes an item and returns a result.
+            
+        Returns:
+            list: List of results collected from workers.
+        """
+        if not items:
+            return []
+            
+        # Parallelize the items into an RDD
+        # numSlices=len(items) ensures max parallelism, or spark default
+        # For very large lists, standard parallelism is better.
+        # For standard ingestion (1000s of files), defaults are usually fine, 
+        # but we might want at least as many partitions as executors.
+        rdd = self.spark.sparkContext.parallelize(items, numSlices=min(len(items), 10000))
+        
+        # Apply the function and collect results
+        return rdd.map(func).collect()

@@ -18,7 +18,13 @@ class Config:
             raise ValueError(f"Invalid engine: '{self.engine}'. Must be one of {valid_engines}")
 
         self.storage = self.data.get('storage', {})
-        self.sources = self._expand_sources(self.data.get('sources', []))
+        
+        # Support both root-level 'sources' and 'data: sources' structures
+        raw_srcs = self.data.get('sources')
+        if not raw_srcs:
+             raw_srcs = self.data.get('data', {}).get('sources', [])
+             
+        self.sources = self._expand_sources(raw_srcs)
         self.validations = self.data.get('validations', {})
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
@@ -76,10 +82,6 @@ class Config:
                 resolved_path = os.path.join(config_dir, path_pattern)
                 # If that doesn't exist, maybe it is relative to CWD? 
                 # But prioritizing config_dir is safer for reproducibility.
-                # If neither exists, we'll likely fail later, but let's stick to resolved_path for glob/check.
-                # However, for globbing we might need to be careful.
-                # If the user ran from CWD and the path depends on CWD, this change might break it.
-                # Let's check existence.
                 if not os.path.exists(resolved_path) and not glob.glob(resolved_path):
                      # If not found relative to config, try CWD (backward compatibility)
                      if os.path.exists(path_pattern) or glob.glob(path_pattern):
@@ -90,28 +92,47 @@ class Config:
             raw_schema = src.get('schema')
             resolved_schema = self._load_schema(raw_schema)
 
-            if hive_partitioning:
-                 # Treat the directory as a single source unit
-                 if not os.path.exists(resolved_path) and not os.path.isdir(resolved_path):
-                      print(f"WARNING: Hive partitioned source path not found: {resolved_path}")
+            raw_schema = src.get('schema')
+            resolved_schema = self._load_schema(raw_schema)
+            
+            # Check for glob expansion override (defaults to True for backward compatibility)
+            # Setting expand_glob=False treats the pattern as a single source (good for Spark/Distributed batching)
+            expand_glob = src.get('expand_glob', True)
+
+            if hive_partitioning or not expand_glob:
+                 # Treat the directory/glob as a single source unit
+                 # Logic is shared with Hive partitioning branch but without the hive flag if just expand_glob=False
+                 
+                 # Check existence only if literal path (not a glob with wildcards, unless checking dir)
+                 if '*' not in resolved_path and not os.path.exists(resolved_path):
+                      print(f"WARNING: Source path not found: {resolved_path}")
                       continue
                  
                  source_format = src.get('format', 'csv')
                  valid_formats = {'csv', 'json', 'parquet'}
                  if source_format not in valid_formats:
                       raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
+                 
+                 # Name is explicit or basename of path (which might be a pattern like *.csv)
+                 # If pattern, basename might be '*.csv'. Ideally user provides name.
+                 source_name = src.get('name', os.path.basename(resolved_path))
 
                  expanded.append({
-                    'name': src.get('name', os.path.basename(resolved_path)),
+                    'name': source_name,
                     'path': resolved_path,
                     'format': source_format,
                     'metadata': {},
                     'schema': resolved_schema,
-                    'hive_partitioning': True
+                    'transformation': src.get('transformation'),
+                    'hive_partitioning': hive_partitioning,
+                    'partition_by': src.get('partition_by', []),
+                    'read_options': src.get('read_options', {}),
+                    'preprocess': src.get('preprocess', {}),
+                    'write_mode': src.get('write_mode', 'overwrite')
                 })
 
             else:
-                # Glob discovery
+                # Glob discovery (Eager expansion)
                 files = glob.glob(resolved_path, recursive=True)
                 
                 for f in files:
@@ -127,13 +148,23 @@ class Config:
                     if source_format not in valid_formats:
                          raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
 
+                    
+                    execution_mode = src.get('preprocess', {}).get('execution_mode', 'driver')
+                    if execution_mode == 'cluster' and self.engine not in ['pyspark', 'spark']:
+                         raise ValueError(f"Configuration Error: 'execution_mode: cluster' is only available with 'engine: pyspark'. Source: {src.get('name')}")
+
                     expanded.append({
                         'name': src.get('name', os.path.basename(f)),
                         'path': f,
                         'format': source_format,
                         'metadata': metadata,
                         'schema': resolved_schema,
-                        'hive_partitioning': False
+                        'transformation': src.get('transformation'),
+                        'hive_partitioning': False,
+                        'partition_by': src.get('partition_by', []),
+                        'read_options': src.get('read_options', {}),
+                        'preprocess': src.get('preprocess', {}),
+                        'write_mode': src.get('write_mode', 'overwrite')
                     })
         return expanded
 

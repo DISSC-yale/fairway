@@ -58,14 +58,17 @@ enrichment:
 
 ## Custom Transformations
 
-If your data requires complex reshaping, you can point to a custom transformation script:
+If your data requires complex reshaping, you can point to a custom transformation script for each source.
 
 ```yaml
-data:
-  transformation: "my_custom_transform"
+sources:
+  - name: "sales"
+    path: "data/raw/sales.csv"
+    format: "csv"
+    transformation: "src/transformations/sales_cleaner.py"
 ```
 
-The pipeline will look for a class in `src/transformations/my_custom_transform.py` that implements the transformation logic.
+The pipeline will look for a class in the specified script that implements the transformation logic. Global transformations (under `data.transformation`) are deprecated.
 
 ## Config Auto-Discovery
 

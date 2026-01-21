@@ -30,7 +30,7 @@ fairway generate-schema data/raw/your_data.csv
 
 ### 3. Update Configuration
 
-Edit `config/fairway.yaml` to define your data sources, validations, and enrichments.
+Edit `config/fairway.yaml` to define your data sources, validations, transformations, and enrichments.
 
 ### 4. Run the Pipeline
 

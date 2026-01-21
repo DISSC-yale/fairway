@@ -1,0 +1,75 @@
+dataset_name: "test_flexible_ingestion"
+version: "1.0"
+engine: "duckdb"
+
+storage:
+  base_dir: "tests/output"
+  intermediate_dir: "tests/output/intermediate"
+  final_dir: "tests/output/final"
+
+data:
+  sources:
+    - name: "headerless_source"
+      path: "data/raw_headerless.csv"
+      format: "csv"
+      schema:
+        id: "INTEGER"
+        val: "DOUBLE"
+      read_options:
+        header: false
+        delim: "|"
+    
+    - name: "zipped_source"
+      path: "data/raw_zipped.zip"
+      format: "csv" # The resulting file inside is csv
+      schema:
+        id: "INTEGER"
+        val: "DOUBLE"
+      preprocess:
+        action: "unzip"
+        scope: "per_file"
+      read_options:
+        header: false
+        delim: "|"
+    
+    - name: "custom_script_source"
+      path: "data/raw_headerless.csv" # Reuse source
+      format: "csv"
+      schema:
+        id: "INTEGER"
+        val: "DOUBLE"
+      preprocess:
+        # We need absolute path or relative to execution? 
+        # Fairway execution usually from root.
+        # But if resolving logic applies, maybe relative to config?
+        # Scripts are usually code, so relative to CWD or absolute is best.
+        # But let's try relative to config first if consistency holds: ../tests/scripts/ ? 
+        # Actually config loader only resolves `path` (data path). 
+        # Custom script path `action` is resolved in `pipeline.py`.
+        # pipeline.py uses importlib/open directly on the string.
+        # So "tests/scripts/dummy_process.py" relative to CWD (root) is correct for pipeline.
+        action: "tests/scripts/dummy_process.py" 
+        execution_mode: "driver"
+      read_options:
+        header: false
+        delim: "|"
+      write_mode: "append"
+
+    - name: "batch_source"
+      path: "data/raw_*.csv"
+      expand_glob: false
+      format: "csv"
+      preprocess:
+         # Action is dummy, but we want to verify it gets here as a glob
+         action: "tests/scripts/dummy_process.py" 
+         execution_mode: "driver"
+      read_options:
+        header: false
+        delim: "|"
+      write_mode: "append"
+
+validations:
+  level1:
+    min_rows: 1
+
+enrichment: {}

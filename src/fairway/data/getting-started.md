@@ -50,4 +50,10 @@ engine: duckdb
 
 # Use Spark (triggers auto-provisioning on HPC)
 engine: spark
+
+sources:
+  - name: "my_data"
+    path: "data/raw/my_data.csv"
+    format: "csv"
+    transformation: "src/transformations/my_transform.py"
 ```

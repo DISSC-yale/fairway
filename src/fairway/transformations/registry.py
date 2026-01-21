@@ -15,8 +15,10 @@ def load_transformer(script_path):
     spec.loader.exec_module(module)
     
     # Look for a class that ends with 'Transformer' or just 'Transformer'
+    # Ensure the class is defined in this module, not imported from elsewhere (like BaseTransformer)
     for name, obj in module.__dict__.items():
         if isinstance(obj, type) and (name.endswith('Transformer') or name == 'Transformer'):
-            return obj
+            if obj.__module__ == module_name:
+                return obj
             
     return None
