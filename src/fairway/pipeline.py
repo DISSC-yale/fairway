@@ -53,7 +53,15 @@ class IngestionPipeline:
         # Resolve input files
         # If input_path is a glob, we get all files.
         input_path = source['path']
-        files = glob.glob(input_path) if '*' in input_path else [input_path]
+        
+        # New in V2: Handle Root Resolution
+        root = source.get('root')
+        full_input_path = input_path
+        if root and not os.path.isabs(input_path):
+             full_input_path = os.path.join(root, input_path)
+             
+        # Resolve glob against the FULL path (root + relative_glob)
+        files = glob.glob(full_input_path) if '*' in full_input_path else [full_input_path]
         
         if not files:
              print(f"WARNING: No files found for preprocessing at {input_path}")

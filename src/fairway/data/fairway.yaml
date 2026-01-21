@@ -60,6 +60,22 @@ sources:
     #   scope: "per_file" # or 'global'
     #   execution_mode: "driver" # or 'cluster' (requires pyspark)
 
+  # Example: Handling Zipped Data with Metadata in Filename
+  # File: VM2Uniform--UT--2021-07-08.zip
+  - name: "vm2_uniform"
+    root: "data/vm2_raw"
+    path: "*.zip"
+    # Extract State, Year, Month, Day from filename automatically
+    naming_pattern: "VM2Uniform--(?P<state>\\w{2})--(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})\\.zip"
+    format: "csv" # The format of the file INSIDE the zip
+    preprocess:
+      # Built-in 'unzip' action automatically handles extraction
+      # Metadata (state, year, etc.) is extracted from the ZIP filename 
+      # and attached to the data found INSIDE the zip (e.g. data.csv)
+      action: "unzip" 
+      scope: "per_file"
+      execution_mode: "driver" # Setup 'cluster' if you have 1000s of files
+
   
     partition_by:
       - "year"
