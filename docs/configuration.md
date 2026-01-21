@@ -9,6 +9,7 @@
 | `dataset_name` | A unique identifier for the dataset. | Required |
 | `engine` | Data processing engine (`duckdb` or `pyspark`). | `duckdb` |
 | `partition_by` | List of columns to partition the output Parquet files by. | `[]` |
+| `temp_location` | Global temporary location for file writes. | `None` |
 
 ## Data Sources
 

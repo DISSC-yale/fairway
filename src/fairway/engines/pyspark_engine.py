@@ -59,6 +59,7 @@ class PySparkEngine:
         Generic ingestion method that dispatches to format-specific handlers.
         """
         # PySpark supports generic load with format option
+        print(f"INFO: PySpark Engine reading from {input_path} (format={format})")
         reader = self.spark.read.format(format)
         
         # Apply Generic Read Options (passthrough)
@@ -102,6 +103,7 @@ class PySparkEngine:
             partition_cols = partition_by
 
         writer = df.write.mode(write_mode)
+        print(f"INFO: PySpark Engine writing to {output_path} (mode={write_mode}, partitions={partition_cols})")
         if partition_cols:
             writer = writer.partitionBy(*partition_cols)
             
@@ -185,7 +187,9 @@ class PySparkEngine:
         # For very large lists, standard parallelism is better.
         # For standard ingestion (1000s of files), defaults are usually fine, 
         # but we might want at least as many partitions as executors.
-        rdd = self.spark.sparkContext.parallelize(items, numSlices=min(len(items), 10000))
+        num_slices = min(len(items), 10000)
+        print(f"DEBUG: Creating RDD with {num_slices} slices for {len(items)} items.")
+        rdd = self.spark.sparkContext.parallelize(items, numSlices=num_slices)
         
         # Apply the function and collect results
         return rdd.map(func).collect()

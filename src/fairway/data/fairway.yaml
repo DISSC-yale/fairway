@@ -20,6 +20,10 @@ storage:
   # Directory for final output files
   final_dir: "data/final"
 
+# Global temporary location for large intermediate writes (e.g. unzipping)
+# Use a high-capacity path here if you encounter disk quota issues.
+# temp_location: "/tmp/fairway_temp"
+
 # Data Sources Configuration
 sources:
   - name: "sales"
