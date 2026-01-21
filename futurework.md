@@ -1,11 +1,10 @@
 # make sure logs go to an organized place
-right now slurm logs, onextflow do not
 
-# getting the container working 
+# scancel tied into a nice flow 
 
-# test at AWS 
+# Debug continer
 
-# Run on L2 data 
+# Run with data
 ≈
 # Data Products Feature
 We removed the data-products feature from the docs but potentially want to make a feature in the future. Need to explore what that looks like.

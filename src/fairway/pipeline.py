@@ -64,7 +64,9 @@ class IngestionPipeline:
         files = glob.glob(full_input_path) if '*' in full_input_path else [full_input_path]
         
         if not files:
-             print(f"WARNING: No files found for preprocessing at {input_path}")
+             print(f"WARNING: No files found for preprocessing at {full_input_path} (CWD: {os.getcwd()})")
+             if root:
+                 print(f"  Root: {root}, Path: {input_path}")
              return input_path 
 
         # Define the work function
