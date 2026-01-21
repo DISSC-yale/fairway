@@ -60,7 +60,10 @@ class IngestionPipeline:
             # Ensure parent storage directory exists
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            partition_by = self.config.partition_by
+            # Ensure parent storage directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            partition_by = source.get('partition_by') or self.config.partition_by
             
             # If partitioned, output path should be a directory without extension
             if partition_by:

@@ -108,7 +108,8 @@ class Config:
                     'metadata': {},
                     'schema': resolved_schema,
                     'transformation': src.get('transformation'),
-                    'hive_partitioning': True
+                    'hive_partitioning': True,
+                    'partition_by': src.get('partition_by', [])
                 })
 
             else:
@@ -122,7 +123,7 @@ class Config:
                         if match:
                             metadata = match.groupdict()
                     
-                    # Create a specific source entry for each file
+            # Create a specific source entry for each file
                     source_format = src.get('format', 'csv')
                     valid_formats = {'csv', 'json', 'parquet'}
                     if source_format not in valid_formats:
@@ -135,7 +136,8 @@ class Config:
                         'metadata': metadata,
                         'schema': resolved_schema,
                         'transformation': src.get('transformation'),
-                        'hive_partitioning': False
+                        'hive_partitioning': False,
+                        'partition_by': src.get('partition_by', [])
                     })
         return expanded
 

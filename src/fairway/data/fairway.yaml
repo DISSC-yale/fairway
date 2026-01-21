@@ -45,17 +45,17 @@ sources:
       address: "STRING"
       year: "INTEGER"
       month: "INTEGER"
+  
+    partition_by:
+      - "year"
+      - "month"
 
     # Static metadata to attach to all records from this source
     # metadata:
     #   source_system: "legacy_sales_db"
     #   environment: "production"
 
-# Partitioning Strategy
-# Columns to partition the output by.
-partition_by:
-  - "year"
-  - "month"
+
 
 # Validation Rules
 validations:
