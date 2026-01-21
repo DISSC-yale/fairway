@@ -57,8 +57,14 @@ class IngestionPipeline:
         # New in V2: Handle Root Resolution
         root = source.get('root')
         full_input_path = input_path
+        
+        print(f"DEBUG: _preprocess check - Root: '{root}', Path: '{input_path}', isabs: {os.path.isabs(input_path)}")
+        
         if root and not os.path.isabs(input_path):
              full_input_path = os.path.join(root, input_path)
+             print(f"DEBUG: partial join -> {full_input_path}")
+        else:
+             print(f"DEBUG: Skipping join. Root truthy: {bool(root)}, Not IsAbs: {not os.path.isabs(input_path)}")
              
         # Resolve glob against the FULL path (root + relative_glob)
         files = glob.glob(full_input_path) if '*' in full_input_path else [full_input_path]
