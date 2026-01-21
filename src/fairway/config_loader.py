@@ -128,7 +128,8 @@ class Config:
                     'partition_by': src.get('partition_by', []),
                     'read_options': src.get('read_options', {}),
                     'preprocess': src.get('preprocess', {}),
-                    'write_mode': src.get('write_mode', 'overwrite')
+                    'write_mode': src.get('write_mode', 'overwrite'),
+                    'root': src.get('root')
                 })
 
             else:
