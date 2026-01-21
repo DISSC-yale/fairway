@@ -189,3 +189,115 @@ class PySparkEngine:
         
         # Apply the function and collect results
         return rdd.map(func).collect()
+
+    def calculate_hashes(self, file_paths, source_root=None, fast_check=True):
+        """
+        Calculates fingerprints for a list of files in parallel using Spark workers.
+        Returns a list of result dicts containing path, rel_path, hash, and error.
+        """
+        if not file_paths:
+            return []
+            
+        def worker_hash_func(path):
+            import os
+            import hashlib
+            import glob
+            
+            try:
+                # 1. Calculate Relative Key Part
+                if source_root and path.startswith(source_root):
+                    rel_path = os.path.relpath(path, source_root)
+                else:
+                    rel_path = os.path.basename(path)
+                rel_path = rel_path.replace(os.sep, '/')
+                
+                # 2. Calculate Hash
+                # Check for glob pattern first (before exists check which fails for globs)
+                if '*' in path:
+                     # Glob Logic
+                     # For fast_check on glob, we can't easily do mtime on the pattern.
+                     # We sum the mtimes of matching files?
+                     # Or we fall back to hashing contents (slow but correct).
+                     # Let's match ManifestManager:
+                     files = sorted(glob.glob(path, recursive=True))
+                     if not files:
+                         return {'path': path, 'hash': hashlib.sha256(b"empty_glob").hexdigest(), 'error': None}
+                         
+                     if fast_check:
+                         # Aggregate mtime:size signature
+                         # Use strict sorting for determinism
+                         sig_parts = []
+                         for f in files:
+                             if os.path.isfile(f):
+                                 s = os.stat(f)
+                                 sig_parts.append(f"{f}:{s.st_mtime}:{s.st_size}")
+                         file_hash = hashlib.sha256("".join(sig_parts).encode('utf-8')).hexdigest()
+                     else:
+                         sha256_hash = hashlib.sha256()
+                         for fpath in files:
+                             if os.path.isfile(fpath):
+                                 rel = os.path.relpath(fpath, os.path.dirname(path) or '.')
+                                 sha256_hash.update(rel.encode('utf-8'))
+                                 try:
+                                     with open(fpath, "rb") as f:
+                                         for byte_block in iter(lambda: f.read(4096), b""):
+                                             sha256_hash.update(byte_block)
+                                 except (IOError, OSError):
+                                     pass
+                         file_hash = sha256_hash.hexdigest()
+                         
+                elif not os.path.exists(path):
+                    return {'path': path, 'error': "File not found"}
+
+                elif os.path.isdir(path):
+                     # Directory Logic
+                     if fast_check:
+                         sig_parts = []
+                         for root, dirs, files in sorted(os.walk(path)):
+                            for names in sorted(files):
+                                filepath = os.path.join(root, names)
+                                s = os.stat(filepath)
+                                sig_parts.append(f"{filepath}:{s.st_mtime}:{s.st_size}")
+                         file_hash = hashlib.sha256("".join(sig_parts).encode('utf-8')).hexdigest()
+                     else:
+                        sha256_hash = hashlib.sha256()
+                        for root, dirs, files in sorted(os.walk(path)):
+                            for names in sorted(files):
+                                filepath = os.path.join(root, names)
+                                rel = os.path.relpath(filepath, path)
+                                sha256_hash.update(rel.encode('utf-8'))
+                                try:
+                                    with open(filepath, "rb") as f:
+                                        for byte_block in iter(lambda: f.read(4096), b""):
+                                            sha256_hash.update(byte_block)
+                                except (IOError, OSError):
+                                    pass
+                        file_hash = sha256_hash.hexdigest()
+
+                elif fast_check:
+                    stats = os.stat(path)
+                    file_hash = f"mtime:{stats.st_mtime}_size:{stats.st_size}"
+                else:
+                    with open(path, "rb") as f:
+                        for byte_block in iter(lambda: f.read(4096), b""):
+                            sha256_hash.update(byte_block)
+                            
+                    file_hash = sha256_hash.hexdigest()
+                    
+                return {
+                    'path': path,
+                    'rel_path': rel_path,
+                    'hash': file_hash,
+                    'error': None
+                }
+            except Exception as e:
+                return {
+                    'path': path, 
+                    'error': str(e)
+                }
+
+        # Parallelize
+        # Use simple partitioning based on file count
+        num_slices = min(len(file_paths), 1000)
+        rdd = self.spark.sparkContext.parallelize(file_paths, numSlices=num_slices)
+        return rdd.map(worker_hash_func).collect()

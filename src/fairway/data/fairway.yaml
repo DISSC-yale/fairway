@@ -25,7 +25,9 @@ sources:
   - name: "sales"
     # Path to the input data. Supports glob patterns or directories.
     # Pointing to the root of a partitioned dataset lets the engine handle discovery.
-    path: "data/raw/sales_partitioned"
+    # New in Manifest V2: defining 'root' allows for relocatable manifests.
+    root: "data/raw" 
+    path: "sales_partitioned" # Relative to root if specified
     hive_partitioning: true
     
     # regex pattern to extract metadata from filenames
@@ -105,14 +107,3 @@ performance:
 #   user: "username"
 #   dataset: "dataset_name"
 #   upload_merge_strategy: "append" # or 'replace', 'fail'
-
-# Custom Transformation Script (Optional)
-# Can be specified per-source or globally (global is deprecated)
-# sources:
-#   - name: "sales"
-#     path: "data/raw/sales.csv"
-#     transformation: "src/transformations/sales_transform.py"
-
-# Global fallback (deprecated):
-# data:
-#   transformation: "src/transformations/example_transform.py"

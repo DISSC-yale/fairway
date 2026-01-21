@@ -18,6 +18,7 @@ class IngestionPipeline:
         self.config = Config(config_path)
         self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)
+        self._hash_cache = {} # Cache for distributed hash results
 
     def _get_engine(self, spark_master=None):
         engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
@@ -148,23 +149,51 @@ class IngestionPipeline:
              print("WARNING: No sources found to process! Check your config path patterns and ensuring data exists.")
              print(f"  Configured sources: {self.config.data.get('sources', [])}")
 
+        
+        # Optimize: Distributed Manifest Check for Cluster Mode
+        # Group sources by root to perform batch hashing on the cluster
+        if hasattr(self.engine, 'calculate_hashes'):
+            cluster_batches = {} # root -> list_of_paths
+            
+            for s in self.config.sources:
+                 mode = s.get('preprocess', {}).get('execution_mode', 'driver')
+                 if mode == 'cluster':
+                     root = s.get('root')
+                     if root not in cluster_batches:
+                         cluster_batches[root] = []
+                     cluster_batches[root].append(s['path'])
+            
+            for root, paths in cluster_batches.items():
+                print(f"Distributed Check: Calculating hashes for {len(paths)} items under root '{root}' via Spark...")
+                try:
+                    results = self.engine.calculate_hashes(paths, source_root=root)
+                    for res in results:
+                        if not res.get('error'):
+                            self._hash_cache[res['path']] = res['hash']
+                        else:
+                            print(f"WARNING: Hash calculation failed for {res['path']}: {res['error']}")
+                except Exception as e:
+                    print(f"ERROR: Distributed hash check failed: {e}. Falling back to driver check.")
+
         for source in self.config.sources:
             # 0. Preprocessing
             # Preprocess returns a modified path (e.g. to temp unzipped files)
             # Source dict is unmodified, we just change the variable we use for input
             original_path = source['path']
+            # Check manifest BEFORE preprocessing to avoid expensive work (unzipping) if source hasn't changed
+            # Using fsspec for URI-aware existance check would be better, 
+            # for now keeping it simple but URI-ready in engines
+            
+            computed_hash = self._hash_cache.get(original_path)
+            if not self.manifest.should_process(original_path, source_name=source['name'], source_root=source.get('root'), computed_hash=computed_hash):
+                 # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
+                 print(f"Skipping {source['name']} (already processed and hash matches)")
+                 continue
+
             input_path = self._preprocess(source)
             
             if input_path != original_path:
                 print(f"  Preprocessing complete. Ingesting from: {input_path}")
-            
-            # Using fsspec for URI-aware existance check would be better, 
-            # for now keeping it simple but URI-ready in engines
-            
-            if not self.manifest.should_process(original_path, source_name=source['name']):
-                 # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
-                 print(f"Skipping {source['name']} (already processed and hash matches)")
-                 continue
 
             print(f"Processing {source['name']}...")
             
@@ -335,7 +364,7 @@ class IngestionPipeline:
                     }
                     Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
 
-                    self.manifest.update_manifest(original_path, status="success", metadata=stats, source_name=source['name'])
+                    self.manifest.update_manifest(original_path, status="success", metadata=stats, source_name=source['name'], source_root=source.get('root'))
                     
                     # 7. Redivis Export
                     if self.config.redivis:
@@ -361,6 +390,6 @@ class IngestionPipeline:
                 else:
                     errors = l1['errors'] + l2['errors']
                     print(f"Validations failed for {source['name']}: {errors}")
-                    self.manifest.update_manifest(original_path, status="failed", metadata={"errors": errors}, source_name=source['name'])
+                    self.manifest.update_manifest(original_path, status="failed", metadata={"errors": errors}, source_name=source['name'], source_root=source.get('root'))
                     # raise Exception(...) # Optional blocking
 
