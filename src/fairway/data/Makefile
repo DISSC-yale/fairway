@@ -86,8 +86,11 @@ build: ## Build the container image
 	fairway build
 
 # Generate Schema (New)
-generate-schema: ## Generate schema from raw data
-	fairway generate-schema data/raw --engine pyspark --sampling-ratio 0.1
+generate-schema: ## Generate schema from raw data (local)
+	fairway generate-schema --config config/fairway.yaml
+
+submit-schema-hpc: ## Submit schema generation job to Slurm
+	fairway generate-schema --config config/fairway.yaml --slurm --account $(ACCOUNT) --time 01:00:00 --mem 16G
 
 # Clean up artifacts
 clean: ## Clean logs and temp data
