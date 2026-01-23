@@ -1,9 +1,0 @@
-name: sales_partitioned
-partition_by:
-- year
-- month
-columns:
-  id: BIGINT
-  date: DATE
-  amount: DOUBLE
-  address: VARCHAR
