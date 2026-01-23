@@ -197,7 +197,8 @@ def generate_data(size, partitioned, format):
 @click.option('--cpus', type=int, help='Slurm CPUs.')
 @click.option('--mem', help='Slurm Memory.')
 @click.option('--internal-run', is_flag=True, hidden=True, help='Internal flag for Slurm execution.')
-def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, account, time, cpus, mem, internal_run):
+@click.option('--spark-master', hidden=True, help='Spark master URL (for internal run).')
+def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, account, time, cpus, mem, internal_run, spark_master):
     """Generate schema from data.
     
     Modes:
@@ -214,82 +215,24 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
     # ---------------------------------------------------------
     # SLURM SUBMISSION (Distributed Cluster Mode)
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # SLURM SUBMISSION (Distributed Cluster Mode)
+    # ---------------------------------------------------------
     if slurm and not internal_run:
-        # 1. Load Resources from spark.yaml (Reuse existing config logic)
-        spark_yaml_path = 'config/spark.yaml'
-        spark_defaults = {}
-        if os.path.exists(spark_yaml_path):
-            with open(spark_yaml_path, 'r') as f:
-                spark_defaults = yaml.safe_load(f) or {}
-
-        # Effective resources (CLI overrides > spark.yaml > defaults)
-        n_nodes = 2  # Default to 2 nodes (1 driver + 1 worker, or shared)
-        if 'nodes' in spark_defaults: n_nodes = spark_defaults['nodes']
-        
-        # Ensure we have enough nodes for a cluster (at least 1, but usually >1 for distinct master/worker if needed)
-        # SlurmSparkManager handles provisions.
-        
-        click.echo(f"Provisioning Spark Cluster (Nodes: {n_nodes})...")
-        
-        from .engines.slurm_cluster import SlurmSparkManager
-        # Manager expects keys like 'slurm_nodes', etc.
-        mgr_config = {
-            'slurm_nodes': n_nodes,
-            'slurm_cpus_per_node': spark_defaults.get('cpus_per_node', 32),
-            'slurm_mem_per_node': spark_defaults.get('mem_per_node', '200G'),
-            'slurm_account': account or spark_defaults.get('account', 'borzekowski'),
-            'slurm_time': time or spark_defaults.get('time', '24:00:00'),
-            'slurm_partition': spark_defaults.get('partition', 'day')
-        }
-        
-        manager = SlurmSparkManager(mgr_config)
+        script_path = "scripts/driver-schema.sh"
+        if not os.path.exists(script_path):
+            click.echo(f"Error: {script_path} not found. Run 'fairway init' to regenerate scripts.", err=True)
+            sys.exit(1)
+            
+        click.echo(f"Submitting Schema Generation Driver Job ({script_path})...")
         try:
-             # Start the Cluster Job
-             master_url = manager.start_cluster()
-             click.echo(f"Spark Cluster running at: {master_url}")
-             
-             # 2. Submit the Schema Generation Driver Job
-             # This job runs 'fairway generate-schema --internal-run'
-             # AND connects to the remote spark master.
-             
-             cmd_args = ["fairway", "generate-schema"]
-             if config: cmd_args.extend(["--config", config])
-             if file_path: cmd_args.append(file_path)
-             if output: cmd_args.extend(["--output", output])
-             if sampling_ratio != 1.0: cmd_args.extend(["--sampling-ratio", str(sampling_ratio)])
-             
-             # Critical: Pass the Spark Master URL to the internal run
-             cmd_args.extend(["--spark-master", master_url])
-             
-             cmd_args.append("--internal-run")
-
-             driver_script = [
-                 "#!/bin/bash",
-                 f"#SBATCH --job-name=fairway_schema_driver",
-                 f"#SBATCH --nodes=1",         # Driver runs on 1 node
-                 f"#SBATCH --ntasks=1",
-                 f"#SBATCH --cpus-per-task=4", # Lightweight driver
-                 f"#SBATCH --mem=16G",
-                 f"#SBATCH --time={mgr_config['slurm_time']}"
-             ]
-             if mgr_config['slurm_account']:
-                  driver_script.append(f"#SBATCH --account={mgr_config['slurm_account']}")
-             
-             driver_script.append("")
-             driver_script.append("source scripts/fairway-hpc.sh setup-spark") # Load modules
-             driver_script.append(" ".join(cmd_args))
-             
-             script_path = "schema_gen_driver.slurm"
-             with open(script_path, "w") as f:
-                 f.write("\n".join(driver_script))
-             
-             click.echo(f"Submitting Schema Driver Job ({script_path})...")
-             subprocess.run(["sbatch", script_path], check=True)
-             click.echo("Job submitted. Check status with 'fairway status'.")
-             return
-
-        except Exception as e:
-             click.echo(f"Error launching distributed schema generation: {e}", err=True)
+            # We assume the user has configured spark.yaml or fairway-hpc.sh variables if needed
+            # The driver script handles cluster provisioning.
+            subprocess.run(["sbatch", script_path], check=True)
+            click.echo("Job submitted. Check status with 'fairway status'.")
+            return
+        except subprocess.CalledProcessError as e:
+             click.echo(f"Error submitting job: {e}", err=True)
              sys.exit(1)
 
     # ---------------------------------------------------------
@@ -303,7 +246,7 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
         cfg = Config(config)
         
         # Initialize Pipeline
-        pipeline = SchemaDiscoveryPipeline(config, spark_master="local[*]")
+        pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]")
         # Note: If running inside Slurm (internal-run), spark_master should arguably be 
         # determined by environment, but for schema inference 'local[*]' on the 
         # compute node is usually sufficient and simpler than spinning up a full cluster context 

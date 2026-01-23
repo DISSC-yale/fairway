@@ -89,6 +89,9 @@ build: ## Build the container image
 generate-schema: ## Generate schema from raw data (local)
 	fairway generate-schema --config config/fairway.yaml
 
+submit-schema-hpc: ## Submit schema generation job to Slurm
+	sbatch scripts/driver-schema.sh
+
 # Clean up artifacts
 clean: ## Clean logs and temp data
 	rm -rf logs/ .nextflow* work/ .nextflow_driver.sh
