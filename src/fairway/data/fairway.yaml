@@ -70,7 +70,7 @@ sources:
     root: "data/vm2_raw"
     path: "*.zip"
     # Extract State, Year, Month, Day from filename automatically
-    naming_pattern: "VM2Uniform--(?P<state>\\w{2})--(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})\\.zip"
+    naming_pattern: "VM2Uniform--(?P<state>\\w{{2}})--(?P<year>\\d{{4}})-(?P<month>\\d{{2}})-(?P<day>\\d{{2}})\\.zip"
     format: "csv" # The format of the file INSIDE the zip
     preprocess:
       # Built-in 'unzip' action automatically handles extraction
