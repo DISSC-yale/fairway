@@ -211,59 +211,86 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
     # ---------------------------------------------------------
     # SLURM SUBMISSION (Wrapper)
     # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # SLURM SUBMISSION (Distributed Cluster Mode)
+    # ---------------------------------------------------------
     if slurm and not internal_run:
-        # Build command to run inside job
-        # We need to preserve relevant args
-        cmd_args = ["fairway", "generate-schema"]
+        # 1. Load Resources from spark.yaml (Reuse existing config logic)
+        spark_yaml_path = 'config/spark.yaml'
+        spark_defaults = {}
+        if os.path.exists(spark_yaml_path):
+            with open(spark_yaml_path, 'r') as f:
+                spark_defaults = yaml.safe_load(f) or {}
+
+        # Effective resources (CLI overrides > spark.yaml > defaults)
+        n_nodes = 2  # Default to 2 nodes (1 driver + 1 worker, or shared)
+        if 'nodes' in spark_defaults: n_nodes = spark_defaults['nodes']
         
-        if config: cmd_args.extend(["--config", config])
-        if file_path: cmd_args.append(file_path)
-        if output: cmd_args.extend(["--output", output])
-        if sampling_ratio != 1.0: cmd_args.extend(["--sampling-ratio", str(sampling_ratio)])
-        # engine is implicit in config usually, but pass it if legacy
-        if not config: cmd_args.extend(["--engine", engine])
+        # Ensure we have enough nodes for a cluster (at least 1, but usually >1 for distinct master/worker if needed)
+        # SlurmSparkManager handles provisions.
         
-        cmd_args.append("--internal-run")
+        click.echo(f"Provisioning Spark Cluster (Nodes: {n_nodes})...")
         
-        # Determine resources
-        # Load defaults from spark.yaml or fairway.yaml? 
-        # For simplicity, use defaults here or CLI overrides
-        slurm_cfg = {
-            'nodes': 1, # Schema gen usually fine on 1 node unless massive distributed scan
-            'cpus_per_node': cpus or 4,
-            'mem_per_node': mem or '16G',
-            'time': time or '01:00:00',
-            'account': account or 'default', # Should try to load from config if possible
-            'partition': 'day',
-            'job_name': 'fairway_schema_gen'
+        from .engines.slurm_cluster import SlurmSparkManager
+        # Manager expects keys like 'slurm_nodes', etc.
+        mgr_config = {
+            'slurm_nodes': n_nodes,
+            'slurm_cpus_per_node': spark_defaults.get('cpus_per_node', 32),
+            'slurm_mem_per_node': spark_defaults.get('mem_per_node', '200G'),
+            'slurm_account': account or spark_defaults.get('account', 'borzekowski'),
+            'slurm_time': time or spark_defaults.get('time', '24:00:00'),
+            'slurm_partition': spark_defaults.get('partition', 'day')
         }
         
-        # Generate script
-        script_lines = [
-            "#!/bin/bash",
-            f"#SBATCH --job-name={slurm_cfg['job_name']}",
-            f"#SBATCH --nodes={slurm_cfg['nodes']}",
-            f"#SBATCH --cpus-per-task={slurm_cfg['cpus_per_node']}",
-            f"#SBATCH --mem={slurm_cfg['mem_per_node']}",
-            f"#SBATCH --time={slurm_cfg['time']}"
-        ]
-        if slurm_cfg['account'] != 'default':
-            script_lines.append(f"#SBATCH --account={slurm_cfg['account']}")
-            
-        script_lines.append("")
-        script_lines.append("source scripts/fairway-hpc.sh setup-spark")
-        script_lines.append(" ".join(cmd_args))
-        
-        script_content = "\n".join(script_lines)
-        script_path = "schema_gen_job.slurm"
-        
-        with open(script_path, "w") as f:
-            f.write(script_content)
-            
-        click.echo(f"Generated Slurm script: {script_path}")
-        click.echo("Submitting job...")
-        subprocess.run(["sbatch", script_path])
-        return
+        manager = SlurmSparkManager(mgr_config)
+        try:
+             # Start the Cluster Job
+             master_url = manager.start_cluster()
+             click.echo(f"Spark Cluster running at: {master_url}")
+             
+             # 2. Submit the Schema Generation Driver Job
+             # This job runs 'fairway generate-schema --internal-run'
+             # AND connects to the remote spark master.
+             
+             cmd_args = ["fairway", "generate-schema"]
+             if config: cmd_args.extend(["--config", config])
+             if file_path: cmd_args.append(file_path)
+             if output: cmd_args.extend(["--output", output])
+             if sampling_ratio != 1.0: cmd_args.extend(["--sampling-ratio", str(sampling_ratio)])
+             
+             # Critical: Pass the Spark Master URL to the internal run
+             cmd_args.extend(["--spark-master", master_url])
+             
+             cmd_args.append("--internal-run")
+
+             driver_script = [
+                 "#!/bin/bash",
+                 f"#SBATCH --job-name=fairway_schema_driver",
+                 f"#SBATCH --nodes=1",         # Driver runs on 1 node
+                 f"#SBATCH --ntasks=1",
+                 f"#SBATCH --cpus-per-task=4", # Lightweight driver
+                 f"#SBATCH --mem=16G",
+                 f"#SBATCH --time={mgr_config['slurm_time']}"
+             ]
+             if mgr_config['slurm_account']:
+                  driver_script.append(f"#SBATCH --account={mgr_config['slurm_account']}")
+             
+             driver_script.append("")
+             driver_script.append("source scripts/fairway-hpc.sh setup-spark") # Load modules
+             driver_script.append(" ".join(cmd_args))
+             
+             script_path = "schema_gen_driver.slurm"
+             with open(script_path, "w") as f:
+                 f.write("\n".join(driver_script))
+             
+             click.echo(f"Submitting Schema Driver Job ({script_path})...")
+             subprocess.run(["sbatch", script_path], check=True)
+             click.echo("Job submitted. Check status with 'fairway status'.")
+             return
+
+        except Exception as e:
+             click.echo(f"Error launching distributed schema generation: {e}", err=True)
+             sys.exit(1)
 
     # ---------------------------------------------------------
     # PIPELINE MODE (Config Driven)

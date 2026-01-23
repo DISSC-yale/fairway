@@ -85,12 +85,9 @@ shell: ## Enter a shell inside the ecosystem
 build: ## Build the container image
 	fairway build
 
-# Generate Schema (New)
+# Generate Schema
 generate-schema: ## Generate schema from raw data (local)
 	fairway generate-schema --config config/fairway.yaml
-
-submit-schema-hpc: ## Submit schema generation job to Slurm
-	fairway generate-schema --config config/fairway.yaml --slurm --account $(ACCOUNT) --time 01:00:00 --mem 16G
 
 # Clean up artifacts
 clean: ## Clean logs and temp data
