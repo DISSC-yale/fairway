@@ -77,7 +77,12 @@ class PySparkEngine:
                  reader = reader.option("inferSchema", "true")
                  
             if hive_partitioning:
-                # Ensure recursive file lookup creates the correct partition discovery
+                # When hive_partitioning is True, we rely on Spark's automatic partition discovery.
+                # Setting recursiveFileLookup to True DISABLES partition discovery, so we must ensure it is False.
+                reader = reader.option("recursiveFileLookup", "false")
+            else:
+                # If NOT using hive partitioning, we usually want to search recursively for files
+                # so we don't miss data in subdirectories.
                 reader = reader.option("recursiveFileLookup", "true")
             
         df = reader.load(input_path)
