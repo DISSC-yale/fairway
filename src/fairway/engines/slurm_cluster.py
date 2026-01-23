@@ -33,7 +33,25 @@ class SlurmSparkManager:
 #SBATCH --partition={partition}
 
 module load Spark/3.5.1-foss-2022b-Scala-2.13
-spark-start
+
+
+# Capture spark-start output to find the Master URL
+SPARK_START_LOG="spark_start_${{SLURM_JOB_ID}}.log"
+spark-start > "${{SPARK_START_LOG}}" 2>&1
+
+# Display log for debugging
+cat "${{SPARK_START_LOG}}"
+
+# Extract SPARK_MASTER_URL from the log
+# Expecting line: SPARK_MASTER_URL: spark://...
+SPARK_MASTER_URL=$(grep "SPARK_MASTER_URL:" "${{SPARK_START_LOG}}" | awk '{{print $2}}')
+
+if [ -z "$SPARK_MASTER_URL" ]; then
+    echo "ERROR: Could not find SPARK_MASTER_URL in output"
+    exit 1
+fi
+
+echo "Detected Spark Master: $SPARK_MASTER_URL"
 
         # --- Spark Tuning Parity (data_l2) ---
         # Discover the ephemeral config path
