@@ -147,11 +147,16 @@ def init(name, engine):
     click.echo("  Created file: README.md")
 
     # Create scripts/driver.sh and scripts/fairway-hpc.sh
-    from .templates import DRIVER_TEMPLATE, HPC_SCRIPT, RUN_PIPELINE_SCRIPT
+    from .templates import DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, HPC_SCRIPT, RUN_PIPELINE_SCRIPT
     with open(os.path.join(name, 'scripts', 'driver.sh'), 'w') as f:
         f.write(DRIVER_TEMPLATE)
     os.chmod(os.path.join(name, 'scripts', 'driver.sh'), 0o755)
     click.echo("  Created file: scripts/driver.sh")
+
+    with open(os.path.join(name, 'scripts', 'driver-schema.sh'), 'w') as f:
+        f.write(DRIVER_SCHEMA_TEMPLATE)
+    os.chmod(os.path.join(name, 'scripts', 'driver-schema.sh'), 0o755)
+    click.echo("  Created file: scripts/driver-schema.sh")
 
     with open(os.path.join(name, 'scripts', 'run_pipeline.sh'), 'w') as f:
         f.write(RUN_PIPELINE_SCRIPT)
