@@ -47,7 +47,7 @@ MODULES_BASE=(
 )
 
 MODULES_SPARK=(
-    "Java/17"
+#    "Java/17"
     "Spark"
 )
 

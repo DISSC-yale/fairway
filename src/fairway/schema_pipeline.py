@@ -27,13 +27,18 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
         }
         
         # 1. Iterate over sources (just like ingestion)
+        if not self.config.sources:
+            print("WARNING: No sources found in configuration!")
+
         for source in self.config.sources:
             print(f"\nProcessing source: {source['name']}")
+            print(f"  Source config: {source}")
             
             # 2. Preprocess (Unzip/Script) - Reuses Ingestion Logic!
             # Because of deterministic hashing in pipeline.py, this will REUSE 
             # files if they were already unzipped by a previous run.
             processed_path = self._preprocess(source)
+            print(f"  Preprocess returned path: {processed_path}")
             
             # 3. Infer Schema
             print(f"Inferring schema from: {processed_path}")
