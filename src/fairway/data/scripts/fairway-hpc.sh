@@ -43,12 +43,12 @@ CONTAINER_LOCAL="fairway.sif"
 MODULES_BASE=(
     "Nextflow/25.04.6"
     "Python/3.10.8-GCCcore-12.2.0"
-    "Apptainer/1.1.8"
+    "Apptainer"
 )
 
 MODULES_SPARK=(
     "Java/17"
-    "Spark/4.1.1"
+    "Spark"
 )
 
 # -----------------------------------------------------------------------------
