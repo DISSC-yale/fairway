@@ -29,7 +29,10 @@ class Config:
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
         # Temporary location for global file writes
-        self.temp_location = self.data.get('temp_location')
+        # Priority: Env Var > Root Config > Storage Config
+        self.temp_location = os.environ.get('FAIRWAY_TEMP') or \
+                             self.data.get('temp_location') or \
+                             self.storage.get('temp_location')
         self.redivis = self.data.get('redivis', {})
         self.output_format = self.storage.get('format', 'parquet').lower()
         

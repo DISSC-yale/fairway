@@ -301,7 +301,65 @@ class PySparkEngine:
                 }
 
         # Parallelize
-        # Use simple partitioning based on file count
         num_slices = min(len(file_paths), 1000)
         rdd = self.spark.sparkContext.parallelize(file_paths, numSlices=num_slices)
         return rdd.map(worker_hash_func).collect()
+
+    def infer_schema(self, path, format='csv', sampling_ratio=1.0, **kwargs):
+        """
+        Infers schema from a dataset using Spark.
+        Args:
+            path: Input path (glob or directory)
+            format: Input format
+            sampling_ratio: Fraction of data to use for inference (0.0 to 1.0)
+        Returns:
+            dict: Schema dictionary compatible with Fairway config
+        """
+        print(f"INFO: Inferring schema from {path} (format={format}, sampling={sampling_ratio})")
+        
+        reader = self.spark.read.format(format)
+        
+        # Apply standard options
+        if format == 'csv':
+            reader = reader.option("header", "true").option("inferSchema", "true")
+            if sampling_ratio < 1.0:
+                reader = reader.option("samplingRatio", sampling_ratio)
+        elif format == 'json':
+             if sampling_ratio < 1.0:
+                reader = reader.option("samplingRatio", sampling_ratio)
+        
+        # Apply kwargs
+        if kwargs:
+             opts = {k: str(v) for k, v in kwargs.items() if v is not None}
+             reader = reader.options(**opts)
+
+        df = reader.load(path)
+        
+        # Convert Spark Schema to Fairway/DuckDB Types
+        schema_dict = {}
+        for field in df.schema.fields:
+            spark_type = str(field.dataType)
+            
+            # Mapping logic
+            if 'IntegerType' in spark_type:
+                dtype = 'INTEGER'
+            elif 'LongType' in spark_type:
+                dtype = 'BIGINT'
+            elif 'DoubleType' in spark_type:
+                dtype = 'DOUBLE'
+            elif 'FloatType' in spark_type:
+                dtype = 'FLOAT'
+            elif 'StringType' in spark_type:
+                dtype = 'STRING'
+            elif 'TimestampType' in spark_type:
+                dtype = 'TIMESTAMP'
+            elif 'DateType' in spark_type:
+                dtype = 'DATE'
+            elif 'BooleanType' in spark_type:
+                dtype = 'BOOLEAN'
+            else:
+                dtype = 'STRING' # Fallback
+                
+            schema_dict[field.name] = dtype
+            
+        return schema_dict
