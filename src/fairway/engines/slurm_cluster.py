@@ -59,6 +59,8 @@ echo "Detected Spark Master: $SPARK_MASTER_URL"
         DEFAULTS_FILE="${{SPARK_CONF_DIR}}/spark-defaults.conf"
 
         # Inject tuning parameters
+        echo "spark.authenticate false" >> $DEFAULTS_FILE
+        echo "spark.authenticate.enableSaslEncryption false" >> $DEFAULTS_FILE
         echo "spark.dynamicAllocation.enabled True" >> $DEFAULTS_FILE
         echo "spark.dynamicAllocation.minExecutors 5" >> $DEFAULTS_FILE
         echo "spark.dynamicAllocation.maxExecutors 150" >> $DEFAULTS_FILE
