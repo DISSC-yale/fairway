@@ -187,13 +187,79 @@ def generate_data(size, partitioned, format):
 @main.command()
 @click.argument('file_path')
 @click.option('--output', help='Output file path for the schema (YAML).')
-def generate_schema(file_path, output):
+@click.option('--engine', type=click.Choice(['duckdb', 'pyspark']), default='duckdb', help='Engine to use (duckdb or pyspark).')
+@click.option('--sampling-ratio', type=float, default=1.0, help='Ratio of data to read for inference (0.0-1.0). Spark only. Default 1.0 (Full Scan).')
+def generate_schema(file_path, output, engine, sampling_ratio):
     """Generate a schema skeleton from a data file or partitioned directory."""
     import re
     import glob
-    import duckdb
+    import sys
     import yaml
+    import os
     
+    # ---------------------------------------------------------
+    # SPARK PATH (Full Dataset Scanning Support)
+    # ---------------------------------------------------------
+    if engine == 'pyspark':
+        click.echo(f"Initializing PySpark to infer schema from: {file_path}")
+        try:
+             # Lazy load engine to avoid heavy imports if not needed
+             from .engines.pyspark_engine import PySparkEngine
+             spark_engine = PySparkEngine()
+             
+             # Determine format based on file extension or default to parquet/csv
+             # TODO: add --format arg? For now simple auto-detect
+             fmt = 'parquet'
+             if file_path.endswith('.csv') or '.csv' in file_path:
+                 fmt = 'csv'
+             elif file_path.endswith('.json') or '.json' in file_path:
+                 fmt = 'json'
+             
+             # If directory and no extension visible (e.g. data/raw), assume parquet or user needs to be specific?
+             # Let's try recursive globs if dir
+             if os.path.isdir(file_path):
+                 # Check contents
+                  entries = os.listdir(file_path)
+                  if any(e.endswith('.csv') for e in entries): fmt = 'csv'
+                  elif any(e.endswith('.json') for e in entries): fmt = 'json'
+             
+             schema_dict = spark_engine.infer_schema(
+                 path=file_path, 
+                 format=fmt,
+                 sampling_ratio=sampling_ratio
+             )
+             
+             # Add Partitioning placeholders if likely partitioned (simple check)
+             dataset_name = os.path.basename(file_path.rstrip('/'))
+             schema_output = {'name': dataset_name}
+             
+             # Simple partitioning detection from path? (e.g. key=val)
+             # infer_schema returns flat columns
+             # We can't easily distinguish partition cols from data cols in Spark schema 
+             # without filesystem inspection.
+             
+             schema_output['columns'] = schema_dict
+             
+             # Write output
+             schema_yaml = yaml.dump(schema_output, sort_keys=False, default_flow_style=False)
+             if not output:
+                os.makedirs('config', exist_ok=True)
+                output = f"config/{dataset_name}_schema.yaml"
+             
+             with open(output, 'w') as f:
+                f.write(schema_yaml)
+             click.echo(f"Schema written to {output}")
+             return
+
+        except Exception as e:
+             click.echo(f"Error inferring schema with Spark: {e}", err=True)
+             sys.exit(1)
+
+    # ---------------------------------------------------------
+    # DUCKDB PATH (Sampling/Local)
+    # ---------------------------------------------------------
+    import duckdb
+
     if not os.path.exists(file_path):
         click.echo(f"Error: Path not found: {file_path}", err=True)
         return

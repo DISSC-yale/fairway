@@ -85,6 +85,10 @@ shell: ## Enter a shell inside the ecosystem
 build: ## Build the container image
 	fairway build
 
+# Generate Schema (New)
+generate-schema: ## Generate schema from raw data
+	fairway generate-schema data/raw --engine pyspark --sampling-ratio 0.1
+
 # Clean up artifacts
 clean: ## Clean logs and temp data
 	rm -rf logs/ .nextflow* work/ .nextflow_driver.sh
