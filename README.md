@@ -87,6 +87,21 @@ For comprehensive guides and API details, please refer to the documentation in t
 - **[Architecture](docs/architecture.md)**: High-level overview of Fairway's design.
 - **[Transformations](docs/transformations.md)**: How to write and use data transformations.
 - **[Validations](docs/validations.md)**: ensuring data quality.
+- **[Schema Evolution](docs/schema_evolution.md)**: Strategies for handling changing data (Strict vs Delta Lake).
+
+## Schema Evolution
+
+Fairway supports two robust strategies for handling schema changes over time:
+
+1.  **Strict Schema Enforcement (Option A)**:
+    - Best for: Regulation, specific contracts.
+    - Behavior: Fails pipeline if extra columns appear (Rule 115). Fills missing columns with nulls.
+    - Config: Define `schema` in `fairway.yaml` and standard parquet output.
+
+2.  **Modern Table Formats (Option B)**:
+    - Best for: Data Lakehouse, rapid evolution.
+    - Behavior: Uses **Delta Lake** to handle schema merging automatically.
+    - Config: Set `storage: { format: "delta" }` or use `output_format: delta` in sources.
 
 ## Examples
 

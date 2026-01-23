@@ -50,8 +50,21 @@ class PySparkEngine:
         builder = builder.config("spark.driver.extraJavaOptions", jvm_options) \
                          .config("spark.executor.extraJavaOptions", jvm_options)
 
+        # Delta Lake Configuration (Option B)
+        try:
+            from delta import configure_spark_with_delta_pip
+            builder = configure_spark_with_delta_pip(builder)
+        except ImportError:
+            # Delta not installed or valid; proceed with standard Spark
+            pass
+
         if spark_master:
             builder = builder.master(spark_master)
+        
+        # Enable extensions for Delta (if the pip config helper didn't handle it or for explicit clarity)
+        # Note: configure_spark_with_delta_pip usually handles .config("spark.sql.extensions", ...)
+        # But we ensure we catch it safely.
+            
         self.spark = builder.getOrCreate()
 
     def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', **kwargs):
@@ -85,13 +98,46 @@ class PySparkEngine:
                 # so we don't miss data in subdirectories.
                 reader = reader.option("recursiveFileLookup", "true")
             
+
         df = reader.load(input_path)
         
-        # Inject metadata if available (e.g. state from filename)
         # Inject metadata if available (e.g. state from filename)
         if metadata:
             for key, val in metadata.items():
                 df = df.withColumn(key, F.lit(val))
+
+        # --- OPTION A (+115): Strict Schema Enforcement ---
+        if schema:
+            # Normalize schema keys to match DataFrame columns (case sensitivity?)
+            # Assuming widely case-sensitive/insensitive defaults from Spark.
+            # Here keeping it strict python string match for integrity.
+            
+            raw_columns = set(df.columns)
+            expected_columns = set(schema.keys())
+            
+            # RULE-115: FAIL if extra columns exist
+            extra_cols = raw_columns - expected_columns
+            # Filter out metadata columns we JUST added, as they might not be in the strict 'schema' def
+            # effectively metadata is "safe" extra columns.
+            if metadata:
+                extra_cols = extra_cols - set(metadata.keys())
+                
+            if extra_cols:
+                raise ValueError(f"[RULE-115] Data Integrity Error: Source file contains {len(extra_cols)} extra columns not in strict schema: {extra_cols}. Ingestion aborted to prevent data dropping.")
+            
+            # Align and Fill Missing Columns
+            select_exprs = []
+            for col_name, col_type in schema.items():
+                if col_name in df.columns:
+                    # Cast to Ensure Type Strictness? 
+                    # Ideally yes, let's cast to the configured type string
+                    select_exprs.append(F.col(col_name).cast(col_type))
+                else:
+                    # Fill Missing as Null (Safe Evolution)
+                    select_exprs.append(F.lit(None).cast(col_type).alias(col_name))
+            
+            # Apply Selection (Ordering + Filling)
+            df = df.select(*select_exprs)
 
         if balanced and partition_by:
             # Salting logic inspired by data_l2 to prevent skew
@@ -108,11 +154,33 @@ class PySparkEngine:
             partition_cols = partition_by
 
         writer = df.write.mode(write_mode)
-        print(f"INFO: PySpark Engine writing to {output_path} (mode={write_mode}, partitions={partition_cols})")
+        
+        # --- OPTION B: Table Formats (Delta Lake) ---
+        target_format = self.config_output_format if hasattr(self, 'config_output_format') else 'parquet'
+        # Check if caller passed explicit setting or if we infer from extension? 
+        # Actually PySparkEngine doesn't know global state easily perfectly here without breaking sig.
+        # But `ingest` usually writes to parquet. 
+        # Let's see if we can detect Delta intent via kwargs or standardizing?
+        # Implementation Plan says: Support `format='delta'`.
+        # NOTE: `format` arg in ingest is INPUT format. We need OUTPUT format control.
+        # Let's assume output format defaults parquet but checks for Delta arg or config.
+        
+        # Checking if 'delta' is in kwargs for output format?
+        output_format = kwargs.get('output_format', 'parquet')
+        
+        print(f"INFO: PySpark Engine writing to {output_path} (format={output_format}, mode={write_mode}, partitions={partition_cols})")
+        
         if partition_cols:
             writer = writer.partitionBy(*partition_cols)
             
-        writer.parquet(output_path)
+        if output_format == 'delta':
+             # Enable Schema Evolution (MergeSchema) for Delta if write_mode is append or generally
+             # option("mergeSchema", "true") allows adding new columns automatically
+             writer = writer.format("delta").option("mergeSchema", "true")
+             writer.save(output_path)
+        else:
+             writer.parquet(output_path)
+             
         return True
 
     def inspect(self, query, limit=100000, as_pandas=True):
