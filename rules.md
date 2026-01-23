@@ -168,3 +168,15 @@ When testing project initialization:
 - Create a temporary directory (e.g., `test_proj`).
 - Run `fairway init` and verify the output.
 - **CRITICAL**: Delete the temporary directory immediately after verification to prevent clutter.
+
+---
+
+### [RULE-115] Data Integrity (Never Drop)
+
+**Priority:** MUST
+**Category:** [CON] Content Requirements
+
+**Rule:**
+Ingestion pipelines MUST NOT silently drop data.
+- If a source file contains columns NOT present in the defined schema, the pipeline MUST fail with an error (forcing a schema update) rather than ignoring the extra columns.
+- The "Strict Schema" pattern means "Strictly conform or Fail", never "Strictly conform and Drop the rest".

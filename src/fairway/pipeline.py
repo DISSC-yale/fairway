@@ -246,7 +246,17 @@ class IngestionPipeline:
             if partition_by:
                 output_basename = output_name
             else:
-                output_basename = f"{output_name}.parquet"
+                # Use configured output format extension (parquet or delta? Delta is usually a directory, so no extension or .delta?)
+                # Standard convention for Delta tables is just the directory name, but if we need an extension for clarity:
+                ext = self.config.output_format if self.config.output_format != 'delta' else 'delta' 
+                # Actually delta tables usually don't have extensions in path, they are directories.
+                # But to avoid collision with file names...
+                # Current logic: output_basename = f"{output_name}.parquet"
+                
+                if self.config.output_format == 'delta':
+                     output_basename = output_name
+                else:
+                     output_basename = f"{output_name}.{self.config.output_format}"
                 
             output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
@@ -268,6 +278,7 @@ class IngestionPipeline:
                 hive_partitioning=hive_partitioning,
                 schema=schema,
                 write_mode=write_mode,
+                output_format=self.config.output_format, # Pass explicit output format (e.g. delta)
                 **read_options
             )
             
