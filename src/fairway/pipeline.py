@@ -54,11 +54,12 @@ class IngestionPipeline:
         temp_loc = self.config.temp_location
         batch_dir = None
         if temp_loc:
-             import uuid
-             # Generate a unique batch directory for this preprocessing run
-             batch_id = str(uuid.uuid4())[:8]
-             batch_dir = os.path.join(temp_loc, f"fairway_batch_{batch_id}")
-             # Ensure the batch root exists (assuming shared FS)
+             import hashlib
+             # Generate a deterministic batch directory based on the source path
+             # This allows reusing preprocessed files across runs (schema gen -> ingestion)
+             path_hash = hashlib.md5(source['path'].encode('utf-8')).hexdigest()[:12]
+             batch_dir = os.path.join(temp_loc, f"fairway_pre_v1_{path_hash}")
+             # Ensure the batch root exists
              os.makedirs(batch_dir, exist_ok=True)
              print(f"INFO: Using global temp location: {batch_dir}")
         
