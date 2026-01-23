@@ -55,10 +55,10 @@ class IngestionPipeline:
         batch_dir = None
         if temp_loc:
              import hashlib
-             # Generate a deterministic batch directory based on the source path
-             # This allows reusing preprocessed files across runs (schema gen -> ingestion)
-             path_hash = hashlib.md5(source['path'].encode('utf-8')).hexdigest()[:12]
-             batch_dir = os.path.join(temp_loc, f"fairway_pre_v1_{path_hash}")
+             # Generate a deterministic batch directory based on the source name
+             # This allows reusing preprocessed files across runs (schema gen -> ingestion) and is human readable.
+             safe_name = "".join([c if c.isalnum() else "_" for c in source['name']])
+             batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
              # Ensure the batch root exists
              os.makedirs(batch_dir, exist_ok=True)
              print(f"INFO: Using global temp location: {batch_dir}")
