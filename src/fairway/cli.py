@@ -251,7 +251,7 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
             script_lines.append(f"#SBATCH --account={slurm_cfg['account']}")
             
         script_lines.append("")
-        script_lines.append("source scripts/fairway-hpc.sh setup_env")
+        script_lines.append("source scripts/fairway-hpc.sh setup-spark")
         script_lines.append(" ".join(cmd_args))
         
         script_content = "\n".join(script_lines)
