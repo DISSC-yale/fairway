@@ -140,7 +140,17 @@ class Config:
 
             else:
                 # Glob discovery (Eager expansion)
-                files = glob.glob(resolved_path, recursive=True)
+                search_path = resolved_path
+                source_root = src.get('root')
+                
+                if source_root:
+                    # Resolve root relative to config dir if needed
+                    if not os.path.isabs(source_root):
+                         source_root = os.path.join(config_dir, source_root)
+                    
+                    search_path = os.path.join(source_root, path_pattern)
+
+                files = glob.glob(search_path, recursive=True)
                 
                 for f in files:
                     metadata = {}
