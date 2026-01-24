@@ -148,9 +148,15 @@ class Config:
                     if not os.path.isabs(source_root):
                          source_root = os.path.join(config_dir, source_root)
                     
-                    search_path = os.path.join(source_root, path_pattern)
+                    # Fix: os.path.join ignores root if path_pattern starts with /
+                    # We strip leading slash to ensure join works
+                    rel_pattern = path_pattern.lstrip(os.sep)
+                    search_path = os.path.join(source_root, rel_pattern)
 
+                print(f"DEBUG: ConfigLoader globbing: {search_path}")
                 files = glob.glob(search_path, recursive=True)
+                if not files:
+                    print(f"WARNING: ConfigLoader found no files for pattern: {search_path}")
                 
                 for f in files:
                     metadata = {}
