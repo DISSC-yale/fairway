@@ -19,6 +19,12 @@ class DuckDBEngine:
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
+        # Normalize TSV/tab to CSV with tab delimiter
+        if format in ('tsv', 'tab'):
+            format = 'csv'
+            if 'delim' not in kwargs:
+                kwargs['delim'] = '\t'
+
         if format == 'csv':
             return self._ingest_csv(input_path, output_path, partition_by, metadata, hive_partitioning, schema, write_mode, **kwargs)
         elif format == 'json':
@@ -154,7 +160,7 @@ class DuckDBEngine:
 
         Args:
             path: Input path (glob or directory)
-            format: Input format (csv, json, parquet)
+            format: Input format (csv, tsv, json, parquet)
             sampling_ratio: Fraction of files to sample (0.0 to 1.0)
             sample_files: Max number of files to sample (default 50)
             rows_per_file: Rows to sample from each file (default 1000)
@@ -169,11 +175,15 @@ class DuckDBEngine:
         import glob as glob_module
         import random
 
+        # Normalize TSV/tab to CSV
+        if format in ('tsv', 'tab'):
+            format = 'csv'
+
         print(f"INFO: Inferring schema from {path} (format={format})")
 
         # Build glob pattern for file discovery
         if '*' not in path and os.path.isdir(path):
-            ext_map = {'csv': '**/*.csv', 'json': '**/*.json', 'parquet': '**/*.parquet'}
+            ext_map = {'csv': '**/*.csv', 'tsv': '**/*.tsv', 'json': '**/*.json', 'parquet': '**/*.parquet'}
             glob_pattern = os.path.join(path, ext_map.get(format, '*'))
         else:
             glob_pattern = path

@@ -77,6 +77,12 @@ class PySparkEngine:
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
+        # Normalize TSV/tab to CSV with tab delimiter
+        if format in ('tsv', 'tab'):
+            format = 'csv'
+            if 'delimiter' not in kwargs and 'delim' not in kwargs:
+                kwargs['delimiter'] = '\t'
+
         # PySpark supports generic load with format option
         print(f"INFO: PySpark Engine reading from {input_path} (format={format})")
         reader = self.spark.read.format(format)
@@ -389,13 +395,19 @@ class PySparkEngine:
         Infers schema from a dataset using Spark.
         Args:
             path: Input path (glob or directory)
-            format: Input format
+            format: Input format (csv, tsv, json, parquet)
             sampling_ratio: Fraction of data to use for inference (0.0 to 1.0)
         Returns:
             dict: Schema dictionary compatible with Fairway config
         """
+        # Normalize TSV/tab to CSV with tab delimiter
+        if format in ('tsv', 'tab'):
+            format = 'csv'
+            if 'delimiter' not in kwargs and 'delim' not in kwargs:
+                kwargs['delimiter'] = '\t'
+
         print(f"INFO: Inferring schema from {path} (format={format}, sampling={sampling_ratio})")
-        
+
         reader = self.spark.read.format(format)
         
         # Apply standard options
