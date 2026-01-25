@@ -170,9 +170,12 @@ class Config:
                     
                     # Create a specific source entry for each file
                     source_format = src.get('format', 'csv')
-                    valid_formats = {'csv', 'json', 'parquet'}
+                    # Normalize 'tab' to 'tsv'
+                    if source_format == 'tab':
+                         source_format = 'tsv'
+                    valid_formats = {'csv', 'tsv', 'json', 'parquet'}
                     if source_format not in valid_formats:
-                         raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
+                         raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats} (or 'tab')")
 
                     
                     execution_mode = src.get('preprocess', {}).get('execution_mode', 'driver')
