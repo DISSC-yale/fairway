@@ -36,21 +36,29 @@ module load Spark/3.5.1-foss-2022b-Scala-2.13
 
 # --- Spark Tuning Parity (data_l2) ---
 # Discover the ephemeral config path BEFORE starting Spark
-SPARK_CONF_DIR="${{HOME}}/.spark-local/${{SLURM_JOB_ID}}/spark/conf"
+# IMPORTANT: Export SPARK_CONF_DIR so spark-start and all child processes use it
+export SPARK_CONF_DIR="${{HOME}}/.spark-local/${{SLURM_JOB_ID}}/spark/conf"
 DEFAULTS_FILE="${{SPARK_CONF_DIR}}/spark-defaults.conf"
 
 # Create config directory if it doesn't exist
 mkdir -p "${{SPARK_CONF_DIR}}"
 
 # Inject tuning parameters BEFORE spark-start
+# Disable SASL authentication for cluster-internal communication
 echo "spark.authenticate false" >> $DEFAULTS_FILE
 echo "spark.authenticate.enableSaslEncryption false" >> $DEFAULTS_FILE
+echo "spark.network.crypto.enabled false" >> $DEFAULTS_FILE
+
 echo "spark.dynamicAllocation.enabled True" >> $DEFAULTS_FILE
 echo "spark.dynamicAllocation.minExecutors 5" >> $DEFAULTS_FILE
 echo "spark.dynamicAllocation.maxExecutors 150" >> $DEFAULTS_FILE
 echo "spark.dynamicAllocation.initialExecutors 15" >> $DEFAULTS_FILE
 echo "spark.port.maxRetries 40" >> $DEFAULTS_FILE
 # --- End Tuning ---
+
+echo "DEBUG: SPARK_CONF_DIR=$SPARK_CONF_DIR"
+echo "DEBUG: spark-defaults.conf contents:"
+cat $DEFAULTS_FILE
 
 # Now start Spark with the correct configuration
 SPARK_START_LOG="spark_start_${{SLURM_JOB_ID}}.log"
