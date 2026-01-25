@@ -101,9 +101,10 @@ class Config:
             raw_schema = src.get('schema')
             resolved_schema = self._load_schema(raw_schema)
             
-            # Check for glob expansion override (defaults to True for backward compatibility)
-            # Setting expand_glob=False treats the pattern as a single source (good for Spark/Distributed batching)
-            expand_glob = src.get('expand_glob', True)
+            # Glob expansion behavior:
+            # - expand_glob=False (default): glob pattern → one source → one table (standard behavior)
+            # - expand_glob=True: each matching file → separate source (for per-file metadata extraction)
+            expand_glob = src.get('expand_glob', False)
 
             if hive_partitioning or not expand_glob:
                  # Treat the directory/glob as a single source unit
