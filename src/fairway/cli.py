@@ -183,7 +183,7 @@ def init(name, engine):
 @main.command()
 @click.option('--size', type=click.Choice(['small', 'large']), default='small', help='Size of dataset to generate.')
 @click.option('--partitioned/--no-partitioned', default=True, help='Generate partitioned data (year/month).')
-@click.option('--format', type=click.Choice(['csv', 'parquet']), default='csv', help='Output format (csv or parquet).')
+@click.option('--format', type=click.Choice(['csv', 'tsv', 'parquet']), default='csv', help='Output format (csv, tsv, or parquet).')
 def generate_data(size, partitioned, format):
     """Generate mock test data."""
     click.echo(f"Generating {size} test data (partitioned={partitioned}, format={format})...")
@@ -288,11 +288,13 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
              
              fmt = 'parquet'
              if file_path.endswith('.csv') or '.csv' in file_path: fmt = 'csv'
+             elif file_path.endswith('.tsv') or '.tsv' in file_path: fmt = 'tsv'
              elif file_path.endswith('.json') or '.json' in file_path: fmt = 'json'
              
              if os.path.isdir(file_path):
                   entries = os.listdir(file_path)
                   if any(e.endswith('.csv') for e in entries): fmt = 'csv'
+                  elif any(e.endswith('.tsv') for e in entries): fmt = 'tsv'
                   elif any(e.endswith('.json') for e in entries): fmt = 'json'
              
              schema_dict = spark_engine.infer_schema(
