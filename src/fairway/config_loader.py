@@ -115,9 +115,12 @@ class Config:
                       continue
                  
                  source_format = src.get('format', 'csv')
-                 valid_formats = {'csv', 'json', 'parquet'}
+                 # Normalize 'tab' to 'tsv'
+                 if source_format == 'tab':
+                      source_format = 'tsv'
+                 valid_formats = {'csv', 'tsv', 'json', 'parquet'}
                  if source_format not in valid_formats:
-                      raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
+                      raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats} (or 'tab')")
                  
                  # Name is explicit or basename of path (which might be a pattern like *.csv)
                  # If pattern, basename might be '*.csv'. Ideally user provides name.
