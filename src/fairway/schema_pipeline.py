@@ -14,12 +14,18 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
     def run_inference(self, output_path=None, sampling_ratio=0.1):
         """
         Run the discovery pipeline.
-        
+
         Args:
             output_path (str): Path to write the final schema YAML.
+                              Defaults to data/schemas/{dataset_name}_schema.yaml relative to config file.
             sampling_ratio (float): Fraction of data to scan (Spark only).
         """
         print(f"Starting Schema Discovery Pipeline for dataset: {self.config.dataset_name}")
+
+        # Default output path: data/schemas/{dataset_name}_schema.yaml relative to config file
+        if output_path is None:
+            config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
+            output_path = os.path.join(config_dir, "data", "schemas", f"{self.config.dataset_name}_schema.yaml")
         
         consolidated_schema = {
             "dataset_name": self.config.dataset_name,
@@ -66,13 +72,12 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
                 print(f"ERROR: Failed to infer schema for source {source['name']}: {e}")
                 # Continue to next source?
         
-        # 4. Output Result
-        if output_path:
-            with open(output_path, 'w') as f:
-                yaml.dump(consolidated_schema, f, sort_keys=False)
-            print(f"\nSchema successfully written to: {output_path}")
-        else:
-            print("\n--- Inferred Schema ---")
-            print(yaml.dump(consolidated_schema, sort_keys=False))
+        # 4. Output Result (always writes to file - default path computed above)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_path, 'w') as f:
+            yaml.dump(consolidated_schema, f, sort_keys=False)
+        print(f"\nSchema successfully written to: {output_path}")
             
         return consolidated_schema
