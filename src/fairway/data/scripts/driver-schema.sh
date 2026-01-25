@@ -1,51 +1,44 @@
 #!/bin/bash
-#SBATCH --job-name=fairway_schema_driver
-#SBATCH --output=logs/schema_driver_%j.log
-#SBATCH --time=24:00:00
-#SBATCH --mem=4G
-#SBATCH --cpus-per-task=1
+#SBATCH --job-name=fairway_schema
+#SBATCH --output=logs/schema_%j.log
+#SBATCH --time=04:00:00
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=4
 
 # =============================================================================
 # Fairway Schema Generation Driver Job
 # =============================================================================
-# This script submits a driver job that provisions a Spark cluster and then
-# runs the schema generation pipeline distributedly.
+# This script runs schema inference using DuckDB on a single compute node.
+# No Spark cluster is required - DuckDB handles schema discovery efficiently
+# with random sampling and union_by_name for multi-file schema merging.
+#
+# For scalability considerations with 1000s of files on slow storage,
+# see docs/design_docs/schema_inference_scalability.md
+
+set -e
 
 export FAIRWAY_VENV=$FAIRWAY_VENV
 
-# Source modules environment
-source scripts/fairway-hpc.sh setup-spark
+# Load base modules (no Spark needed for schema inference)
+source scripts/fairway-hpc.sh setup
 
-# =============================================================================
-# 1. Start Spark Cluster (Orchestration)
-# =============================================================================
-# We attempt to start a Spark cluster. The 'fairway spark start' command
-# reads config/spark.yaml and submits a separate Slurm job for the cluster.
-
-# Define cleanup function to ensure cluster is stopped when driver exits
-cleanup() {
-    echo "Stopping Spark Cluster..."
-    fairway spark stop
-}
-trap cleanup EXIT
-
-echo "Starting Spark Cluster..."
-fairway spark start
-
-# Wait/Read Master URL
-MASTER_URL_FILE=~/spark_master_url.txt
-if [ -f "$MASTER_URL_FILE" ]; then
-    SPARK_MASTER=$(cat "$MASTER_URL_FILE")
-    echo "Spark Master: $SPARK_MASTER"
-else
-    echo "WARNING: Spark Master URL file not found after start. Running in local mode?"
-    SPARK_MASTER="local[*]"
+# Activate virtual environment if specified
+if [ -n "$FAIRWAY_VENV" ] && [ -d "$FAIRWAY_VENV" ]; then
+    echo "Activating virtual environment: $FAIRWAY_VENV"
+    source "$FAIRWAY_VENV/bin/activate"
 fi
 
 # =============================================================================
-# 2. Run Schema Generation
+# Run Schema Generation (DuckDB-based)
 # =============================================================================
-echo "Running Schema Generation..."
-# Note: We pass --internal-run to indicate we are already in a computed environment
-# and pass the discovered spark master.
-fairway generate-schema --config config/fairway.yaml --internal-run --spark-master "$SPARK_MASTER"
+echo "Running Schema Generation with DuckDB..."
+echo "  - Uses random row sampling (default 10%)"
+echo "  - Merges schemas across all files (union_by_name)"
+echo ""
+
+# Run schema generation - CLI will use engine from config (defaults to DuckDB)
+# No --spark-master means DuckDB will be used
+fairway generate-schema --config config/fairway.yaml --internal-run
+
+echo ""
+echo "Schema generation complete. Check output for generated schema files."

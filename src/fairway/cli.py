@@ -193,7 +193,7 @@ def generate_data(size, partitioned, format):
 @click.argument('file_path', required=False)
 @click.option('--config', help='Path to fairway.yaml config (enables Pipeline Mode).')
 @click.option('--output', help='Output file path for the schema (YAML).')
-@click.option('--engine', type=click.Choice(['duckdb', 'pyspark']), default='duckdb', help='Engine (legacy mode only).')
+@click.option('--engine', type=click.Choice(['duckdb', 'pyspark']), default=None, help='Engine for schema inference. Default: duckdb (portable). Use pyspark for distributed inference on slow storage.')
 @click.option('--sampling-ratio', type=float, default=1.0, help='Ratio of data to read (Spark only).')
 # Slurm Options
 @click.option('--slurm', is_flag=True, help='Submit as a Slurm job.')
@@ -246,17 +246,27 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
     if config:
         from .config_loader import Config
         from .schema_pipeline import SchemaDiscoveryPipeline
-        
+
         click.echo(f"Starting Schema Discovery (Pipeline Mode) using {config}...")
         cfg = Config(config)
-        
-        # Initialize Pipeline
-        pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]")
-        # Note: If running inside Slurm (internal-run), spark_master should arguably be 
-        # determined by environment, but for schema inference 'local[*]' on the 
-        # compute node is usually sufficient and simpler than spinning up a full cluster context 
-        # just for this. If full distribution is needed, we'd need the SlurmSparkManager logic here.
-        
+
+        # Determine engine: CLI flag > config > default (duckdb)
+        config_engine = cfg.engine.lower() if cfg.engine else 'duckdb'
+        effective_engine = engine if engine else config_engine
+
+        click.echo(f"Using engine: {effective_engine}")
+
+        if effective_engine in ['pyspark', 'spark']:
+            # Use Spark - requires spark_master for distributed mode
+            if spark_master:
+                click.echo(f"Spark master: {spark_master}")
+            else:
+                click.echo("No spark_master provided, using local[*]")
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]")
+        else:
+            # Use DuckDB (default) - portable, no cluster needed
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=None)
+
         pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
         return
 

@@ -147,3 +147,82 @@ class DuckDBEngine:
         if os.path.isfile(path):
              return self.con.sql(f"SELECT * FROM '{path}'")
         return self.con.sql(f"SELECT * FROM '{path}/**/*.parquet'")
+
+    def infer_schema(self, path, format='csv', sampling_ratio=0.1, sample_files=50, rows_per_file=1000, **kwargs):
+        """
+        Infers schema from a dataset using DuckDB with random sampling across files.
+
+        Args:
+            path: Input path (glob or directory)
+            format: Input format (csv, json, parquet)
+            sampling_ratio: Fraction of files to sample (0.0 to 1.0)
+            sample_files: Max number of files to sample (default 50)
+            rows_per_file: Rows to sample from each file (default 1000)
+        Returns:
+            dict: Schema dictionary compatible with Fairway config
+
+        Note:
+            - Randomly samples files to catch type variations across dataset
+            - union_by_name=true: merges schemas across sampled files
+            - For scalability considerations, see docs/design_docs/schema_inference_scalability.md
+        """
+        import glob as glob_module
+        import random
+
+        print(f"INFO: Inferring schema from {path} (format={format})")
+
+        # Build glob pattern for file discovery
+        if '*' not in path and os.path.isdir(path):
+            ext_map = {'csv': '**/*.csv', 'json': '**/*.json', 'parquet': '**/*.parquet'}
+            glob_pattern = os.path.join(path, ext_map.get(format, '*'))
+        else:
+            glob_pattern = path
+
+        # Discover all files
+        all_files = glob_module.glob(glob_pattern, recursive=True)
+        if not all_files:
+            raise ValueError(f"No files found matching pattern: {glob_pattern}")
+
+        # Randomly sample files
+        num_to_sample = min(sample_files, max(1, int(len(all_files) * sampling_ratio)))
+        sampled_files = random.sample(all_files, min(num_to_sample, len(all_files)))
+        print(f"INFO: Sampling {len(sampled_files)} of {len(all_files)} files for schema inference")
+
+        # Build query to sample rows from each file and union them
+        read_func = {'csv': 'read_csv_auto', 'json': 'read_json_auto', 'parquet': 'read_parquet'}[format]
+
+        if len(sampled_files) == 1:
+            query = f"SELECT * FROM {read_func}('{sampled_files[0]}') LIMIT {rows_per_file}"
+        else:
+            # Union samples from each file
+            subqueries = [f"SELECT * FROM {read_func}('{f}') LIMIT {rows_per_file}" for f in sampled_files]
+            query = " UNION ALL BY NAME ".join(subqueries)
+
+        rel = self.con.sql(query)
+
+        # Extract schema from DuckDB and convert to Fairway types
+        schema_dict = {}
+        for col_name, col_type in zip(rel.columns, rel.types):
+            dtype_str = str(col_type).upper()
+
+            # Map DuckDB types to standard types
+            if 'INT' in dtype_str and 'BIGINT' not in dtype_str:
+                dtype = 'INTEGER'
+            elif 'BIGINT' in dtype_str or 'HUGEINT' in dtype_str:
+                dtype = 'BIGINT'
+            elif 'DOUBLE' in dtype_str or 'FLOAT' in dtype_str or 'DECIMAL' in dtype_str:
+                dtype = 'DOUBLE'
+            elif 'VARCHAR' in dtype_str or 'TEXT' in dtype_str or 'STRING' in dtype_str:
+                dtype = 'STRING'
+            elif 'TIMESTAMP' in dtype_str:
+                dtype = 'TIMESTAMP'
+            elif 'DATE' in dtype_str:
+                dtype = 'DATE'
+            elif 'BOOL' in dtype_str:
+                dtype = 'BOOLEAN'
+            else:
+                dtype = 'STRING'  # Fallback
+
+            schema_dict[col_name] = dtype
+
+        return schema_dict
