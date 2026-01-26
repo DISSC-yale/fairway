@@ -73,7 +73,7 @@ class PySparkEngine:
             
         self.spark = builder.getOrCreate()
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', **kwargs):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
@@ -112,8 +112,34 @@ class PySparkEngine:
             
 
         df = reader.load(input_path)
-        
-        # Inject metadata if available (e.g. state from filename)
+
+        # Extract metadata from file paths using naming_pattern
+        # This is useful when metadata wasn't extracted during config expansion
+        # (e.g., when preprocessing extracts files to new directories)
+        if naming_pattern and (not metadata or len(metadata) == 0):
+            import re
+            # Parse the naming pattern to find all named groups (in order)
+            pattern_groups = re.findall(r'\?P<([^>]+)>', naming_pattern)
+            if pattern_groups:
+                print(f"INFO: Extracting metadata from file paths using naming_pattern: {pattern_groups}")
+                # Convert Python named groups to standard groups for Spark
+                # (?P<name>pattern) -> (pattern)
+                spark_pattern = re.sub(r'\?P<[^>]+>', '', naming_pattern)
+                print(f"DEBUG: Spark regex pattern: {spark_pattern}")
+
+                # Add the input file name as a column
+                df = df.withColumn("_input_file", F.input_file_name())
+                # Extract each named group from the file path
+                for idx, group_name in enumerate(pattern_groups):
+                    # Group indices start at 1 in regexp_extract
+                    df = df.withColumn(
+                        group_name,
+                        F.regexp_extract("_input_file", spark_pattern, idx + 1)
+                    )
+                # Drop the temporary column
+                df = df.drop("_input_file")
+
+        # Inject static metadata if available (e.g. state from filename)
         if metadata:
             for key, val in metadata.items():
                 df = df.withColumn(key, F.lit(val))

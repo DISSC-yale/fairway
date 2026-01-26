@@ -44,6 +44,25 @@ class IngestionPipeline:
         if not preprocess_config:
             return source['path']
 
+        action = preprocess_config.get('action')
+        scope = preprocess_config.get('scope', 'per_file') # 'global' or 'per_file'
+        mode = preprocess_config.get('execution_mode', 'driver') # 'driver' or 'cluster'
+
+        # Derive file filter from source format or explicit include pattern
+        # Explicit include in preprocess config takes priority
+        include_pattern = preprocess_config.get('include')
+        if not include_pattern:
+            source_format = source.get('format')
+            format_to_ext = {
+                'tab': '*.tab',
+                'tsv': '*.tsv',
+                'csv': '*.csv',
+                'json': '*.json',
+                'jsonl': '*.jsonl',
+                'parquet': '*.parquet',
+            }
+            include_pattern = format_to_ext.get(source_format)
+
         # Check preprocessing cache first
         cached = self.manifest.get_preprocessed_path(
             source['path'],
@@ -51,14 +70,15 @@ class IngestionPipeline:
             source.get('root')
         )
         if cached:
+            # Apply file filter to cached path if needed
+            if include_pattern:
+                cached = os.path.join(cached, "**", include_pattern)
             print(f"  Reusing cached preprocessing: {cached}")
             return cached
 
-        action = preprocess_config.get('action')
-        scope = preprocess_config.get('scope', 'per_file') # 'global' or 'per_file'
-        mode = preprocess_config.get('execution_mode', 'driver') # 'driver' or 'cluster'
-        
         print(f"Preprocessing {source['name']} with action='{action}', scope='{scope}', mode='{mode}'...")
+        if include_pattern:
+            print(f"  File filter: {include_pattern}")
 
         # Temp Location Support
         temp_loc = self.config.temp_location
@@ -180,19 +200,25 @@ class IngestionPipeline:
         
         # Construct a sensible return path
         # If we extracted zips, we probably want to ingest the contents.
-        # Let's assume we return the glob of the preprocessed directories
+        # Use include_pattern to filter specific file types (e.g., "*.tab")
+        file_glob = include_pattern if include_pattern else "*"
+
         if len(processed_paths) == 1:
-             result_path = processed_paths[0]
+             # Single extraction directory - apply filter directly
+             if include_pattern:
+                 result_path = os.path.join(processed_paths[0], "**", file_glob)
+             else:
+                 result_path = processed_paths[0]
         else:
              # If multiple, return the common structure...
              if batch_dir:
                   # If we used a batch dir, return everything inside it
                   # Structure: batch_dir / <file_dir> / <contents>
-                  result_path = os.path.join(batch_dir, "*", "*")
+                  result_path = os.path.join(batch_dir, "*", file_glob)
              else:
                   # Original logic: sibling directories
                   base = os.path.dirname(input_path)
-                  result_path = os.path.join(base, ".preprocessed_*", "*")
+                  result_path = os.path.join(base, ".preprocessed_*", file_glob)
 
         # Record result for future reuse
         self.manifest.record_preprocessing(
@@ -285,20 +311,22 @@ class IngestionPipeline:
                 
             output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
+            naming_pattern = source.get('naming_pattern')
             source_format = source.get('format', 'csv')
             hive_partitioning = source.get('hive_partitioning', False)
             schema = source.get('schema')
             read_options = source.get('read_options', {})
             write_mode = source.get('write_mode', 'overwrite')
             
-            # For partitioning, DuckDB creates a directory. 
+            # For partitioning, DuckDB creates a directory.
             print(f"INFO: Starting ingestion for {source['name']} from {input_path} to {output_path}")
             success = self.engine.ingest(
-                input_path, 
+                input_path,
                 output_path,
                 format=source_format,
                 partition_by=partition_by,
                 metadata=metadata,
+                naming_pattern=naming_pattern,
                 target_rows=self.config.target_rows,
                 hive_partitioning=hive_partitioning,
                 schema=schema,
