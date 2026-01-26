@@ -198,6 +198,7 @@ class Config:
                         'root': source_root,
                         'format': source_format,
                         'metadata': metadata,
+                        'naming_pattern': naming_pattern,
                         'schema': resolved_schema,
                         'transformation': src.get('transformation'),
                         'hive_partitioning': False,
