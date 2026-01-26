@@ -44,6 +44,16 @@ class IngestionPipeline:
         if not preprocess_config:
             return source['path']
 
+        # Check preprocessing cache first
+        cached = self.manifest.get_preprocessed_path(
+            source['path'],
+            source['name'],
+            source.get('root')
+        )
+        if cached:
+            print(f"  Reusing cached preprocessing: {cached}")
+            return cached
+
         action = preprocess_config.get('action')
         scope = preprocess_config.get('scope', 'per_file') # 'global' or 'per_file'
         mode = preprocess_config.get('execution_mode', 'driver') # 'driver' or 'cluster'
@@ -172,17 +182,28 @@ class IngestionPipeline:
         # If we extracted zips, we probably want to ingest the contents.
         # Let's assume we return the glob of the preprocessed directories
         if len(processed_paths) == 1:
-             return processed_paths[0]
+             result_path = processed_paths[0]
         else:
-             # If multiple, return the common structure... 
+             # If multiple, return the common structure...
              if batch_dir:
                   # If we used a batch dir, return everything inside it
                   # Structure: batch_dir / <file_dir> / <contents>
-                  return os.path.join(batch_dir, "*", "*")
+                  result_path = os.path.join(batch_dir, "*", "*")
              else:
                   # Original logic: sibling directories
                   base = os.path.dirname(input_path)
-                  return os.path.join(base, ".preprocessed_*", "*") 
+                  result_path = os.path.join(base, ".preprocessed_*", "*")
+
+        # Record result for future reuse
+        self.manifest.record_preprocessing(
+            original_path=source['path'],
+            preprocessed_path=result_path,
+            action=action,
+            source_name=source['name'],
+            source_root=source.get('root')
+        )
+
+        return result_path 
 
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
@@ -217,7 +238,8 @@ class IngestionPipeline:
                 except Exception as e:
                     print(f"ERROR: Distributed hash check failed: {e}. Falling back to driver check.")
 
-        for source in self.config.sources:
+        with self.manifest.batch():
+          for source in self.config.sources:
             # 0. Preprocessing
             # Preprocess returns a modified path (e.g. to temp unzipped files)
             # Source dict is unmodified, we just change the variable we use for input
