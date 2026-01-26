@@ -17,16 +17,17 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
         Run the discovery pipeline.
 
         Args:
-            output_path (str): Path to write the final schema YAML.
-                              Defaults to data/schemas/{dataset_name}_schema.yaml relative to config file.
+            output_path (str): Base path for schema output. Each source schema is written to
+                              {output_path}/{source_name}/schema.yaml.
+                              Defaults to data/schemas relative to config file.
             sampling_ratio (float): Fraction of data to scan (Spark only).
         """
         print(f"Starting Schema Discovery Pipeline for dataset: {self.config.dataset_name}")
 
-        # Default output path: data/schemas/{dataset_name}_schema.yaml relative to config file
+        # Default output path: data/schemas relative to config file
         if output_path is None:
             config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
-            output_path = os.path.join(config_dir, "data", "schemas", f"{self.config.dataset_name}_schema.yaml")
+            output_path = os.path.join(config_dir, "data", "schemas")
         
         consolidated_schema = {
             "dataset_name": self.config.dataset_name,
@@ -88,17 +89,20 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
                 }
                 consolidated_schema["sources"].append(source_schema)
 
+                # 4. Write each source schema to its own folder
+                source_name = source['name']
+                source_schema_dir = os.path.join(output_path, source_name)
+                os.makedirs(source_schema_dir, exist_ok=True)
+                source_schema_path = os.path.join(source_schema_dir, "schema.yaml")
+                with open(source_schema_path, 'w') as f:
+                    yaml.dump(source_schema, f, sort_keys=False)
+                print(f"  Schema written to: {source_schema_path}")
+
             except Exception as e:
                 print(f"ERROR: Failed to infer schema for source {source['name']}: {e}")
                 # Continue to next source?
 
-        # 4. Output Result (always writes to file - default path computed above)
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-        with open(output_path, 'w') as f:
-            yaml.dump(consolidated_schema, f, sort_keys=False)
-        print(f"\nSchema successfully written to: {output_path}")
+        print(f"\nAll schemas written to: {output_path}")
 
         # 5. Record schema run in manifest
         self.manifest.record_schema_run(
