@@ -170,14 +170,10 @@ class Config:
                             metadata = match.groupdict()
                     
                     # Create a specific source entry for each file
-                    original_format = src.get('format', 'csv')
-                    source_format = original_format
-                    # Normalize 'tab' to 'tsv' for engine compatibility
-                    if source_format == 'tab':
-                         source_format = 'tsv'
-                    valid_formats = {'csv', 'tsv', 'json', 'parquet'}
+                    source_format = src.get('format', 'csv')
+                    valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet'}
                     if source_format not in valid_formats:
-                         raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats} (or 'tab')")
+                         raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
 
                     
                     execution_mode = src.get('preprocess', {}).get('execution_mode', 'driver')
@@ -198,7 +194,6 @@ class Config:
                         'path': f,
                         'root': source_root,
                         'format': source_format,
-                        'original_format': original_format,  # Preserve for file filtering
                         'metadata': metadata,
                         'naming_pattern': naming_pattern,
                         'schema': resolved_schema,
