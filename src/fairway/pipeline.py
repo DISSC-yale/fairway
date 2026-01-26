@@ -48,12 +48,11 @@ class IngestionPipeline:
         scope = preprocess_config.get('scope', 'per_file') # 'global' or 'per_file'
         mode = preprocess_config.get('execution_mode', 'driver') # 'driver' or 'cluster'
 
-        # Derive file filter from original format (before normalization)
+        # Derive file filter from source format
         # Explicit include in preprocess config takes priority
         include_pattern = preprocess_config.get('include')
         if not include_pattern:
-            # Use original_format (from config) not normalized format (for engine)
-            file_format = source.get('original_format') or source.get('format')
+            file_format = source.get('format')
             format_to_ext = {
                 'tab': '*.tab',
                 'tsv': '*.tsv',
