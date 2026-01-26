@@ -48,11 +48,12 @@ class IngestionPipeline:
         scope = preprocess_config.get('scope', 'per_file') # 'global' or 'per_file'
         mode = preprocess_config.get('execution_mode', 'driver') # 'driver' or 'cluster'
 
-        # Derive file filter from source format or explicit include pattern
+        # Derive file filter from original format (before normalization)
         # Explicit include in preprocess config takes priority
         include_pattern = preprocess_config.get('include')
         if not include_pattern:
-            source_format = source.get('format')
+            # Use original_format (from config) not normalized format (for engine)
+            file_format = source.get('original_format') or source.get('format')
             format_to_ext = {
                 'tab': '*.tab',
                 'tsv': '*.tsv',
@@ -61,7 +62,7 @@ class IngestionPipeline:
                 'jsonl': '*.jsonl',
                 'parquet': '*.parquet',
             }
-            include_pattern = format_to_ext.get(source_format)
+            include_pattern = format_to_ext.get(file_format)
 
         # Check preprocessing cache first
         cached = self.manifest.get_preprocessed_path(

@@ -170,8 +170,9 @@ class Config:
                             metadata = match.groupdict()
                     
                     # Create a specific source entry for each file
-                    source_format = src.get('format', 'csv')
-                    # Normalize 'tab' to 'tsv'
+                    original_format = src.get('format', 'csv')
+                    source_format = original_format
+                    # Normalize 'tab' to 'tsv' for engine compatibility
                     if source_format == 'tab':
                          source_format = 'tsv'
                     valid_formats = {'csv', 'tsv', 'json', 'parquet'}
@@ -197,6 +198,7 @@ class Config:
                         'path': f,
                         'root': source_root,
                         'format': source_format,
+                        'original_format': original_format,  # Preserve for file filtering
                         'metadata': metadata,
                         'naming_pattern': naming_pattern,
                         'schema': resolved_schema,
