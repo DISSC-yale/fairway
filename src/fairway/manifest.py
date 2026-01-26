@@ -3,6 +3,9 @@ import hashlib
 import os
 import glob
 from datetime import datetime
+from contextlib import contextmanager
+
+MANIFEST_VERSION = "2.0"
 
 class ManifestManager:
     def __init__(self, manifest_path='data/fmanifest.json'):
@@ -12,12 +15,41 @@ class ManifestManager:
     def _load_manifest(self):
         if os.path.exists(self.manifest_path):
             with open(self.manifest_path, 'r') as f:
-                return json.load(f)
-        return {"files": {}}
+                data = json.load(f)
+            if "version" not in data:
+                data = self._migrate_v1_to_v2(data)
+            return data
+        return {"version": MANIFEST_VERSION, "files": {}, "schemas": {}, "preprocessing": {}}
+
+    def _migrate_v1_to_v2(self, old_data):
+        """Migrate v1 manifest (no version field) to v2."""
+        return {
+            "version": MANIFEST_VERSION,
+            "files": old_data.get("files", {}),
+            "schemas": {},
+            "preprocessing": {}
+        }
 
     def _save_manifest(self):
-        with open(self.manifest_path, 'w') as f:
+        """Save manifest atomically. Deferred if in batch mode."""
+        if getattr(self, '_batch_mode', False):
+            return  # Deferred until batch completes
+
+        temp_path = f"{self.manifest_path}.tmp"
+        os.makedirs(os.path.dirname(self.manifest_path) or '.', exist_ok=True)
+        with open(temp_path, 'w') as f:
             json.dump(self.manifest, f, indent=2)
+        os.replace(temp_path, self.manifest_path)  # Atomic on POSIX
+
+    @contextmanager
+    def batch(self):
+        """Defer saves until batch completes."""
+        self._batch_mode = True
+        try:
+            yield
+        finally:
+            self._batch_mode = False
+            self._save_manifest()
 
     def get_file_key(self, file_path, source_name, source_root=None):
         """
@@ -160,13 +192,91 @@ class ManifestManager:
         """
         changed = False
         for item in file_status_list:
-            # item structure depends on worker return. 
+            # item structure depends on worker return.
             # flexible: dict or object
             key = item.get('key')
             entry = item.get('entry')
             if key and entry:
                 self.manifest["files"][key] = entry
                 changed = True
-        
+
         if changed:
             self._save_manifest()
+
+    # --- Schema Tracking Methods ---
+
+    def _compute_sources_hash(self, sources_info):
+        """Hash all source file hashes together."""
+        combined = hashlib.sha256()
+        for src in sorted(sources_info, key=lambda x: x['name']):
+            for h in sorted(src.get('file_hashes', [])):
+                if h:  # Skip None hashes
+                    combined.update(h.encode())
+        return combined.hexdigest()[:16]
+
+    def record_schema_run(self, dataset_name, sources_info, output_path):
+        """Record a schema inference run."""
+        if "schemas" not in self.manifest:
+            self.manifest["schemas"] = {}
+
+        # Compute combined hash of all source files
+        sources_hash = self._compute_sources_hash(sources_info)
+
+        self.manifest["schemas"][dataset_name] = {
+            "generated_at": datetime.now().isoformat(),
+            "output_path": output_path,
+            "sources_hash": sources_hash,
+            "sources": sources_info  # List of {name, files_used, file_hashes}
+        }
+        self._save_manifest()
+
+    def is_schema_stale(self, dataset_name, current_sources_info):
+        """Check if schema needs regeneration."""
+        schema_entry = self.manifest.get("schemas", {}).get(dataset_name)
+        if not schema_entry:
+            return True
+
+        current_hash = self._compute_sources_hash(current_sources_info)
+        return schema_entry.get("sources_hash") != current_hash
+
+    def get_latest_schema_run(self, dataset_name):
+        """Get info about most recent schema run."""
+        return self.manifest.get("schemas", {}).get(dataset_name)
+
+    # --- Preprocessing Cache Methods ---
+
+    def record_preprocessing(self, original_path, preprocessed_path, action, source_name, source_root=None):
+        """Record preprocessing result for cache sharing."""
+        if "preprocessing" not in self.manifest:
+            self.manifest["preprocessing"] = {}
+
+        key = self.get_file_key(original_path, source_name, source_root)
+        source_hash = self.get_file_hash(original_path, fast_check=True)
+
+        self.manifest["preprocessing"][key] = {
+            "source_hash": source_hash,
+            "preprocessed_path": preprocessed_path,
+            "action": action,
+            "processed_at": datetime.now().isoformat()
+        }
+        self._save_manifest()
+
+    def get_preprocessed_path(self, original_path, source_name, source_root=None):
+        """Get cached preprocessed path if still valid."""
+        key = self.get_file_key(original_path, source_name, source_root)
+        entry = self.manifest.get("preprocessing", {}).get(key)
+
+        if not entry:
+            return None
+
+        # Check source hasn't changed
+        current_hash = self.get_file_hash(original_path, fast_check=True)
+        if entry.get("source_hash") != current_hash:
+            return None
+
+        # Check preprocessed files still exist
+        preprocessed = entry.get("preprocessed_path")
+        if not preprocessed or not os.path.exists(preprocessed):
+            return None
+
+        return preprocessed
