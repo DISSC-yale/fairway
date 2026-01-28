@@ -149,31 +149,46 @@ class PySparkEngine:
             # Normalize schema keys to match DataFrame columns (case sensitivity?)
             # Assuming widely case-sensitive/insensitive defaults from Spark.
             # Here keeping it strict python string match for integrity.
-            
+
             raw_columns = set(df.columns)
             expected_columns = set(schema.keys())
-            
-            # RULE-115: FAIL if extra columns exist
-            extra_cols = raw_columns - expected_columns
-            # Filter out metadata columns we JUST added, as they might not be in the strict 'schema' def
-            # effectively metadata is "safe" extra columns.
+
+            # Columns that should be preserved even if not in schema:
+            # - metadata columns (extracted from file paths or injected)
+            # - partition_by columns (needed for partitioning)
+            preserved_columns = set()
             if metadata:
-                extra_cols = extra_cols - set(metadata.keys())
-                
+                preserved_columns.update(metadata.keys())
+            if partition_by:
+                preserved_columns.update(partition_by)
+            # Also preserve columns extracted via naming_pattern
+            if naming_pattern:
+                import re
+                pattern_groups = re.findall(r'\?P<([^>]+)>', naming_pattern)
+                preserved_columns.update(pattern_groups)
+
+            # RULE-115: FAIL if extra columns exist (excluding preserved columns)
+            extra_cols = raw_columns - expected_columns - preserved_columns
+
             if extra_cols:
                 raise ValueError(f"[RULE-115] Data Integrity Error: Source file contains {len(extra_cols)} extra columns not in strict schema: {extra_cols}. Ingestion aborted to prevent data dropping.")
-            
+
             # Align and Fill Missing Columns
             select_exprs = []
             for col_name, col_type in schema.items():
                 if col_name in df.columns:
-                    # Cast to Ensure Type Strictness? 
+                    # Cast to Ensure Type Strictness?
                     # Ideally yes, let's cast to the configured type string
                     select_exprs.append(F.col(col_name).cast(col_type))
                 else:
                     # Fill Missing as Null (Safe Evolution)
                     select_exprs.append(F.lit(None).cast(col_type).alias(col_name))
-            
+
+            # Also include preserved columns that exist in the DataFrame but not in schema
+            for col_name in preserved_columns:
+                if col_name in df.columns and col_name not in schema:
+                    select_exprs.append(F.col(col_name))
+
             # Apply Selection (Ordering + Filling)
             df = df.select(*select_exprs)
 
