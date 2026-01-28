@@ -1,7 +1,22 @@
 import os
 import glob
+import re
 import yaml
 from .pipeline import IngestionPipeline
+
+
+def _get_metadata_columns_from_pattern(naming_pattern):
+    """Extract named group names from a naming_pattern regex.
+
+    Args:
+        naming_pattern: A regex pattern with named groups like (?P<name>...)
+
+    Returns:
+        List of named group names extracted from the pattern.
+    """
+    if not naming_pattern:
+        return []
+    return re.findall(r'\?P<([^>]+)>', naming_pattern)
 
 class SchemaDiscoveryPipeline(IngestionPipeline):
     """
@@ -82,6 +97,19 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
                     format=source.get('format', 'parquet'), # heuristic, engine handles better usually
                     sampling_ratio=sampling_ratio
                 )
+
+                # Add metadata columns from naming_pattern (as STRING, matching injection behavior)
+                naming_pattern = source.get('naming_pattern')
+                metadata_columns = _get_metadata_columns_from_pattern(naming_pattern)
+                for col in metadata_columns:
+                    if col not in schema_dict:
+                        schema_dict[col] = 'STRING'
+
+                # Also ensure partition_by columns are in the schema
+                partition_by = source.get('partition_by', [])
+                for col in partition_by:
+                    if col not in schema_dict:
+                        schema_dict[col] = 'STRING'
 
                 source_schema = {
                     "name": source['name'],
