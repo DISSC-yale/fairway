@@ -129,6 +129,7 @@ class Config:
                     'path': resolved_path,
                     'format': source_format,
                     'metadata': {},
+                    'naming_pattern': naming_pattern,
                     'schema': resolved_schema,
                     'transformation': src.get('transformation'),
                     'hive_partitioning': hive_partitioning,

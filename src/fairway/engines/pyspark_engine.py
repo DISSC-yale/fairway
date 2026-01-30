@@ -116,7 +116,7 @@ class PySparkEngine:
         # Extract metadata from file paths using naming_pattern
         # This is useful when metadata wasn't extracted during config expansion
         # (e.g., when preprocessing extracts files to new directories)
-        if naming_pattern and (not metadata or len(metadata) == 0):
+        if naming_pattern:
             import re
             # Parse the naming pattern to find all named groups (in order)
             pattern_groups = re.findall(r'\?P<([^>]+)>', naming_pattern)
@@ -454,6 +454,8 @@ class PySparkEngine:
         # Apply standard options
         if format == 'csv':
             reader = reader.option("header", "true").option("inferSchema", "true")
+            # Match ingestion behavior: recursively find files in subdirectories
+            reader = reader.option("recursiveFileLookup", "true")
             if sampling_ratio < 1.0:
                 reader = reader.option("samplingRatio", sampling_ratio)
         elif format == 'json':
