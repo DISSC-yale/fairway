@@ -37,42 +37,36 @@ class Summarizer:
     @staticmethod
     def generate_summary_spark(df, output_path):
         """
-        Generates summary statistics using Spark native functions.
+        Generates summary statistics using native PySpark (no toPandas).
         """
-        # Spark's summary() provides count, mean, stddev, min, max, but not null/distinct
-        # We can implement a robust one or just use .summary().toPandas() for now as it returns a tiny DF
-        
-        # 1. Basic Stats
-        desc = df.describe().toPandas()
-        
-        # 2. Nulls and Distincts (expensive)
-        # We can optimize this by doing one big agg if needed
-        # For prototype, we'll skip distinct count on huge data if it's too slow, or use approx_count_distinct
-        
         from pyspark.sql import functions as F
-        
-        aggs = []
-        for col in df.columns:
-            aggs.append(F.count(F.col(col)).alias(f"{col}_count"))
-            aggs.append(F.count(F.when(F.col(col).isNull(), 1)).alias(f"{col}_nulls"))
-            # aggs.append(F.approx_count_distinct(col).alias(f"{col}_distinct")) # Optional
-            
-        # Execute one pass
-        # stats_row = df.agg(*aggs).collect()[0]
-        
-        # Reformatting to match the pandas structure requires transposing the describe() output
-        # For minimal disruption, we transpose the describe() output
-        
-        # desc is:
-        # summary | col1 | col2
-        # count   | 10   | 10
-        # mean    | ...  | ...
-        
-        desc = desc.set_index("summary").transpose().reset_index().rename(columns={"index": "variable"})
-        
-        # Just save it
-        desc.to_csv(output_path, index=False)
-        return desc
+
+        desc_df = df.describe()
+
+        # Transpose using stack(): unpivot all columns except 'summary'
+        cols = [c for c in desc_df.columns if c != "summary"]
+        stack_expr = ", ".join([f"'{c}', `{c}`" for c in cols])
+        transposed = desc_df.selectExpr(
+            "summary",
+            f"stack({len(cols)}, {stack_expr}) as (variable, value)"
+        )
+
+        # Pivot to get summary stats as columns (count, mean, stddev, min, max)
+        pivoted = transposed.groupBy("variable").pivot("summary").agg(F.first("value"))
+
+        # Write directly as single CSV file
+        pivoted.coalesce(1).write.mode("overwrite").option("header", "true").csv(output_path + "_temp")
+
+        # Move the part file to the final location
+        import glob
+        import shutil
+        csv_files = glob.glob(f"{output_path}_temp/part-*.csv")
+        if csv_files:
+            shutil.move(csv_files[0], output_path)
+            shutil.rmtree(output_path + "_temp")
+
+        # Read back the small summary file for the markdown report
+        return pd.read_csv(output_path)
 
     @staticmethod
     def generate_markdown_report(dataset_name, summary_df, stats, output_path):
