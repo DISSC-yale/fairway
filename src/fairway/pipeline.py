@@ -476,8 +476,10 @@ class IngestionPipeline:
             print(f"Processing {table['name']}...")
 
             output_name = os.path.splitext(table['name'])[0]
-            output_path = os.path.join(self.config.storage['intermediate_dir'], output_name)
-            
+            # D.4: Use scratch_dir for intermediate files if configured
+            intermediate_dir = self.config.scratch_dir or self.config.storage['intermediate_dir']
+            output_path = os.path.join(intermediate_dir, output_name)
+
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             partition_by = table.get('partition_by') or self.config.partition_by
@@ -497,7 +499,7 @@ class IngestionPipeline:
                 else:
                      output_basename = f"{output_name}.{self.config.output_format}"
                 
-            output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
+            output_path = os.path.join(intermediate_dir, output_basename)
             metadata = table.get('metadata', {})
             naming_pattern = table.get('naming_pattern')
             table_format = table.get('format', 'csv')
@@ -505,7 +507,7 @@ class IngestionPipeline:
             schema = table.get('schema')
             read_options = table.get('read_options', {})
             write_mode = table.get('write_mode', 'overwrite')
-            
+
             # For partitioning, DuckDB creates a directory.
             print(f"INFO: Starting ingestion for {table['name']} from {input_path} to {output_path}")
             success = self.engine.ingest(
@@ -513,13 +515,17 @@ class IngestionPipeline:
                 output_path,
                 format=table_format,
                 partition_by=partition_by,
+                balanced=self.config.salting,  # D.1: Use config value (default False)
                 metadata=metadata,
                 naming_pattern=naming_pattern,
                 target_rows=self.config.target_rows,
+                target_file_size_mb=self.config.target_file_size_mb,  # D.2: File size control
+                compression=self.config.compression,  # D.2: Compression (default snappy)
+                max_records_per_file=self.config.max_records_per_file,  # D.2: Direct control (optional)
                 hive_partitioning=hive_partitioning,
                 schema=schema,
                 write_mode=write_mode,
-                output_format=self.config.output_format, # Pass explicit output format (e.g. delta)
+                output_format=self.config.output_format,
                 **read_options
             )
             

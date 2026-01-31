@@ -20,6 +20,11 @@ storage:
   # Directory for final output files
   final_dir: "data/final"
 
+  # Optional: Fast scratch storage for intermediate writes (e.g., on HPC clusters)
+  # Useful when intermediate_dir is on slow/quota-limited storage.
+  # Supports environment variables like $USER.
+  # scratch_dir: "/scratch/$USER/fairway"
+
 # Global temporary location for large intermediate writes (e.g. unzipping, archive extraction)
 # Use a high-capacity path here if you encounter disk quota issues.
 # temp_location: "/tmp/fairway_temp"
@@ -135,8 +140,23 @@ enrichment:
 # Performance & Optimization
 # ─────────────────────────────────────────────────────────────
 performance:
-  # Target number of rows per output file (for re-partitioning/salting)
+  # Target number of rows per partition (used when salting is enabled)
   target_rows: 500000
+
+  # Target parquet file size in MB (default: 128)
+  # Uses heuristic of ~8000 rows/MB to calculate maxRecordsPerFile
+  # Actual file size depends on data characteristics (column count, data types)
+  # target_file_size_mb: 128
+
+  # Direct control over max records per file (overrides target_file_size_mb heuristic)
+  # Use this for precise control when the heuristic produces wrong-sized files
+  # Example: If files are too small, increase this value
+  # max_records_per_file: 1000000
+
+  # Enable partition salting to prevent data skew (default: false)
+  # When enabled, adds a 'salt' column to distribute data evenly across partitions.
+  # Only applies when partition_by is set.
+  # salting: false
 
 # ─────────────────────────────────────────────────────────────
 # Redivis Export Configuration (Optional)

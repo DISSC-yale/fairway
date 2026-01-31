@@ -87,15 +87,22 @@ tables:
 
 ---
 
-### Chunk D: Performance Fixes
+### Chunk D: Performance Fixes ✅ COMPLETE
 **Goal:** Right-sized parquet files, remove unnecessary salting
 
-| ID | Task | Description |
-|----|------|-------------|
-| D.1 | Remove/disable salting | Make opt-in only if needed |
-| D.2 | Increase parquet file size | Current size too small; target ~128-256MB |
-| D.3 | Review SLURM defaults | Document current settings, create tuning guide |
-| D.4 | Scratch output location | Support writing intermediate files outside data dir |
+| ID | Task | Description | Status |
+|----|------|-------------|--------|
+| D.1 | Remove/disable salting | Make opt-in only if needed | ✅ Done |
+| D.2 | Increase parquet file size | Current size too small; target ~128-256MB | ✅ Done |
+| D.3 | Review SLURM defaults | Document current settings, create tuning guide | ✅ Done (in docs/engines.md) |
+| D.4 | Scratch output location | Support writing intermediate files outside data dir | ✅ Done |
+
+**Implementation Summary:**
+- `config_loader.py`: Added `salting` (default: False), `target_file_size_mb` (default: 128), `compression` (default: snappy), `scratch_dir` with env var expansion
+- `pyspark_engine.py`: Changed `balanced=False` default, added `maxRecordsPerFile` option
+- `pipeline.py`: Passes performance config to engine, uses `scratch_dir` for intermediate output
+- `tests/test_performance.py`: 12 new tests covering all performance changes
+- Docs updated: `configuration.md`, `engines.md`, `README.md`
 
 **Key Files:**
 - `src/fairway/engines/pyspark_engine.py` (write options)
