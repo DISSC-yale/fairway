@@ -347,26 +347,24 @@ class IngestionPipeline:
             extracted_dir = self.archive_cache.get_extracted_path(archive)
             all_extracted_dirs.append(extracted_dir)
 
-        # Build result path pattern
-        # If single archive, return pattern inside that dir
-        # If multiple archives, we need to handle each separately
-        if len(all_extracted_dirs) == 1:
-            result_path = os.path.join(all_extracted_dirs[0], files_pattern)
-        else:
-            # For multiple archives, store list for later processing
-            # For now, use a temp directory approach
-            # Create a combined path pattern that covers all extractions
-            # This is a simplification - proper handling would iterate
-            table['_extracted_dirs'] = all_extracted_dirs
-            result_path = os.path.join(all_extracted_dirs[0], files_pattern)
+        # Build result path pattern and collect all matched files
+        all_matched_files = []
+        for extracted_dir in all_extracted_dirs:
+            pattern = os.path.join(extracted_dir, files_pattern)
+            matched = glob.glob(pattern, recursive=True)
+            all_matched_files.extend(matched)
 
-        # Verify files exist
-        matched_files = glob.glob(result_path, recursive=True)
-        print(f"  Files matching '{files_pattern}': {len(matched_files)}")
+        print(f"  Files matching '{files_pattern}': {len(all_matched_files)}")
 
-        if not matched_files:
+        if not all_matched_files:
             print(f"  WARNING: No files match pattern '{files_pattern}' in extracted archives")
+            # Return pattern for first dir (will be empty)
+            return os.path.join(all_extracted_dirs[0], files_pattern)
 
+        # Store all matched files for the engine to process
+        table['_extracted_files'] = all_matched_files
+
+        # If single archive, return glob pattern
         return result_path
 
     def dry_run(self):
