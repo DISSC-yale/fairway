@@ -320,23 +320,23 @@ class PySparkEngine:
         # Apply the function and collect results
         return rdd.map(func).collect()
 
-    def calculate_hashes(self, file_paths, source_root=None, fast_check=True):
+    def calculate_hashes(self, file_paths, table_root=None, fast_check=True):
         """
         Calculates fingerprints for a list of files in parallel using Spark workers.
         Returns a list of result dicts containing path, rel_path, hash, and error.
         """
         if not file_paths:
             return []
-            
+
         def worker_hash_func(path):
             import os
             import hashlib
             import glob
-            
+
             try:
                 # 1. Calculate Relative Key Part
-                if source_root and path.startswith(source_root):
-                    rel_path = os.path.relpath(path, source_root)
+                if table_root and path.startswith(table_root):
+                    rel_path = os.path.relpath(path, table_root)
                 else:
                     rel_path = os.path.basename(path)
                 rel_path = rel_path.replace(os.sep, '/')

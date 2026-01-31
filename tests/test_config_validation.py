@@ -12,7 +12,7 @@ def test_valid_engine():
     config_data = {
         'dataset_name': 'test',
         'engine': 'duckdb',
-        'sources': []
+        'tables': []
     }
     create_temp_config('valid_engine.yaml', config_data)
     try:
@@ -31,7 +31,7 @@ def test_invalid_engine():
     config_data = {
         'dataset_name': 'test',
         'engine': 'invalid',
-        'sources': []
+        'tables': []
     }
     create_temp_config('invalid_engine.yaml', config_data)
     try:
@@ -42,11 +42,11 @@ def test_invalid_engine():
         if os.path.exists('invalid_engine.yaml'):
             os.remove('invalid_engine.yaml')
 
-def test_valid_source_format():
+def test_valid_table_format():
     config_data = {
         'dataset_name': 'test',
         'engine': 'duckdb',
-        'sources': [
+        'tables': [
             {'path': 'data/test.csv', 'format': 'csv'},
             {'path': 'data/test.json', 'format': 'json'},
             {'path': 'data/test.parquet', 'format': 'parquet'}
@@ -60,10 +60,10 @@ def test_valid_source_format():
 
     create_temp_config('valid_format.yaml', config_data)
     try:
-        # We need to be careful about strict path checking in _expand_sources
+        # We need to be careful about strict path checking in _expand_tables
         # The Config class checks for existence.
         config = Config('valid_format.yaml')
-        assert len(config.sources) == 3
+        assert len(config.tables) == 3
     finally:
         if os.path.exists('valid_format.yaml'):
             os.remove('valid_format.yaml')
@@ -71,11 +71,11 @@ def test_valid_source_format():
         if os.path.exists('data'):
             shutil.rmtree('data')
 
-def test_invalid_source_format():
+def test_invalid_table_format():
     config_data = {
         'dataset_name': 'test',
         'engine': 'duckdb',
-        'sources': [
+        'tables': [
             {'path': 'data_invalid/test.txt', 'format': 'txt'}
         ]
     }

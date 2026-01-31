@@ -1,5 +1,5 @@
 # Fairway Configuration Template
-# This file configures the data ingestion pipeline, including sources, schema, validation, and enrichment.
+# This file configures the data ingestion pipeline, including tables, schema, validation, and enrichment.
 
 # Name of the dataset being processed
 dataset_name: "{name}"
@@ -7,43 +7,45 @@ dataset_name: "{name}"
 # Execution Engine: 'duckdb' (local/single-node) or 'pyspark' (distributed)
 # Options: 'duckdb', 'pyspark'
 # Default is 'duckdb' if not specified.
-engine: "{engine_type}" 
+engine: "{engine_type}"
 
 # Storage Configuration
 storage:
   # Directory for raw input files
   raw_dir: "data/raw"
-  
+
   # Directory for intermediate processed files (e.g., converted to Parquet)
   intermediate_dir: "data/intermediate"
-  
+
   # Directory for final output files
   final_dir: "data/final"
 
-# Global temporary location for large intermediate writes (e.g. unzipping)
+# Global temporary location for large intermediate writes (e.g. unzipping, archive extraction)
 # Use a high-capacity path here if you encounter disk quota issues.
 # temp_location: "/tmp/fairway_temp"
 
-# Data Sources Configuration
-sources:
+# ─────────────────────────────────────────────────────────────
+# Tables - define your data sources
+# ─────────────────────────────────────────────────────────────
+tables:
   - name: "sales"
-    # Path to the input data. Supports glob patterns or directories.
-    # Pointing to the root of a partitioned dataset lets the engine handle discovery.
-    # New in Manifest V2: defining 'root' allows for relocatable manifests.
-    root: "data/raw" 
-    path: "sales_partitioned" # Relative to root if specified
+    # Root directory for file discovery.
+    # Purpose:
+    #   1. Enables relocatable manifests - move data to new location without re-processing
+    #   2. Paths in manifest are stored relative to root
+    #   3. If data moves, just update root; manifest entries remain valid
+    root: "data/raw"
+
+    # Path pattern relative to root (or absolute if root not specified)
+    path: "sales_partitioned"
     hive_partitioning: true
-    
-    # regex pattern to extract metadata from filenames
-    # naming_pattern: "sales_(?P<year>\\d{{4}})_(?P<month>\\d{{2}}).csv"
-    
-    # Input format: 'csv', 'json', 'parquet'
-    # Options: 'csv', 'json', 'parquet'
+
+    # Input format: 'csv', 'tsv', 'json', 'parquet'
     format: "csv"
-    
+
     # Schema definition (Optional but recommended for strict validation)
     # Maps column names to their expected types.
-    # Note: You can generate this schema using `fairway schema-generation`
+    # Note: You can generate this schema using `fairway generate-schema`
     schema:
       id: "BIGINT"
       date: "TIMESTAMP"
@@ -52,19 +54,30 @@ sources:
       year: "INTEGER"
       month: "INTEGER"
 
+    # regex pattern to extract metadata from filenames
+    # naming_pattern: "sales_(?P<year>\\d{{4}})_(?P<month>\\d{{2}}).csv"
+
     # Engine-specific read options (passed directly to read_csv/spark.read.options)
     # read_options:
     #   header: false
-    #   skip: 1 
+    #   skip: 1
     #   delim: "|"
-    
-    # Preprocessing Configuration
+
+    # Preprocessing Configuration (legacy unzip support)
     # preprocess:
     #   action: "unzip" # or path to script: "scripts/my_script.py"
     #   scope: "per_file" # or 'global'
     #   execution_mode: "driver" # or 'cluster' (requires pyspark)
 
-  # Example: Handling Zipped Data with Metadata in Filename
+  # Example: Archive handling with archives/files keys (recommended for zipped data)
+  # Multiple tables can share the same archive - extracted once, cached.
+  # - name: "customers_from_archive"
+  #   root: "data/raw"
+  #   archives: "data.zip"           # Archive pattern to extract
+  #   files: "customers_*.csv"       # Pattern for files inside the archive
+  #   format: "csv"
+
+  # Example: Handling Zipped Data with Metadata in Filename (legacy preprocess approach)
   # File: VM2Uniform--UT--2021-07-08.zip
   - name: "vm2_uniform"
     root: "data/vm2_raw"
@@ -74,31 +87,30 @@ sources:
     format: "csv" # The format of the file INSIDE the zip
     preprocess:
       # Built-in 'unzip' action automatically handles extraction
-      # Metadata (state, year, etc.) is extracted from the ZIP filename 
+      # Metadata (state, year, etc.) is extracted from the ZIP filename
       # and attached to the data found INSIDE the zip (e.g. data.csv)
-      action: "unzip" 
+      action: "unzip"
       scope: "per_file"
       execution_mode: "driver" # Setup 'cluster' if you have 1000s of files
 
-  
     partition_by:
       - "year"
       - "month"
 
-    # Static metadata to attach to all records from this source
+    # Static metadata to attach to all records from this table
     # metadata:
     #   source_system: "legacy_sales_db"
     #   environment: "production"
 
-
-
+# ─────────────────────────────────────────────────────────────
 # Validation Rules
+# ─────────────────────────────────────────────────────────────
 validations:
   # Level 1: Basic Sanity Checks
   level1:
     min_rows: 1
     # max_rows: 1000000
-    
+
   # Level 2: Schema and Data Quality Checks
   level2:
     # check_nulls:
@@ -108,21 +120,27 @@ validations:
     # check_unique:
     #   - "id"
 
+# ─────────────────────────────────────────────────────────────
 # Data Enrichment Configuration
+# ─────────────────────────────────────────────────────────────
 enrichment:
   # Enable geocoding for addresses (requires 'address' column)
   geocode: false
-  
+
   # Add H3 spatial index (requires lat/lon or geocoding)
   # h3_index: false
   # h3_resolution: 9
 
+# ─────────────────────────────────────────────────────────────
 # Performance & Optimization
+# ─────────────────────────────────────────────────────────────
 performance:
   # Target number of rows per output file (for re-partitioning/salting)
   target_rows: 500000
 
+# ─────────────────────────────────────────────────────────────
 # Redivis Export Configuration (Optional)
+# ─────────────────────────────────────────────────────────────
 # redivis:
 #   user: "username"
 #   dataset: "dataset_name"
