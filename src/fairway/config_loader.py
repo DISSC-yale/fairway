@@ -39,6 +39,15 @@ class Config:
         # Performance/Optimizations
         performance = self.data.get('performance', {})
         self.target_rows = performance.get('target_rows') or self.data.get('target_rows', 500000)
+        self.salting = performance.get('salting', False)  # D.1: Disabled by default
+        self.target_file_size_mb = performance.get('target_file_size_mb', 128)  # D.2: Target ~128MB files
+        self.compression = performance.get('compression', 'snappy')  # D.2: Default compression
+        # Direct control over max records per file (overrides target_file_size_mb heuristic)
+        self.max_records_per_file = performance.get('max_records_per_file')
+
+        # Scratch directory for intermediate files (D.4)
+        scratch_dir_raw = self.storage.get('scratch_dir')
+        self.scratch_dir = os.path.expandvars(scratch_dir_raw) if scratch_dir_raw else None
 
 
 
