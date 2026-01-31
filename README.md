@@ -141,7 +141,9 @@ engine: "duckdb"
 
 storage:
   raw_dir: "data/raw"
+  intermediate_dir: "data/intermediate"
   final_dir: "data/final"
+  # scratch_dir: "/scratch/$USER/fairway"  # Optional: fast storage for HPC
 
 sources:
   - name: "sales"
@@ -157,6 +159,11 @@ validations:
   level1:
     check_column_count: true
     min_rows: 10
+
+# Performance tuning (optional)
+# performance:
+#   target_file_size_mb: 128  # Target parquet file size
+#   salting: false            # Enable for skewed partition keys
 ```
 
 See `config/example_config.yaml` for a complete configuration example with all options.
