@@ -222,3 +222,19 @@ BOOLEAN < INTEGER < BIGINT < DOUBLE < STRING
 
 **Rationale:**
 Sampling a subset of files for schema inference can miss columns that only exist in non-sampled files, leading to data loss during ingestion.
+
+---
+
+### [RULE-118] Performance Defaults Must Be Conservative
+
+**Priority:** SHOULD
+**Category:** [ARC] Architectural Principles
+
+**Rule:**
+Performance optimization features that incur computational cost SHOULD be opt-in by default:
+- Salting (requires `.count()`) → default: `false`
+- Expensive preprocessing → default: `driver` mode
+- Features that add columns to output → explicitly enabled
+
+**Rationale:**
+Users should not pay performance costs for features they don't need. Expensive operations should require explicit opt-in.
