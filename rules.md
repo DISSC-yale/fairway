@@ -180,3 +180,23 @@ When testing project initialization:
 Ingestion pipelines MUST NOT silently drop data.
 - If a source file contains columns NOT present in the defined schema, the pipeline MUST fail with an error (forcing a schema update) rather than ignoring the extra columns.
 - The "Strict Schema" pattern means "Strictly conform or Fail", never "Strictly conform and Drop the rest".
+
+---
+
+### [RULE-116] Test Coverage for File Formats
+
+**Priority:** MUST
+**Category:** [PRO] Process & Workflow
+
+**Rule:**
+When adding support for a new file format (e.g., fixed-width, Avro, ORC):
+1. Add dummy test data to `tests/fixtures/formats/<format_name>/`
+2. Add schema merge test case to `tests/fixtures/schema_merge/<format>/`
+3. Add test in `tests/test_ingestion_formats.py` covering read + schema inference
+4. Update the checklist in `tests/fixtures/README.md`
+
+**Checklist for new formats:**
+- [ ] `tests/fixtures/formats/<format>/sample.<ext>` — Basic file
+- [ ] `tests/fixtures/schema_merge/<format>/` — Files with different columns
+- [ ] `tests/test_ingestion_formats.py::test_<format>_basic_read`
+- [ ] `tests/test_schema_merge.py::test_<format>_schema_union`
