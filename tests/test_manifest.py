@@ -44,7 +44,7 @@ class TestAtomicWrites:
     def test_atomic_write_creates_file(self, tmp_path):
         path = tmp_path / "manifest.json"
         manifest = ManifestManager(str(path))
-        manifest.update_manifest("/test/file", status="success", source_name="test")
+        manifest.update_manifest("/test/file", status="success", table_name="test")
 
         assert path.exists()
         content = json.loads(path.read_text())
@@ -52,7 +52,7 @@ class TestAtomicWrites:
 
     def test_atomic_write_no_temp_files_remain(self, tmp_path):
         manifest = ManifestManager(str(tmp_path / "manifest.json"))
-        manifest.update_manifest("/test/file", status="success", source_name="test")
+        manifest.update_manifest("/test/file", status="success", table_name="test")
 
         files = list(tmp_path.iterdir())
         assert len(files) == 1
@@ -61,7 +61,7 @@ class TestAtomicWrites:
     def test_atomic_write_creates_directory(self, tmp_path):
         nested_path = tmp_path / "nested" / "dir" / "manifest.json"
         manifest = ManifestManager(str(nested_path))
-        manifest.update_manifest("/test/file", status="success", source_name="test")
+        manifest.update_manifest("/test/file", status="success", table_name="test")
 
         assert nested_path.exists()
 
@@ -72,8 +72,8 @@ class TestBatchMode:
         manifest = ManifestManager(str(path))
 
         with manifest.batch():
-            manifest.update_manifest("/test/f1", status="success", source_name="t1")
-            manifest.update_manifest("/test/f2", status="success", source_name="t2")
+            manifest.update_manifest("/test/f1", status="success", table_name="t1")
+            manifest.update_manifest("/test/f2", status="success", table_name="t2")
             # File should not exist yet or be empty (deferred)
             if path.exists():
                 content = json.loads(path.read_text())
@@ -88,7 +88,7 @@ class TestBatchMode:
         manifest = ManifestManager(str(path))
 
         with manifest.batch():
-            manifest.update_manifest("/test/file", status="success", source_name="test")
+            manifest.update_manifest("/test/file", status="success", table_name="test")
 
         assert path.exists()
         content = json.loads(path.read_text())
@@ -100,7 +100,7 @@ class TestBatchMode:
 
         try:
             with manifest.batch():
-                manifest.update_manifest("/test/file", status="success", source_name="test")
+                manifest.update_manifest("/test/file", status="success", table_name="test")
                 raise ValueError("Test exception")
         except ValueError:
             pass
@@ -116,7 +116,7 @@ class TestSchemaTracking:
         manifest = ManifestManager(str(tmp_path / "manifest.json"))
         manifest.record_schema_run(
             dataset_name="test_dataset",
-            sources_info=[{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}],
+            tables_info=[{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}],
             output_path="/schemas/test.yaml"
         )
 
@@ -124,44 +124,44 @@ class TestSchemaTracking:
         assert schema is not None
         assert schema["output_path"] == "/schemas/test.yaml"
         assert "generated_at" in schema
-        assert "sources_hash" in schema
+        assert "tables_hash" in schema
 
     def test_schema_staleness_new_dataset(self, tmp_path):
         manifest = ManifestManager(str(tmp_path / "manifest.json"))
-        sources_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}]
+        tables_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}]
 
         # New dataset should be stale
-        assert manifest.is_schema_stale("new_dataset", sources_info) is True
+        assert manifest.is_schema_stale("new_dataset", tables_info) is True
 
     def test_schema_staleness_unchanged(self, tmp_path):
         manifest = ManifestManager(str(tmp_path / "manifest.json"))
-        sources_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}]
+        tables_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}]
 
-        manifest.record_schema_run("test_dataset", sources_info, "/schema.yaml")
+        manifest.record_schema_run("test_dataset", tables_info, "/schema.yaml")
 
         # Same sources should not be stale
-        assert manifest.is_schema_stale("test_dataset", sources_info) is False
+        assert manifest.is_schema_stale("test_dataset", tables_info) is False
 
     def test_schema_staleness_changed(self, tmp_path):
         manifest = ManifestManager(str(tmp_path / "manifest.json"))
-        sources_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}]
+        tables_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash1"]}]
 
-        manifest.record_schema_run("test_dataset", sources_info, "/schema.yaml")
+        manifest.record_schema_run("test_dataset", tables_info, "/schema.yaml")
 
         # Changed hash should be stale
-        new_sources_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash2"]}]
-        assert manifest.is_schema_stale("test_dataset", new_sources_info) is True
+        new_tables_info = [{"name": "src1", "files_used": ["/a.csv"], "file_hashes": ["hash2"]}]
+        assert manifest.is_schema_stale("test_dataset", new_tables_info) is True
 
-    def test_sources_hash_computation(self, tmp_path):
+    def test_tables_hash_computation(self, tmp_path):
         manifest = ManifestManager(str(tmp_path / "manifest.json"))
 
         sources1 = [{"name": "a", "file_hashes": ["h1", "h2"]}]
         sources2 = [{"name": "a", "file_hashes": ["h2", "h1"]}]  # Same hashes, different order
         sources3 = [{"name": "a", "file_hashes": ["h1", "h3"]}]  # Different hash
 
-        hash1 = manifest._compute_sources_hash(sources1)
-        hash2 = manifest._compute_sources_hash(sources2)
-        hash3 = manifest._compute_sources_hash(sources3)
+        hash1 = manifest._compute_tables_hash(sources1)
+        hash2 = manifest._compute_tables_hash(sources2)
+        hash3 = manifest._compute_tables_hash(sources3)
 
         # Same hashes in different order should produce same result (sorted)
         assert hash1 == hash2
@@ -248,7 +248,7 @@ class TestManifestPersistence:
 
         # First instance
         m1 = ManifestManager(path)
-        m1.update_manifest("/test/file", status="success", source_name="test")
+        m1.update_manifest("/test/file", status="success", table_name="test")
 
         # Second instance should load the saved data
         m2 = ManifestManager(path)
