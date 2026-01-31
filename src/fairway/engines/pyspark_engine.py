@@ -73,7 +73,7 @@ class PySparkEngine:
             
         self.spark = builder.getOrCreate()
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=True, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', **kwargs):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=False, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', target_file_size_mb=128, compression='snappy', **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
@@ -207,7 +207,16 @@ class PySparkEngine:
             partition_cols = partition_by
 
         writer = df.write.mode(write_mode)
-        
+
+        # D.2: File size control - calculate max records per file based on target size
+        # Heuristic: ~2000 rows per MB compressed (conservative estimate, actual varies by data)
+        estimated_rows_per_mb = 2000
+        max_records_per_file = target_file_size_mb * estimated_rows_per_mb
+        writer = writer.option("maxRecordsPerFile", max_records_per_file)
+
+        # Set compression (snappy is default, most efficient for Spark)
+        writer = writer.option("compression", compression)
+
         # --- OPTION B: Table Formats (Delta Lake) ---
         target_format = self.config_output_format if hasattr(self, 'config_output_format') else 'parquet'
         # Check if caller passed explicit setting or if we infer from extension? 

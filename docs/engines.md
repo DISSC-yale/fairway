@@ -20,8 +20,24 @@ The **PySpark** engine is designed for large-scale distributed processing.
 *   **Key Features**:
     *   **Distributed Processing**: Scales across multiple nodes.
     *   **Resource Management**: Integrates with Slurm to dynamically provision clusters.
-    *   **Data Skew Protection**: Implements "salting" techniques to ensure balanced partitioning.
+    *   **Data Skew Protection**: Supports optional "salting" techniques to ensure balanced partitioning (opt-in via `performance.salting: true`).
+    *   **File Size Control**: Configurable target file size for optimal storage and query performance.
     *   **Metadata Injection**: Efficiently adds external metadata (like state or date from filenames) to billions of rows.
+
+### Performance Tuning
+
+PySpark performance can be tuned via the `performance` section in your config:
+
+```yaml
+performance:
+  target_file_size_mb: 128   # Target ~128MB parquet files (default)
+  salting: false             # Disabled by default; enable for skewed data
+  compression: snappy        # Compression codec (snappy is fastest)
+```
+
+**File Size Control**: The `target_file_size_mb` setting controls output parquet file sizes. Larger files (128-256MB) are better for analytical queries, while smaller files provide more parallelism for processing.
+
+**Salting**: When enabled (`salting: true`), adds a random `salt` column to distribute data evenly across partitions. This prevents data skew but requires a full count operation. Only use when partition keys are highly skewed.
 
 ### Configuring Engines
 

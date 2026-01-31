@@ -11,6 +11,54 @@
 | `partition_by` | List of columns to partition the output Parquet files by. | `[]` |
 | `temp_location` | Global temporary location for file writes. | `None` |
 
+## Storage
+
+The `storage` section defines where processed data is written.
+
+```yaml
+storage:
+  raw_dir: "data/raw"
+  intermediate_dir: "data/intermediate"
+  final_dir: "data/final"
+  # Optional: Fast scratch storage for intermediate writes (HPC clusters)
+  scratch_dir: "/scratch/$USER/fairway"
+```
+
+| Field | Description | Default |
+| :--- | :--- | :--- |
+| `raw_dir` | Directory for raw input files. | Required |
+| `intermediate_dir` | Directory for intermediate processed files. | Required |
+| `final_dir` | Directory for final output files. | Required |
+| `scratch_dir` | Fast scratch storage for intermediate writes. Supports environment variables like `$USER`. Useful on HPC clusters where `intermediate_dir` may be on slow or quota-limited storage. | `None` |
+
+## Performance
+
+The `performance` section controls optimization settings for the pipeline.
+
+```yaml
+performance:
+  target_rows: 500000        # Rows per partition (for salting calculation)
+  target_file_size_mb: 128   # Target parquet file size in MB
+  salting: false             # Enable partition salting for data skew prevention
+  compression: snappy        # Parquet compression codec
+```
+
+| Field | Description | Default |
+| :--- | :--- | :--- |
+| `target_rows` | Target number of rows per partition. Used when salting is enabled to calculate the number of salt buckets. | `500000` |
+| `target_file_size_mb` | Target size for output Parquet files in megabytes. Larger files reduce file count but may impact parallelism. | `128` |
+| `salting` | Enable partition salting to prevent data skew. When enabled, adds a `salt` column to distribute data evenly across partitions. Only applies when `partition_by` is set. | `false` |
+| `compression` | Parquet compression codec. Options: `snappy`, `gzip`, `zstd`. | `snappy` |
+
+### When to Enable Salting
+
+Salting is useful when:
+- Your data has highly skewed partition keys (e.g., 90% of data in one partition)
+- You're experiencing slow writes due to uneven data distribution
+- You need to balance load across Spark executors
+
+**Note:** Salting adds a `salt` column to your output data and requires a full data count operation, which can be expensive for very large datasets.
+
 ## Data Sources
 
 The `sources` section defines where your raw data lives and how to identify it.

@@ -13,12 +13,17 @@ engine: "{engine_type}"
 storage:
   # Directory for raw input files
   raw_dir: "data/raw"
-  
+
   # Directory for intermediate processed files (e.g., converted to Parquet)
   intermediate_dir: "data/intermediate"
-  
+
   # Directory for final output files
   final_dir: "data/final"
+
+  # Optional: Fast scratch storage for intermediate writes (e.g., on HPC clusters)
+  # Useful when intermediate_dir is on slow/quota-limited storage.
+  # Supports environment variables like $USER.
+  # scratch_dir: "/scratch/$USER/fairway"
 
 # Global temporary location for large intermediate writes (e.g. unzipping)
 # Use a high-capacity path here if you encounter disk quota issues.
@@ -119,8 +124,17 @@ enrichment:
 
 # Performance & Optimization
 performance:
-  # Target number of rows per output file (for re-partitioning/salting)
+  # Target number of rows per partition (used when salting is enabled)
   target_rows: 500000
+
+  # Target parquet file size in MB (default: 128)
+  # Larger files = fewer files, better for analytics; smaller = more parallelism
+  # target_file_size_mb: 128
+
+  # Enable partition salting to prevent data skew (default: false)
+  # When enabled, adds a 'salt' column to distribute data evenly across partitions.
+  # Only applies when partition_by is set.
+  # salting: false
 
 # Redivis Export Configuration (Optional)
 # redivis:
