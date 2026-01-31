@@ -51,24 +51,24 @@ class ManifestManager:
             self._batch_mode = False
             self._save_manifest()
 
-    def get_file_key(self, file_path, source_name, source_root=None):
+    def get_file_key(self, file_path, table_name, table_root=None):
         """
         Generates a stable logical key for the file in the manifest.
-        Format: {source_name}/{relative_path}
+        Format: {table_name}/{relative_path}
         """
-        if source_root and file_path.startswith(source_root):
-            rel_path = os.path.relpath(file_path, source_root)
+        if table_root and file_path.startswith(table_root):
+            rel_path = os.path.relpath(file_path, table_root)
         else:
             # Fallback for backward compatibility or missing root
             # Just use basename if no root (legacy behavior was basename-based)
-            # OR use source_name + basename
+            # OR use table_name + basename
             rel_path = os.path.basename(file_path)
-            
+
         # Ensure forward slashes for consistency across OS
         rel_path = rel_path.replace(os.sep, '/')
-        
-        if source_name:
-            return f"{source_name}/{rel_path}"
+
+        if table_name:
+            return f"{table_name}/{rel_path}"
         return rel_path
 
     def get_file_hash(self, file_path, fast_check=True):
@@ -126,28 +126,28 @@ class ManifestManager:
                     
         return sha256_hash.hexdigest()
 
-    def should_process(self, file_path, source_name=None, source_root=None, fast_check=True, computed_hash=None):
+    def should_process(self, file_path, table_name=None, table_root=None, fast_check=True, computed_hash=None):
         """
-        Determines if a file needs processing by comparing its current fingerprint 
+        Determines if a file needs processing by comparing its current fingerprint
         to the manifest.
         """
-        key = self.get_file_key(file_path, source_name, source_root)
-        
+        key = self.get_file_key(file_path, table_name, table_root)
+
         # Check legacy keys (basename) for migration/interop
         if key not in self.manifest["files"]:
-            # Try basename fallback if source_root wasn't used/available before
+            # Try basename fallback if table_root wasn't used/available before
             basename = os.path.basename(file_path)
             if basename in self.manifest["files"]:
                 # Migration opportunity? For now, just treat as 'not found under new key' implies process
                 # Or we could map it. Let's start fresh for new keys to be safe.
                 pass
             return True
-        
+
         file_entry = self.manifest["files"][key]
-        
-        # Check source name (implicit in key now, but keeping check)
-        entry_source = file_entry.get("source_name")
-        if source_name and entry_source and entry_source != source_name:
+
+        # Check table name (implicit in key now, but keeping check)
+        entry_table = file_entry.get("table_name")
+        if table_name and entry_table and entry_table != table_name:
              # Key collision?
              return True
         
@@ -161,27 +161,27 @@ class ManifestManager:
         
         return file_entry["hash"] != current_hash
 
-    def update_manifest(self, file_path, status="success", metadata=None, source_name=None, source_root=None, computed_hash=None, fast_check=True):
+    def update_manifest(self, file_path, status="success", metadata=None, table_name=None, table_root=None, computed_hash=None, fast_check=True):
         """
         Updates the manifest with the processing result.
         """
-        key = self.get_file_key(file_path, source_name, source_root)
-        
+        key = self.get_file_key(file_path, table_name, table_root)
+
         if computed_hash:
             current_hash = computed_hash
         else:
             current_hash = self.get_file_hash(file_path, fast_check=fast_check)
-        
+
         entry = {
             "hash": current_hash,
             "last_processed": datetime.now().isoformat(),
             "status": status,
             "metadata": metadata or {}
         }
-        
-        if source_name:
-            entry["source_name"] = source_name
-            
+
+        if table_name:
+            entry["table_name"] = table_name
+
         self.manifest["files"][key] = entry
         self._save_manifest()
         
@@ -205,39 +205,39 @@ class ManifestManager:
 
     # --- Schema Tracking Methods ---
 
-    def _compute_sources_hash(self, sources_info):
-        """Hash all source file hashes together."""
+    def _compute_tables_hash(self, tables_info):
+        """Hash all table file hashes together."""
         combined = hashlib.sha256()
-        for src in sorted(sources_info, key=lambda x: x['name']):
-            for h in sorted(src.get('file_hashes', [])):
+        for tbl in sorted(tables_info, key=lambda x: x['name']):
+            for h in sorted(tbl.get('file_hashes', [])):
                 if h:  # Skip None hashes
                     combined.update(h.encode())
         return combined.hexdigest()[:16]
 
-    def record_schema_run(self, dataset_name, sources_info, output_path):
+    def record_schema_run(self, dataset_name, tables_info, output_path):
         """Record a schema inference run."""
         if "schemas" not in self.manifest:
             self.manifest["schemas"] = {}
 
-        # Compute combined hash of all source files
-        sources_hash = self._compute_sources_hash(sources_info)
+        # Compute combined hash of all table files
+        tables_hash = self._compute_tables_hash(tables_info)
 
         self.manifest["schemas"][dataset_name] = {
             "generated_at": datetime.now().isoformat(),
             "output_path": output_path,
-            "sources_hash": sources_hash,
-            "sources": sources_info  # List of {name, files_used, file_hashes}
+            "tables_hash": tables_hash,
+            "tables": tables_info  # List of {name, files_used, file_hashes}
         }
         self._save_manifest()
 
-    def is_schema_stale(self, dataset_name, current_sources_info):
+    def is_schema_stale(self, dataset_name, current_tables_info):
         """Check if schema needs regeneration."""
         schema_entry = self.manifest.get("schemas", {}).get(dataset_name)
         if not schema_entry:
             return True
 
-        current_hash = self._compute_sources_hash(current_sources_info)
-        return schema_entry.get("sources_hash") != current_hash
+        current_hash = self._compute_tables_hash(current_tables_info)
+        return schema_entry.get("tables_hash") != current_hash
 
     def get_latest_schema_run(self, dataset_name):
         """Get info about most recent schema run."""
@@ -245,33 +245,33 @@ class ManifestManager:
 
     # --- Preprocessing Cache Methods ---
 
-    def record_preprocessing(self, original_path, preprocessed_path, action, source_name, source_root=None):
+    def record_preprocessing(self, original_path, preprocessed_path, action, table_name, table_root=None):
         """Record preprocessing result for cache sharing."""
         if "preprocessing" not in self.manifest:
             self.manifest["preprocessing"] = {}
 
-        key = self.get_file_key(original_path, source_name, source_root)
-        source_hash = self.get_file_hash(original_path, fast_check=True)
+        key = self.get_file_key(original_path, table_name, table_root)
+        file_hash = self.get_file_hash(original_path, fast_check=True)
 
         self.manifest["preprocessing"][key] = {
-            "source_hash": source_hash,
+            "file_hash": file_hash,
             "preprocessed_path": preprocessed_path,
             "action": action,
             "processed_at": datetime.now().isoformat()
         }
         self._save_manifest()
 
-    def get_preprocessed_path(self, original_path, source_name, source_root=None):
+    def get_preprocessed_path(self, original_path, table_name, table_root=None):
         """Get cached preprocessed path if still valid."""
-        key = self.get_file_key(original_path, source_name, source_root)
+        key = self.get_file_key(original_path, table_name, table_root)
         entry = self.manifest.get("preprocessing", {}).get(key)
 
         if not entry:
             return None
 
-        # Check source hasn't changed
+        # Check file hasn't changed
         current_hash = self.get_file_hash(original_path, fast_check=True)
-        if entry.get("source_hash") != current_hash:
+        if entry.get("file_hash") != current_hash:
             return None
 
         # Check preprocessed files still exist
@@ -280,3 +280,41 @@ class ManifestManager:
             return None
 
         return preprocessed
+
+    # --- Archive Extraction Cache Methods ---
+
+    def record_extraction(self, archive_path, extracted_dir, archive_hash):
+        """Record that an archive was extracted."""
+        if "extractions" not in self.manifest:
+            self.manifest["extractions"] = {}
+
+        key = f"archive:{os.path.abspath(archive_path)}"
+        self.manifest["extractions"][key] = {
+            "extracted_dir": extracted_dir,
+            "archive_hash": archive_hash,
+            "extracted_at": datetime.now().isoformat()
+        }
+        self._save_manifest()
+
+    def get_extraction(self, archive_path):
+        """Get existing extraction info if available."""
+        key = f"archive:{os.path.abspath(archive_path)}"
+        return self.manifest.get("extractions", {}).get(key)
+
+    def is_extraction_valid(self, archive_path):
+        """Check if existing extraction is still valid (archive unchanged, dir exists)."""
+        entry = self.get_extraction(archive_path)
+        if not entry:
+            return False
+
+        # Check archive hasn't changed (using mtime+size for speed)
+        current_hash = self.get_file_hash(archive_path, fast_check=True)
+        if entry.get("archive_hash") != current_hash:
+            return False
+
+        # Check extracted dir still exists
+        extracted_dir = entry.get("extracted_dir")
+        if not extracted_dir or not os.path.isdir(extracted_dir):
+            return False
+
+        return True
