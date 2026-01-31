@@ -27,6 +27,8 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_spark)
 
 
+
+
 # ============ Path Fixtures ============
 @pytest.fixture
 def fixtures_dir():
@@ -63,6 +65,7 @@ def engine(request):
     """Parametrized fixture - tests run against both engines.
 
     Automatically skips PySpark tests if not available.
+    Note: PySpark tests may fail with Java 17+ due to compatibility issues.
     """
     if request.param == "duckdb":
         from fairway.engines.duckdb_engine import DuckDBEngine
