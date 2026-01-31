@@ -200,3 +200,25 @@ When adding support for a new file format (e.g., fixed-width, Avro, ORC):
 - [ ] `tests/fixtures/schema_merge/<format>/` — Files with different columns
 - [ ] `tests/test_ingestion_formats.py::test_<format>_basic_read`
 - [ ] `tests/test_schema_merge.py::test_<format>_schema_union`
+
+---
+
+### [RULE-117] Schema Inference Completeness
+
+**Priority:** MUST
+**Category:** [CON] Content Requirements
+
+**Rule:**
+Schema inference MUST capture ALL columns from ALL files, not just sampled files.
+- **Phase 1**: Scan all files for column names (headers only, fast)
+- **Phase 2**: Sample files with coverage guarantee for type inference
+- Schema inference MUST be deterministic (same input → same output)
+- Type conflicts between files MUST resolve to the broader type (STRING wins)
+
+**Type Hierarchy (narrowest to broadest):**
+```
+BOOLEAN < INTEGER < BIGINT < DOUBLE < STRING
+```
+
+**Rationale:**
+Sampling a subset of files for schema inference can miss columns that only exist in non-sampled files, leading to data loss during ingestion.
