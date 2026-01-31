@@ -11,11 +11,10 @@ import pytest
 from pathlib import Path
 
 
-class TestSchemaMergeBug:
-    """Tests that prove the schema merging bug exists.
+class TestSchemaMergeBothEngines:
+    """Critical schema merge tests that run against BOTH DuckDB and PySpark.
 
-    These tests MUST FAIL before the fix is applied.
-    They demonstrate that sampling files misses columns from non-sampled files.
+    Uses the parametrized 'engine' fixture to test both engines.
     """
 
     @pytest.fixture
@@ -23,38 +22,35 @@ class TestSchemaMergeBug:
         """Path to schema_merge fixture directory."""
         return fixtures_dir / "schema_merge"
 
-    @pytest.mark.local
-    def test_single_file_sampling_misses_columns(self, duckdb_engine, tmp_path):
-        """RED TEST: Proves that sampling only one file misses columns from others.
+    def test_schema_captures_all_columns(self, engine, tmp_path):
+        """Schema inference must capture ALL columns from ALL files.
 
-        This test MUST FAIL before the fix is applied.
+        This is the core schema merge test - runs against both engines.
         """
         # Create files with different columns
         (tmp_path / "file_a.csv").write_text("id,name,age\n1,alice,30\n")
         (tmp_path / "file_b.csv").write_text("id,name,city\n1,bob,NYC\n")
         (tmp_path / "file_c.csv").write_text("id,name,country\n1,carol,USA\n")
 
-        # Force single-file sampling to trigger the bug
-        schema = duckdb_engine.infer_schema(
+        schema = engine.infer_schema(
             path=str(tmp_path / "*.csv"),
             format="csv",
-            sample_files=1  # This forces the bug to manifest
+            sample_files=1  # Even with restricted sampling, should get all columns
         )
 
-        # These assertions WILL FAIL before fix - only columns from sampled file
+        # ALL columns from ALL files must be present
         assert "id" in schema, "Missing 'id' column"
         assert "name" in schema, "Missing 'name' column"
         assert "age" in schema, "Missing 'age' column from file_a.csv"
         assert "city" in schema, "Missing 'city' column from file_b.csv"
         assert "country" in schema, "Missing 'country' column from file_c.csv"
 
-    @pytest.mark.local
-    def test_schema_captures_all_columns_from_fixtures(self, duckdb_engine, schema_merge_dir):
-        """RED TEST: Schema inference should capture superset of all columns.
+    def test_schema_from_fixtures(self, engine, schema_merge_dir):
+        """Schema inference captures superset from fixture files.
 
         Uses the schema_merge fixtures with file_a (age), file_b (city), file_c (country).
         """
-        schema = duckdb_engine.infer_schema(
+        schema = engine.infer_schema(
             path=str(schema_merge_dir / "*.csv"),
             format="csv"
         )
@@ -66,9 +62,73 @@ class TestSchemaMergeBug:
         assert "city" in schema, "Missing 'city' column from file_b.csv"
         assert "country" in schema, "Missing 'country' column from file_c.csv"
 
+    def test_deterministic_output(self, engine, tmp_path):
+        """Schema inference must produce consistent results across runs."""
+        # Create files with different columns
+        for i in range(5):
+            (tmp_path / f"file_{i}.csv").write_text(f"id,col_{i}\n{i},val\n")
+
+        # Run multiple times
+        schemas = [
+            engine.infer_schema(str(tmp_path / "*.csv"), "csv")
+            for _ in range(3)
+        ]
+
+        # All should be identical
+        first = schemas[0]
+        for i, schema in enumerate(schemas[1:], start=2):
+            assert schema == first, f"Run {i} differs: schema inference is non-deterministic"
+
+
+class TestSchemaMergeBug:
+    """DuckDB-specific tests for schema merging edge cases.
+
+    These tests use duckdb_engine directly for faster execution.
+    """
+
+    @pytest.fixture
+    def schema_merge_dir(self, fixtures_dir):
+        """Path to schema_merge fixture directory."""
+        return fixtures_dir / "schema_merge"
+
+    @pytest.mark.local
+    def test_single_file_sampling_misses_columns(self, duckdb_engine, tmp_path):
+        """Proves that two-phase approach captures all columns even with sample_files=1."""
+        # Create files with different columns
+        (tmp_path / "file_a.csv").write_text("id,name,age\n1,alice,30\n")
+        (tmp_path / "file_b.csv").write_text("id,name,city\n1,bob,NYC\n")
+        (tmp_path / "file_c.csv").write_text("id,name,country\n1,carol,USA\n")
+
+        # Force single-file sampling - coverage guarantee should still capture all columns
+        schema = duckdb_engine.infer_schema(
+            path=str(tmp_path / "*.csv"),
+            format="csv",
+            sample_files=1
+        )
+
+        assert "id" in schema, "Missing 'id' column"
+        assert "name" in schema, "Missing 'name' column"
+        assert "age" in schema, "Missing 'age' column from file_a.csv"
+        assert "city" in schema, "Missing 'city' column from file_b.csv"
+        assert "country" in schema, "Missing 'country' column from file_c.csv"
+
+    @pytest.mark.local
+    def test_schema_captures_all_columns_from_fixtures(self, duckdb_engine, schema_merge_dir):
+        """Schema inference should capture superset of all columns."""
+        schema = duckdb_engine.infer_schema(
+            path=str(schema_merge_dir / "*.csv"),
+            format="csv"
+        )
+
+        assert "id" in schema
+        assert "name" in schema
+        assert "age" in schema, "Missing 'age' column from file_a.csv"
+        assert "city" in schema, "Missing 'city' column from file_b.csv"
+        assert "country" in schema, "Missing 'country' column from file_c.csv"
+
     @pytest.mark.local
     def test_all_columns_get_real_types_not_defaults(self, duckdb_engine, tmp_path):
-        """RED TEST: Every column must get a type from actual data, not default to STRING.
+        """Every column must get a type from actual data, not default to STRING.
 
         This tests the coverage guarantee in Phase 2 sampling.
         """

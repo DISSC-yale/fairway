@@ -431,69 +431,187 @@ class PySparkEngine:
         rdd = self.spark.sparkContext.parallelize(file_paths, numSlices=num_slices)
         return rdd.map(worker_hash_func).collect()
 
-    def infer_schema(self, path, format='csv', sampling_ratio=1.0, **kwargs):
+    def _map_spark_type(self, spark_type):
+        """Map Spark type to Fairway standard type."""
+        spark_type = str(spark_type)
+
+        if 'IntegerType' in spark_type:
+            return 'INTEGER'
+        elif 'LongType' in spark_type:
+            return 'BIGINT'
+        elif 'DoubleType' in spark_type:
+            return 'DOUBLE'
+        elif 'FloatType' in spark_type:
+            return 'FLOAT'
+        elif 'StringType' in spark_type:
+            return 'STRING'
+        elif 'TimestampType' in spark_type:
+            return 'TIMESTAMP'
+        elif 'DateType' in spark_type:
+            return 'DATE'
+        elif 'BooleanType' in spark_type:
+            return 'BOOLEAN'
+        else:
+            return 'STRING'  # Fallback
+
+    def _resolve_type_conflict(self, type_a, type_b):
+        """Return broader type when conflict occurs.
+
+        Type hierarchy: BOOLEAN < INTEGER < BIGINT < DOUBLE < STRING
+        STRING always wins as it can represent any value.
         """
-        Infers schema from a dataset using Spark.
+        TYPE_HIERARCHY = ['BOOLEAN', 'INTEGER', 'BIGINT', 'FLOAT', 'DOUBLE', 'STRING']
+
+        # Normalize types
+        type_a = type_a.upper() if type_a else 'STRING'
+        type_b = type_b.upper() if type_b else 'STRING'
+
+        # Get indices (unknown types default to STRING)
+        idx_a = TYPE_HIERARCHY.index(type_a) if type_a in TYPE_HIERARCHY else len(TYPE_HIERARCHY) - 1
+        idx_b = TYPE_HIERARCHY.index(type_b) if type_b in TYPE_HIERARCHY else len(TYPE_HIERARCHY) - 1
+
+        return TYPE_HIERARCHY[max(idx_a, idx_b)]
+
+    def infer_schema(self, path, format='csv', sampling_ratio=1.0, sample_files=50, **kwargs):
+        """
+        Infers schema from a dataset using Spark with two-phase approach.
+
+        Two-Phase Approach:
+            Phase 1: Column Discovery - Scan ALL files to get complete column set
+            Phase 2: Type Inference - Merge types from sampled files
+
         Args:
             path: Input path (glob or directory)
             format: Input format (csv, tsv, json, parquet)
-            sampling_ratio: Fraction of data to use for inference (0.0 to 1.0)
+            sampling_ratio: Fraction of data to use for type inference (0.0 to 1.0)
+            sample_files: Max number of files to sample for type inference (default 50)
         Returns:
             dict: Schema dictionary compatible with Fairway config
+
+        Note:
+            - Phase 1 ensures ALL columns are captured (no missing columns)
+            - Phase 2 ensures type accuracy through sampling
+            - Deterministic: files are sorted before processing
         """
+        import glob as glob_module
+
         # Normalize TSV/tab to CSV with tab delimiter
         if format in ('tsv', 'tab'):
             format = 'csv'
             if 'delimiter' not in kwargs and 'delim' not in kwargs:
                 kwargs['delimiter'] = '\t'
 
-        print(f"INFO: Inferring schema from {path} (format={format}, sampling={sampling_ratio})")
+        print(f"INFO: Inferring schema from {path} (format={format})")
 
-        reader = self.spark.read.format(format)
-        
-        # Apply standard options
-        if format == 'csv':
-            reader = reader.option("header", "true").option("inferSchema", "true")
-            # Match ingestion behavior: recursively find files in subdirectories
-            reader = reader.option("recursiveFileLookup", "true")
-            if sampling_ratio < 1.0:
-                reader = reader.option("samplingRatio", sampling_ratio)
-        elif format == 'json':
-             if sampling_ratio < 1.0:
-                reader = reader.option("samplingRatio", sampling_ratio)
-        
-        # Apply kwargs
-        if kwargs:
-             opts = {k: str(v) for k, v in kwargs.items() if v is not None}
-             reader = reader.options(**opts)
+        # Build glob pattern for file discovery
+        if '*' not in path and os.path.isdir(path):
+            ext_map = {'csv': '**/*.csv', 'tsv': '**/*.tsv', 'json': '**/*.json', 'parquet': '**/*.parquet'}
+            glob_pattern = os.path.join(path, ext_map.get(format, '*'))
+        else:
+            glob_pattern = path
 
-        df = reader.load(path)
-        
-        # Convert Spark Schema to Fairway/DuckDB Types
+        # Discover all files (sorted for determinism)
+        all_files = sorted(glob_module.glob(glob_pattern, recursive=True))
+        if not all_files:
+            raise ValueError(f"No files found matching pattern: {glob_pattern}")
+
+        # ============================================================
+        # PHASE 1: Column Discovery (scan ALL files for column names)
+        # ============================================================
+        all_columns = set()
+        column_sources = {}  # {column_name: [files_that_have_it]}
+        file_schemas = {}  # {file_path: {col: type}}
+        errors = []
+
+        print(f"INFO: Phase 1 - Discovering columns from {len(all_files)} files...")
+
+        # Build a reader with common options
+        def get_reader():
+            reader = self.spark.read.format(format)
+            if format == 'csv':
+                reader = reader.option("header", "true").option("inferSchema", "true")
+            if kwargs:
+                opts = {k: str(v) for k, v in kwargs.items() if v is not None}
+                reader = reader.options(**opts)
+            return reader
+
+        # Read schema from each file
+        for f in all_files:
+            try:
+                df = get_reader().load(f)
+                file_schema = {}
+                for field in df.schema.fields:
+                    col_name = field.name
+                    col_type = self._map_spark_type(field.dataType)
+                    file_schema[col_name] = col_type
+                    all_columns.add(col_name)
+                    column_sources.setdefault(col_name, []).append(f)
+                file_schemas[f] = file_schema
+            except Exception as e:
+                error_str = str(e)
+                # Re-raise Java compatibility errors - these won't be fixed by retrying
+                if "getSubject" in error_str or "UnsupportedOperationException" in error_str:
+                    raise RuntimeError(
+                        f"PySpark has Java compatibility issues. "
+                        f"This typically occurs with Java 17+. Use Java 11 or configure proper JVM options. "
+                        f"Original error: {error_str}"
+                    ) from e
+                errors.append((f, error_str))
+                continue
+
+        if errors:
+            print(f"WARNING: Failed to read {len(errors)} files during column discovery")
+
+        if not all_columns:
+            raise ValueError(f"No columns found in any files matching: {glob_pattern}")
+
+        print(f"INFO: Phase 1 complete - Found {len(all_columns)} unique columns across {len(file_schemas)} files")
+
+        # ============================================================
+        # PHASE 2: Type Inference with Coverage Guarantee
+        # ============================================================
+        # Ensure at least one file per column is included
+        required_files = set()
+        columns_covered = set()
+
+        for col in sorted(all_columns):  # Sorted for determinism
+            if col not in columns_covered:
+                source_file = column_sources[col][0]
+                required_files.add(source_file)
+                columns_covered.update(file_schemas[source_file].keys())
+
+        # Add additional samples up to sample_files limit
+        remaining_budget = sample_files - len(required_files)
+        if remaining_budget > 0:
+            remaining_files = [f for f in all_files if f not in required_files]
+            additional = remaining_files[:remaining_budget]
+            sample = list(required_files) + additional
+        else:
+            sample = list(required_files)
+
+        sample = sorted(sample)
+        print(f"INFO: Phase 2 - Using {len(sample)} files for type inference")
+
+        # Merge types from sampled files
+        column_types = {}
+        for f in sample:
+            if f in file_schemas:
+                for col_name, col_type in file_schemas[f].items():
+                    if col_name not in column_types:
+                        column_types[col_name] = col_type
+                    else:
+                        column_types[col_name] = self._resolve_type_conflict(column_types[col_name], col_type)
+
+        # ============================================================
+        # Combine: ALL columns from Phase 1, types from Phase 2
+        # ============================================================
         schema_dict = {}
-        for field in df.schema.fields:
-            spark_type = str(field.dataType)
-            
-            # Mapping logic
-            if 'IntegerType' in spark_type:
-                dtype = 'INTEGER'
-            elif 'LongType' in spark_type:
-                dtype = 'BIGINT'
-            elif 'DoubleType' in spark_type:
-                dtype = 'DOUBLE'
-            elif 'FloatType' in spark_type:
-                dtype = 'FLOAT'
-            elif 'StringType' in spark_type:
-                dtype = 'STRING'
-            elif 'TimestampType' in spark_type:
-                dtype = 'TIMESTAMP'
-            elif 'DateType' in spark_type:
-                dtype = 'DATE'
-            elif 'BooleanType' in spark_type:
-                dtype = 'BOOLEAN'
+        for col in sorted(all_columns):  # Sorted for deterministic output
+            if col in column_types:
+                schema_dict[col] = column_types[col]
             else:
-                dtype = 'STRING' # Fallback
-                
-            schema_dict[field.name] = dtype
-            
+                print(f"WARNING: Column '{col}' has no type - defaulting to STRING")
+                schema_dict[col] = 'STRING'
+
+        print(f"INFO: Schema inference complete - {len(schema_dict)} columns")
         return schema_dict

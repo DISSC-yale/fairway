@@ -154,26 +154,85 @@ class DuckDBEngine:
              return self.con.sql(f"SELECT * FROM '{path}'")
         return self.con.sql(f"SELECT * FROM '{path}/**/*.parquet'")
 
+    def _get_column_names_only(self, file_path, format, read_func):
+        """Fast column name extraction (header only).
+
+        Returns set of column names without reading all data rows.
+        """
+        try:
+            # Use LIMIT 0 to get schema without reading data
+            rel = self.con.sql(f"SELECT * FROM {read_func}('{file_path}') LIMIT 0")
+            return set(rel.columns)
+        except Exception:
+            # Fallback: try with LIMIT 1 for formats that need at least one row
+            try:
+                rel = self.con.sql(f"SELECT * FROM {read_func}('{file_path}') LIMIT 1")
+                return set(rel.columns)
+            except Exception:
+                return set()
+
+    def _resolve_type_conflict(self, type_a, type_b):
+        """Return broader type when conflict occurs.
+
+        Type hierarchy: BOOLEAN < INTEGER < BIGINT < DOUBLE < STRING
+        STRING always wins as it can represent any value.
+        """
+        TYPE_HIERARCHY = ['BOOLEAN', 'INTEGER', 'BIGINT', 'DOUBLE', 'STRING']
+
+        # Normalize types
+        type_a = type_a.upper() if type_a else 'STRING'
+        type_b = type_b.upper() if type_b else 'STRING'
+
+        # Get indices (unknown types default to STRING)
+        idx_a = TYPE_HIERARCHY.index(type_a) if type_a in TYPE_HIERARCHY else len(TYPE_HIERARCHY) - 1
+        idx_b = TYPE_HIERARCHY.index(type_b) if type_b in TYPE_HIERARCHY else len(TYPE_HIERARCHY) - 1
+
+        return TYPE_HIERARCHY[max(idx_a, idx_b)]
+
+    def _map_duckdb_type(self, dtype_str):
+        """Map DuckDB type string to Fairway standard type."""
+        dtype_str = str(dtype_str).upper()
+
+        if 'INT' in dtype_str and 'BIGINT' not in dtype_str:
+            return 'INTEGER'
+        elif 'BIGINT' in dtype_str or 'HUGEINT' in dtype_str:
+            return 'BIGINT'
+        elif 'DOUBLE' in dtype_str or 'FLOAT' in dtype_str or 'DECIMAL' in dtype_str:
+            return 'DOUBLE'
+        elif 'VARCHAR' in dtype_str or 'TEXT' in dtype_str or 'STRING' in dtype_str:
+            return 'STRING'
+        elif 'TIMESTAMP' in dtype_str:
+            return 'TIMESTAMP'
+        elif 'DATE' in dtype_str:
+            return 'DATE'
+        elif 'BOOL' in dtype_str:
+            return 'BOOLEAN'
+        else:
+            return 'STRING'  # Fallback
+
     def infer_schema(self, path, format='csv', sampling_ratio=0.1, sample_files=50, rows_per_file=1000, **kwargs):
         """
-        Infers schema from a dataset using DuckDB with random sampling across files.
+        Infers schema from a dataset using DuckDB with two-phase approach.
+
+        Two-Phase Approach:
+            Phase 1: Column Discovery - Scan ALL files to get complete column set (fast, headers only)
+            Phase 2: Type Inference - Sample files with coverage guarantee for accurate types
 
         Args:
             path: Input path (glob or directory)
             format: Input format (csv, tsv, json, parquet)
-            sampling_ratio: Fraction of files to sample (0.0 to 1.0)
-            sample_files: Max number of files to sample (default 50)
-            rows_per_file: Rows to sample from each file (default 1000)
+            sampling_ratio: Fraction of files to sample for type inference (0.0 to 1.0)
+            sample_files: Max number of files to sample for type inference (default 50)
+            rows_per_file: Rows to sample from each file for type inference (default 1000)
         Returns:
             dict: Schema dictionary compatible with Fairway config
 
         Note:
-            - Randomly samples files to catch type variations across dataset
-            - union_by_name=true: merges schemas across sampled files
-            - For scalability considerations, see docs/design_docs/schema_inference_scalability.md
+            - Phase 1 ensures ALL columns are captured (no missing columns)
+            - Phase 2 ensures at least one file per unique column is sampled (coverage guarantee)
+            - Deterministic: files are sorted before processing
         """
         import glob as glob_module
-        import random
 
         # Normalize TSV/tab to CSV
         if format in ('tsv', 'tab'):
@@ -188,51 +247,110 @@ class DuckDBEngine:
         else:
             glob_pattern = path
 
-        # Discover all files
-        all_files = glob_module.glob(glob_pattern, recursive=True)
+        # Discover all files (sorted for determinism)
+        all_files = sorted(glob_module.glob(glob_pattern, recursive=True))
         if not all_files:
             raise ValueError(f"No files found matching pattern: {glob_pattern}")
 
-        # Randomly sample files
-        num_to_sample = min(sample_files, max(1, int(len(all_files) * sampling_ratio)))
-        sampled_files = random.sample(all_files, min(num_to_sample, len(all_files)))
-        print(f"INFO: Sampling {len(sampled_files)} of {len(all_files)} files for schema inference")
-
-        # Build query to sample rows from each file and union them
         read_func = {'csv': 'read_csv_auto', 'json': 'read_json_auto', 'parquet': 'read_parquet'}[format]
 
-        if len(sampled_files) == 1:
-            query = f"SELECT * FROM {read_func}('{sampled_files[0]}') LIMIT {rows_per_file}"
+        # ============================================================
+        # PHASE 1: Column Discovery (scan ALL files, headers only)
+        # ============================================================
+        all_columns = set()
+        column_sources = {}  # {column_name: [files_that_have_it]}
+        errors = []
+
+        print(f"INFO: Phase 1 - Discovering columns from {len(all_files)} files...")
+        for f in all_files:
+            try:
+                cols = self._get_column_names_only(f, format, read_func)
+                if cols:  # Skip empty results (empty files)
+                    all_columns.update(cols)
+                    for col in cols:
+                        column_sources.setdefault(col, []).append(f)
+            except Exception as e:
+                errors.append((f, str(e)))
+                continue
+
+        if errors:
+            print(f"WARNING: Failed to read {len(errors)} files during column discovery")
+
+        if not all_columns:
+            raise ValueError(f"No columns found in any files matching: {glob_pattern}")
+
+        print(f"INFO: Phase 1 complete - Found {len(all_columns)} unique columns across all files")
+
+        # ============================================================
+        # PHASE 2: Type Inference with Coverage Guarantee
+        # ============================================================
+        # Step 2a: Ensure at least one file per column (minimum required set)
+        required_files = set()
+        columns_covered = set()
+
+        for col in sorted(all_columns):  # Sorted for determinism
+            if col not in columns_covered:
+                # Pick first file that has this column
+                source_file = column_sources[col][0]
+                required_files.add(source_file)
+                # This file covers all its columns
+                file_cols = self._get_column_names_only(source_file, format, read_func)
+                columns_covered.update(file_cols)
+
+        # Step 2b: Add additional samples for type diversity (up to sample_files limit)
+        remaining_budget = sample_files - len(required_files)
+        if remaining_budget > 0:
+            remaining_files = [f for f in all_files if f not in required_files]
+            additional = remaining_files[:remaining_budget]  # Deterministic, not random
+            sample = list(required_files) + additional
         else:
-            # Union samples from each file
-            subqueries = [f"SELECT * FROM {read_func}('{f}') LIMIT {rows_per_file}" for f in sampled_files]
+            sample = list(required_files)
+
+        # Sort for deterministic processing order
+        sample = sorted(sample)
+        print(f"INFO: Phase 2 - Sampling {len(sample)} files to infer types for {len(all_columns)} columns")
+
+        # Step 2c: Infer types from sampled files using UNION ALL BY NAME
+        if len(sample) == 1:
+            query = f"SELECT * FROM {read_func}('{sample[0]}') LIMIT {rows_per_file}"
+        else:
+            subqueries = [f"SELECT * FROM {read_func}('{f}') LIMIT {rows_per_file}" for f in sample]
             query = " UNION ALL BY NAME ".join(subqueries)
 
-        rel = self.con.sql(query)
+        try:
+            rel = self.con.sql(query)
 
-        # Extract schema from DuckDB and convert to Fairway types
+            # Extract types from the union result
+            column_types = {}
+            for col_name, col_type in zip(rel.columns, rel.types):
+                column_types[col_name] = self._map_duckdb_type(col_type)
+        except Exception as e:
+            print(f"WARNING: Union query failed ({e}), falling back to per-file inference")
+            # Fallback: infer types per-file and merge
+            column_types = {}
+            for f in sample:
+                try:
+                    rel = self.con.sql(f"SELECT * FROM {read_func}('{f}') LIMIT {rows_per_file}")
+                    for col_name, col_type in zip(rel.columns, rel.types):
+                        mapped_type = self._map_duckdb_type(col_type)
+                        if col_name not in column_types:
+                            column_types[col_name] = mapped_type
+                        else:
+                            column_types[col_name] = self._resolve_type_conflict(column_types[col_name], mapped_type)
+                except Exception:
+                    continue
+
+        # ============================================================
+        # Combine: ALL columns from Phase 1, types from Phase 2
+        # ============================================================
         schema_dict = {}
-        for col_name, col_type in zip(rel.columns, rel.types):
-            dtype_str = str(col_type).upper()
-
-            # Map DuckDB types to standard types
-            if 'INT' in dtype_str and 'BIGINT' not in dtype_str:
-                dtype = 'INTEGER'
-            elif 'BIGINT' in dtype_str or 'HUGEINT' in dtype_str:
-                dtype = 'BIGINT'
-            elif 'DOUBLE' in dtype_str or 'FLOAT' in dtype_str or 'DECIMAL' in dtype_str:
-                dtype = 'DOUBLE'
-            elif 'VARCHAR' in dtype_str or 'TEXT' in dtype_str or 'STRING' in dtype_str:
-                dtype = 'STRING'
-            elif 'TIMESTAMP' in dtype_str:
-                dtype = 'TIMESTAMP'
-            elif 'DATE' in dtype_str:
-                dtype = 'DATE'
-            elif 'BOOL' in dtype_str:
-                dtype = 'BOOLEAN'
+        for col in sorted(all_columns):  # Sorted for deterministic output
+            if col in column_types:
+                schema_dict[col] = column_types[col]
             else:
-                dtype = 'STRING'  # Fallback
+                # Should rarely happen with coverage guarantee, but safety fallback
+                print(f"WARNING: Column '{col}' has no type - defaulting to STRING")
+                schema_dict[col] = 'STRING'
 
-            schema_dict[col_name] = dtype
-
+        print(f"INFO: Schema inference complete - {len(schema_dict)} columns")
         return schema_dict
