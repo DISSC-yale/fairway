@@ -22,7 +22,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
         }))
 
@@ -37,7 +37,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)},
             'performance': {'salting': True}
         }))
@@ -53,7 +53,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
         }))
 
@@ -68,7 +68,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)},
             'performance': {'target_file_size_mb': 256}
         }))
@@ -84,7 +84,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
         }))
 
@@ -99,7 +99,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
         }))
 
@@ -114,7 +114,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)},
             'performance': {'max_records_per_file': 2000000}
         }))
@@ -130,7 +130,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
         }))
 
@@ -148,7 +148,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {
                 'intermediate_dir': str(tmp_path),
                 'final_dir': str(tmp_path),
@@ -169,7 +169,7 @@ class TestPerformanceConfig:
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
-            'sources': [],
+            'tables': [],
             'storage': {
                 'intermediate_dir': str(tmp_path),
                 'final_dir': str(tmp_path),
@@ -196,6 +196,8 @@ try:
     spark = SparkSession.builder \
         .master("local[1]") \
         .appName("test_performance") \
+        .config("spark.driver.host", "localhost") \
+        .config("spark.driver.bindAddress", "127.0.0.1") \
         .getOrCreate()
     SPARK_AVAILABLE = True
 except Exception:
