@@ -64,6 +64,14 @@ where = ["src"]
 [tool.setuptools]
 include-package-data = true
 
+[tool.pytest.ini_options]
+markers = [
+    "local: runs without Spark (DuckDB only)",
+    "spark: requires PySpark + Java",
+    "hpc: requires SLURM cluster",
+]
+testpaths = ["tests"]
+
 [tool.setuptools.package-data]
 fairway = ["data/*"]
 "fairway.data" = ["*"]

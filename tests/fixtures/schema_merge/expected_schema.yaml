@@ -1,0 +1,5 @@
+id: BIGINT
+name: VARCHAR
+age: BIGINT
+city: VARCHAR
+country: VARCHAR
