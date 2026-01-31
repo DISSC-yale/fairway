@@ -45,6 +45,7 @@ SPARK_YAML_TEMPLATE = _read_data_file('spark.yaml')
 
 TRANSFORM_TEMPLATE = _read_data_file('example_transform.py')
 DRIVER_TEMPLATE = _read_data_file('scripts/driver.sh')
+DRIVER_SCHEMA_TEMPLATE = _read_data_file('scripts/driver-schema.sh')
 RUN_PIPELINE_SCRIPT = _read_data_file('scripts/run_pipeline.sh')
 README_TEMPLATE = _read_data_file('README.md')
 DOCS_TEMPLATE = _read_data_file('getting-started.md')

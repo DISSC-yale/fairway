@@ -1,0 +1,22 @@
+# Repository Governance Rules
+
+This repository has automated rule enforcement. rules are defined in `rules.md` (local) and inherited from `llm-agentic-notes`.
+
+## Key Local Rules
+
+1. **RULE-100**: CLI should have a `fairway build` command.
+2. **RULE-102**: `fairway run` must NOT launch Nextflow (it is a worker).
+3. **RULE-106**: Templates must be static files in `src/fairway/data/`.
+4. **RULE-107**: Spark version (4.1.1) must be consistent across files.
+
+## Project Structure (Inherited)
+
+- **Agents**: Placed in `agents/<domain>/` (RULE-003)
+- **Naming**: No `-agent.md` suffix (RULE-001)
+
+## Validation Commands
+
+To check rules, run:
+```bash
+agentic-governance --all
+```
