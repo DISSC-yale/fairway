@@ -45,19 +45,19 @@ def _get_apptainer_binds(cfg):
                 if os.path.exists(abs_path):
                     bind_paths.add(abs_path)
     
-    # 2. Check source paths
-    if cfg.sources:
-        for src in cfg.sources:
-            path = src.get('path')
+    # 2. Check table paths
+    if cfg.tables:
+        for tbl in cfg.tables:
+            path = tbl.get('path')
             if path:
                 abs_path = os.path.abspath(path)
                 if os.path.exists(abs_path):
                     bind_paths.add(abs_path)
-            # Handle unexpanded path patterns if any (though config loader might have expanded them)
-            # The config loader expands sources, so 'path' should be concrete file paths
-            # But we might want to bind the parent directory of files to be safe/cleaner
-            if os.path.isfile(abs_path):
-                bind_paths.add(os.path.dirname(abs_path))
+                # Handle unexpanded path patterns if any (though config loader might have expanded them)
+                # The config loader expands tables, so 'path' should be concrete file paths
+                # But we might want to bind the parent directory of files to be safe/cleaner
+                if os.path.isfile(abs_path):
+                    bind_paths.add(os.path.dirname(abs_path))
     
     return bind_paths
 
@@ -453,22 +453,29 @@ def stop():
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
-def run(config, spark_master):
+@click.option('--dry-run', is_flag=True, help='Show matched files without processing.')
+def run(config, spark_master, dry_run):
     """Run the ingestion pipeline (Worker Mode).
-    
+
     This command executes the pipeline directly on the current machine.
     It does NOT launch Nextflow or submit Slurm jobs.
     """
     from .config_loader import Config
     from .pipeline import IngestionPipeline
-    
+
     # Auto-discover config
     if config is None:
         config = discover_config()
         click.echo(f"Auto-discovered config: {config}")
 
     cfg = Config(config)
-    
+
+    if dry_run:
+        click.echo(f"DRY RUN - showing matched files for config: {config}\n")
+        pipeline = IngestionPipeline(config, spark_master=spark_master)
+        pipeline.dry_run()
+        return
+
     click.echo(f"Starting pipeline execution using config: {config}")
     pipeline = IngestionPipeline(config, spark_master=spark_master)
     pipeline.run()
@@ -687,6 +694,41 @@ def pull():
         click.echo("If you see an auth error, run: source scripts/fairway-hpc.sh registry-login", err=True)
     except FileNotFoundError:
         click.echo("apptainer command not found. Is Apptainer installed?", err=True)
+
+
+@main.group()
+def cache():
+    """Manage fairway cache."""
+    pass
+
+
+@cache.command()
+@click.option('--force', is_flag=True, help='Skip confirmation prompt.')
+def clean(force):
+    """Clear the archive extraction cache (.fairway_cache/)."""
+    cache_dir = '.fairway_cache'
+
+    if not os.path.exists(cache_dir):
+        click.echo("No cache directory found.")
+        return
+
+    # Calculate size
+    total_size = 0
+    file_count = 0
+    for dirpath, dirnames, filenames in os.walk(cache_dir):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            total_size += os.path.getsize(fp)
+            file_count += 1
+
+    size_mb = total_size / (1024 * 1024)
+
+    if not force:
+        if not click.confirm(f"Delete {cache_dir}/ ({file_count} files, {size_mb:.1f} MB)?"):
+            return
+
+    shutil.rmtree(cache_dir)
+    click.echo(f"Removed {cache_dir}/ ({size_mb:.1f} MB freed)")
 
 
 if __name__ == '__main__':

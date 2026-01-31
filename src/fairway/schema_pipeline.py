@@ -46,27 +46,27 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
         
         consolidated_schema = {
             "dataset_name": self.config.dataset_name,
-            "sources": []
+            "tables": []
         }
 
-        # Track source info for manifest
-        sources_info = []
+        # Track table info for manifest
+        tables_info = []
 
-        # 1. Iterate over sources (just like ingestion)
-        if not self.config.sources:
-            print("WARNING: No sources found in configuration!")
+        # 1. Iterate over tables (just like ingestion)
+        if not self.config.tables:
+            print("WARNING: No tables found in configuration!")
 
-        for source in self.config.sources:
-            print(f"\nProcessing source: {source['name']}")
-            print(f"  Source config: {source}")
+        for table in self.config.tables:
+            print(f"\nProcessing table: {table['name']}")
+            print(f"  Table config: {table}")
 
             # 2. Preprocess (Unzip/Script) - Reuses Ingestion Logic!
             # Because of deterministic hashing in pipeline.py, this will REUSE
             # files if they were already unzipped by a previous run.
-            processed_path = self._preprocess(source)
+            processed_path = self._preprocess(table)
             print(f"  Preprocess returned path: {processed_path}")
 
-            # Track files used for this source
+            # Track files used for this table
             if '*' in processed_path:
                 files_used = glob.glob(processed_path, recursive=True)
             else:
@@ -76,8 +76,8 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
                 for f in files_used if os.path.isfile(f)
             ]
 
-            sources_info.append({
-                "name": source['name'],
+            tables_info.append({
+                "name": table['name'],
                 "files_used": files_used,
                 "file_hashes": file_hashes
             })
@@ -94,40 +94,40 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
                 # We extend the engine interface slightly here
                 schema_dict = self.engine.infer_schema(
                     path=processed_path,
-                    format=source.get('format', 'parquet'), # heuristic, engine handles better usually
+                    format=table.get('format', 'parquet'), # heuristic, engine handles better usually
                     sampling_ratio=sampling_ratio
                 )
 
                 # Add metadata columns from naming_pattern (as STRING, matching injection behavior)
-                naming_pattern = source.get('naming_pattern')
+                naming_pattern = table.get('naming_pattern')
                 metadata_columns = _get_metadata_columns_from_pattern(naming_pattern)
                 for col in metadata_columns:
                     if col not in schema_dict:
                         schema_dict[col] = 'STRING'
 
                 # Also ensure partition_by columns are in the schema
-                partition_by = source.get('partition_by', [])
+                partition_by = table.get('partition_by', [])
                 for col in partition_by:
                     if col not in schema_dict:
                         schema_dict[col] = 'STRING'
 
-                source_schema = {
-                    "name": source['name'],
+                table_schema = {
+                    "name": table['name'],
                     "schema": schema_dict
                 }
-                consolidated_schema["sources"].append(source_schema)
+                consolidated_schema["tables"].append(table_schema)
 
-                # 4. Write each source schema to its own folder
-                source_name = source['name']
-                source_schema_dir = os.path.join(output_path, source_name)
-                os.makedirs(source_schema_dir, exist_ok=True)
-                source_schema_path = os.path.join(source_schema_dir, "schema.yaml")
-                with open(source_schema_path, 'w') as f:
-                    yaml.dump(source_schema, f, sort_keys=False)
-                print(f"  Schema written to: {source_schema_path}")
+                # 4. Write each table schema to its own folder
+                tbl_name = table['name']
+                table_schema_dir = os.path.join(output_path, tbl_name)
+                os.makedirs(table_schema_dir, exist_ok=True)
+                table_schema_path = os.path.join(table_schema_dir, "schema.yaml")
+                with open(table_schema_path, 'w') as f:
+                    yaml.dump(table_schema, f, sort_keys=False)
+                print(f"  Schema written to: {table_schema_path}")
 
             except Exception as e:
-                print(f"ERROR: Failed to infer schema for source {source['name']}: {e}")
+                print(f"ERROR: Failed to infer schema for table {table['name']}: {e}")
                 # Continue to next source?
 
         print(f"\nAll schemas written to: {output_path}")
@@ -135,7 +135,7 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
         # 5. Record schema run in manifest
         self.manifest.record_schema_run(
             dataset_name=self.config.dataset_name,
-            sources_info=sources_info,
+            tables_info=tables_info,
             output_path=output_path
         )
 
