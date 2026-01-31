@@ -18,6 +18,7 @@ class IngestionPipeline:
         self.config = Config(config_path)
         self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)
+        self._hash_cache = {} # Cache for distributed hash results
 
     def _get_engine(self, spark_master=None):
         engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
@@ -46,16 +47,74 @@ class IngestionPipeline:
         action = preprocess_config.get('action')
         scope = preprocess_config.get('scope', 'per_file') # 'global' or 'per_file'
         mode = preprocess_config.get('execution_mode', 'driver') # 'driver' or 'cluster'
-        
+
+        # Derive file filter from source format
+        # Explicit include in preprocess config takes priority
+        include_pattern = preprocess_config.get('include')
+        if not include_pattern:
+            file_format = source.get('format')
+            format_to_ext = {
+                'tab': '*.tab',
+                'tsv': '*.tsv',
+                'csv': '*.csv',
+                'json': '*.json',
+                'jsonl': '*.jsonl',
+                'parquet': '*.parquet',
+            }
+            include_pattern = format_to_ext.get(file_format)
+
+        # Check preprocessing cache first
+        cached = self.manifest.get_preprocessed_path(
+            source['path'],
+            source['name'],
+            source.get('root')
+        )
+        if cached:
+            # Apply file filter to cached path if needed
+            if include_pattern:
+                cached = os.path.join(cached, "**", include_pattern)
+            print(f"  Reusing cached preprocessing: {cached}")
+            return cached
+
         print(f"Preprocessing {source['name']} with action='{action}', scope='{scope}', mode='{mode}'...")
+        if include_pattern:
+            print(f"  File filter: {include_pattern}")
+
+        # Temp Location Support
+        temp_loc = self.config.temp_location
+        batch_dir = None
+        if temp_loc:
+             import hashlib
+             # Generate a deterministic batch directory based on the source name
+             # This allows reusing preprocessed files across runs (schema gen -> ingestion) and is human readable.
+             safe_name = "".join([c if c.isalnum() else "_" for c in source['name']])
+             batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
+             # Ensure the batch root exists
+             os.makedirs(batch_dir, exist_ok=True)
+             print(f"INFO: Using global temp location: {batch_dir}")
         
         # Resolve input files
         # If input_path is a glob, we get all files.
         input_path = source['path']
-        files = glob.glob(input_path) if '*' in input_path else [input_path]
+        
+        # New in V2: Handle Root Resolution
+        root = source.get('root')
+        full_input_path = input_path
+        
+        if root and not os.path.isabs(input_path):
+             # Fix: Ensure input_path doesn't reset root if it starts with /
+             rel_input = input_path.lstrip(os.sep)
+             full_input_path = os.path.join(root, rel_input)
+             
+        # Resolve glob against the FULL path (root + relative_glob)
+        files = glob.glob(full_input_path) if '*' in full_input_path else [full_input_path]
+        
+        print(f"DEBUG: Found {len(files)} candidates at {full_input_path}")
         
         if not files:
-             print(f"WARNING: No files found for preprocessing at {input_path}")
+             print(f"WARNING: No files found for preprocessing at {full_input_path} (CWD: {os.getcwd()})")
+             if root:
+                 print(f"  Root: {root}, Path: {input_path}")
              return input_path 
 
         # Define the work function
@@ -74,7 +133,13 @@ class IngestionPipeline:
              file_name = os.path.basename(file_path)
              name_no_ext = os.path.splitext(file_name)[0]
              
-             output_dir = os.path.join(base_dir, f".preprocessed_{name_no_ext}")
+             if batch_dir:
+                  # Use the global temp batch directory
+                  output_dir = os.path.join(batch_dir, name_no_ext)
+             else:
+                  # Use default sibling directory
+                  output_dir = os.path.join(base_dir, f".preprocessed_{name_no_ext}")
+                  
              os.makedirs(output_dir, exist_ok=True)
              
              if action == 'unzip':
@@ -112,11 +177,16 @@ class IngestionPipeline:
              
              # Dispatch to cluster
              # Note: For custom scripts, ensure the script file is accessible on workers
+             print(f"INFO: Distributing preprocessing task for {len(files)} files to Spark cluster...")
              results = self.engine.distribute_task(files, process_file)
+             print(f"INFO: Cluster task complete. Processed {len(results)} items.")
              processed_paths = results
         else:
              # Driver mode
-             for f in files:
+             print(f"INFO: Running preprocessing locally for {len(files)} files...")
+             for i, f in enumerate(files):
+                 if i % 10 == 0:
+                     print(f"  Processed {i}/{len(files)}...")
                  processed_paths.append(process_file(f))
         
         # Return the new input path. 
@@ -130,16 +200,36 @@ class IngestionPipeline:
         
         # Construct a sensible return path
         # If we extracted zips, we probably want to ingest the contents.
-        # Let's assume we return the glob of the preprocessed directories
+        # Use include_pattern to filter specific file types (e.g., "*.tab")
+        file_glob = include_pattern if include_pattern else "*"
+
         if len(processed_paths) == 1:
-             return processed_paths[0]
+             # Single extraction directory - apply filter directly
+             if include_pattern:
+                 result_path = os.path.join(processed_paths[0], "**", file_glob)
+             else:
+                 result_path = processed_paths[0]
         else:
-             # If multiple, return the common structure... 
-             # This is tricky if they are scattered. 
-             # For common case: data/*.zip -> data/.preprocessed_*/
-             # Return data/.preprocessed_*/* (contents)
-             base = os.path.dirname(input_path)
-             return os.path.join(base, ".preprocessed_*", "*") 
+             # If multiple, return the common structure...
+             if batch_dir:
+                  # If we used a batch dir, return everything inside it
+                  # Structure: batch_dir / <file_dir> / <contents>
+                  result_path = os.path.join(batch_dir, "*", file_glob)
+             else:
+                  # Original logic: sibling directories
+                  base = os.path.dirname(input_path)
+                  result_path = os.path.join(base, ".preprocessed_*", file_glob)
+
+        # Record result for future reuse
+        self.manifest.record_preprocessing(
+            original_path=source['path'],
+            preprocessed_path=result_path,
+            action=action,
+            source_name=source['name'],
+            source_root=source.get('root')
+        )
+
+        return result_path 
 
     def run(self):
         print(f"Starting ingestion for dataset: {self.config.dataset_name}")
@@ -148,23 +238,52 @@ class IngestionPipeline:
              print("WARNING: No sources found to process! Check your config path patterns and ensuring data exists.")
              print(f"  Configured sources: {self.config.data.get('sources', [])}")
 
-        for source in self.config.sources:
+        
+        # Optimize: Distributed Manifest Check for Cluster Mode
+        # Group sources by root to perform batch hashing on the cluster
+        if hasattr(self.engine, 'calculate_hashes'):
+            cluster_batches = {} # root -> list_of_paths
+            
+            for s in self.config.sources:
+                 mode = s.get('preprocess', {}).get('execution_mode', 'driver')
+                 if mode == 'cluster':
+                     root = s.get('root')
+                     if root not in cluster_batches:
+                         cluster_batches[root] = []
+                     cluster_batches[root].append(s['path'])
+            
+            for root, paths in cluster_batches.items():
+                print(f"Distributed Check: Calculating hashes for {len(paths)} items under root '{root}' via Spark...")
+                try:
+                    results = self.engine.calculate_hashes(paths, source_root=root)
+                    for res in results:
+                        if not res.get('error'):
+                            self._hash_cache[res['path']] = res['hash']
+                        else:
+                            print(f"WARNING: Hash calculation failed for {res['path']}: {res['error']}")
+                except Exception as e:
+                    print(f"ERROR: Distributed hash check failed: {e}. Falling back to driver check.")
+
+        with self.manifest.batch():
+          for source in self.config.sources:
             # 0. Preprocessing
             # Preprocess returns a modified path (e.g. to temp unzipped files)
             # Source dict is unmodified, we just change the variable we use for input
             original_path = source['path']
+            # Check manifest BEFORE preprocessing to avoid expensive work (unzipping) if source hasn't changed
+            # Using fsspec for URI-aware existance check would be better, 
+            # for now keeping it simple but URI-ready in engines
+            
+            computed_hash = self._hash_cache.get(original_path)
+            if not self.manifest.should_process(original_path, source_name=source['name'], source_root=source.get('root'), computed_hash=computed_hash):
+                 # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
+                 print(f"Skipping {source['name']} (already processed and hash matches)")
+                 continue
+
             input_path = self._preprocess(source)
             
             if input_path != original_path:
                 print(f"  Preprocessing complete. Ingesting from: {input_path}")
-            
-            # Using fsspec for URI-aware existance check would be better, 
-            # for now keeping it simple but URI-ready in engines
-            
-            if not self.manifest.should_process(original_path, source_name=source['name']):
-                 # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
-                 print(f"Skipping {source['name']} (already processed and hash matches)")
-                 continue
 
             print(f"Processing {source['name']}...")
             
@@ -178,27 +297,41 @@ class IngestionPipeline:
             if partition_by:
                 output_basename = output_name
             else:
-                output_basename = f"{output_name}.parquet"
+                # Use configured output format extension (parquet or delta? Delta is usually a directory, so no extension or .delta?)
+                # Standard convention for Delta tables is just the directory name, but if we need an extension for clarity:
+                ext = self.config.output_format if self.config.output_format != 'delta' else 'delta' 
+                # Actually delta tables usually don't have extensions in path, they are directories.
+                # But to avoid collision with file names...
+                # Current logic: output_basename = f"{output_name}.parquet"
+                
+                if self.config.output_format == 'delta':
+                     output_basename = output_name
+                else:
+                     output_basename = f"{output_name}.{self.config.output_format}"
                 
             output_path = os.path.join(self.config.storage['intermediate_dir'], output_basename)
             metadata = source.get('metadata', {})
+            naming_pattern = source.get('naming_pattern')
             source_format = source.get('format', 'csv')
             hive_partitioning = source.get('hive_partitioning', False)
             schema = source.get('schema')
             read_options = source.get('read_options', {})
             write_mode = source.get('write_mode', 'overwrite')
             
-            # For partitioning, DuckDB creates a directory. 
+            # For partitioning, DuckDB creates a directory.
+            print(f"INFO: Starting ingestion for {source['name']} from {input_path} to {output_path}")
             success = self.engine.ingest(
-                input_path, 
+                input_path,
                 output_path,
                 format=source_format,
                 partition_by=partition_by,
                 metadata=metadata,
+                naming_pattern=naming_pattern,
                 target_rows=self.config.target_rows,
                 hive_partitioning=hive_partitioning,
                 schema=schema,
                 write_mode=write_mode,
+                output_format=self.config.output_format, # Pass explicit output format (e.g. delta)
                 **read_options
             )
             
@@ -335,7 +468,7 @@ class IngestionPipeline:
                     }
                     Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
 
-                    self.manifest.update_manifest(original_path, status="success", metadata=stats, source_name=source['name'])
+                    self.manifest.update_manifest(original_path, status="success", metadata=stats, source_name=source['name'], source_root=source.get('root'))
                     
                     # 7. Redivis Export
                     if self.config.redivis:
@@ -361,6 +494,6 @@ class IngestionPipeline:
                 else:
                     errors = l1['errors'] + l2['errors']
                     print(f"Validations failed for {source['name']}: {errors}")
-                    self.manifest.update_manifest(original_path, status="failed", metadata={"errors": errors}, source_name=source['name'])
+                    self.manifest.update_manifest(original_path, status="failed", metadata={"errors": errors}, source_name=source['name'], source_root=source.get('root'))
                     # raise Exception(...) # Optional blocking
 

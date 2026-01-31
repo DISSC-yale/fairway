@@ -28,6 +28,11 @@ class Config:
         self.validations = self.data.get('validations', {})
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
+        # Temporary location for global file writes
+        # Priority: Env Var > Root Config > Storage Config
+        self.temp_location = os.environ.get('FAIRWAY_TEMP') or \
+                             self.data.get('temp_location') or \
+                             self.storage.get('temp_location')
         self.redivis = self.data.get('redivis', {})
         self.output_format = self.storage.get('format', 'parquet').lower()
         
@@ -77,7 +82,8 @@ class Config:
                 continue
 
             # Resolve path relative to config file if it's not absolute
-            if not os.path.isabs(path_pattern):
+            # SKIP if 'root' is defined (let pipeline handle it)
+            if not os.path.isabs(path_pattern) and not src.get('root'):
                 # Try relative to config dir first
                 resolved_path = os.path.join(config_dir, path_pattern)
                 # If that doesn't exist, maybe it is relative to CWD? 
@@ -95,9 +101,10 @@ class Config:
             raw_schema = src.get('schema')
             resolved_schema = self._load_schema(raw_schema)
             
-            # Check for glob expansion override (defaults to True for backward compatibility)
-            # Setting expand_glob=False treats the pattern as a single source (good for Spark/Distributed batching)
-            expand_glob = src.get('expand_glob', True)
+            # Glob expansion behavior:
+            # - expand_glob=False (default): glob pattern → one source → one table (standard behavior)
+            # - expand_glob=True: each matching file → separate source (for per-file metadata extraction)
+            expand_glob = src.get('expand_glob', False)
 
             if hive_partitioning or not expand_glob:
                  # Treat the directory/glob as a single source unit
@@ -109,7 +116,7 @@ class Config:
                       continue
                  
                  source_format = src.get('format', 'csv')
-                 valid_formats = {'csv', 'json', 'parquet'}
+                 valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet'}
                  if source_format not in valid_formats:
                       raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
                  
@@ -122,18 +129,36 @@ class Config:
                     'path': resolved_path,
                     'format': source_format,
                     'metadata': {},
+                    'naming_pattern': naming_pattern,
                     'schema': resolved_schema,
                     'transformation': src.get('transformation'),
                     'hive_partitioning': hive_partitioning,
                     'partition_by': src.get('partition_by', []),
                     'read_options': src.get('read_options', {}),
                     'preprocess': src.get('preprocess', {}),
-                    'write_mode': src.get('write_mode', 'overwrite')
+                    'write_mode': src.get('write_mode', 'overwrite'),
+                    'root': src.get('root')
                 })
 
             else:
                 # Glob discovery (Eager expansion)
-                files = glob.glob(resolved_path, recursive=True)
+                search_path = resolved_path
+                source_root = src.get('root')
+                
+                if source_root:
+                    # Resolve root relative to config dir if needed
+                    if not os.path.isabs(source_root):
+                         source_root = os.path.join(config_dir, source_root)
+                    
+                    # Fix: os.path.join ignores root if path_pattern starts with /
+                    # We strip leading slash to ensure join works
+                    rel_pattern = path_pattern.lstrip(os.sep)
+                    search_path = os.path.join(source_root, rel_pattern)
+
+                print(f"DEBUG: ConfigLoader globbing: {search_path}")
+                files = glob.glob(search_path, recursive=True)
+                if not files:
+                    print(f"WARNING: ConfigLoader found no files for pattern: {search_path}")
                 
                 for f in files:
                     metadata = {}
@@ -144,7 +169,7 @@ class Config:
                     
                     # Create a specific source entry for each file
                     source_format = src.get('format', 'csv')
-                    valid_formats = {'csv', 'json', 'parquet'}
+                    valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet'}
                     if source_format not in valid_formats:
                          raise ValueError(f"Invalid format: '{source_format}'. Must be one of {valid_formats}")
 
@@ -152,12 +177,23 @@ class Config:
                     execution_mode = src.get('preprocess', {}).get('execution_mode', 'driver')
                     if execution_mode == 'cluster' and self.engine not in ['pyspark', 'spark']:
                          raise ValueError(f"Configuration Error: 'execution_mode: cluster' is only available with 'engine: pyspark'. Source: {src.get('name')}")
-
+                    
+                    # Determine source root for relocatability
+                    source_root_raw = src.get('root')
+                    source_root = None
+                    if source_root_raw:
+                        if not os.path.isabs(source_root_raw):
+                             source_root = os.path.join(config_dir, source_root_raw)
+                        else:
+                             source_root = source_root_raw
+                    
                     expanded.append({
                         'name': src.get('name', os.path.basename(f)),
                         'path': f,
+                        'root': source_root,
                         'format': source_format,
                         'metadata': metadata,
+                        'naming_pattern': naming_pattern,
                         'schema': resolved_schema,
                         'transformation': src.get('transformation'),
                         'hive_partitioning': False,

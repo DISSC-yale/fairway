@@ -1,5 +1,5 @@
 site_name: Fairway Data Ingestion
-site_description: Documentation for fairway ingestion pipelines and data products.
+site_description: Documentation for fairway ingestion pipelines.
 site_author: DISSC
 
 theme:
@@ -26,8 +26,7 @@ nav:
     - Validations: validations.md
     - Enrichments: enrichments.md
     - Transformations: transformations.md
-  - Data Products:
-    - Inventory: data_inventory.md
+
   - Guide:
     - Supported Formats: supported_formats.md
   - Design Docs:

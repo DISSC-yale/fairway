@@ -33,20 +33,50 @@ class SlurmSparkManager:
 #SBATCH --partition={partition}
 
 module load Spark/3.5.1-foss-2022b-Scala-2.13
-spark-start
 
-        # --- Spark Tuning Parity (data_l2) ---
-        # Discover the ephemeral config path
-        SPARK_CONF_DIR="${{HOME}}/.spark-local/${{SLURM_JOB_ID}}/spark/conf"
-        DEFAULTS_FILE="${{SPARK_CONF_DIR}}/spark-defaults.conf"
+# --- Spark Tuning Parity (data_l2) ---
+# Discover the ephemeral config path BEFORE starting Spark
+# IMPORTANT: Export SPARK_CONF_DIR so spark-start and all child processes use it
+export SPARK_CONF_DIR="${{HOME}}/.spark-local/${{SLURM_JOB_ID}}/spark/conf"
+DEFAULTS_FILE="${{SPARK_CONF_DIR}}/spark-defaults.conf"
 
-        # Inject tuning parameters
-        echo "spark.dynamicAllocation.enabled True" >> $DEFAULTS_FILE
-        echo "spark.dynamicAllocation.minExecutors 5" >> $DEFAULTS_FILE
-        echo "spark.dynamicAllocation.maxExecutors 150" >> $DEFAULTS_FILE
-        echo "spark.dynamicAllocation.initialExecutors 15" >> $DEFAULTS_FILE
-        echo "spark.port.maxRetries 40" >> $DEFAULTS_FILE
-        # --- End Tuning ---
+# Create config directory if it doesn't exist
+mkdir -p "${{SPARK_CONF_DIR}}"
+
+# Inject tuning parameters BEFORE spark-start
+# Disable SASL authentication for cluster-internal communication
+echo "spark.authenticate false" >> $DEFAULTS_FILE
+echo "spark.authenticate.enableSaslEncryption false" >> $DEFAULTS_FILE
+echo "spark.network.crypto.enabled false" >> $DEFAULTS_FILE
+
+echo "spark.dynamicAllocation.enabled True" >> $DEFAULTS_FILE
+echo "spark.dynamicAllocation.minExecutors 5" >> $DEFAULTS_FILE
+echo "spark.dynamicAllocation.maxExecutors 150" >> $DEFAULTS_FILE
+echo "spark.dynamicAllocation.initialExecutors 15" >> $DEFAULTS_FILE
+echo "spark.port.maxRetries 40" >> $DEFAULTS_FILE
+# --- End Tuning ---
+
+echo "DEBUG: SPARK_CONF_DIR=$SPARK_CONF_DIR"
+echo "DEBUG: spark-defaults.conf contents:"
+cat $DEFAULTS_FILE
+
+# Now start Spark with the correct configuration
+SPARK_START_LOG="spark_start_${{SLURM_JOB_ID}}.log"
+spark-start > "${{SPARK_START_LOG}}" 2>&1
+
+# Display log for debugging
+cat "${{SPARK_START_LOG}}"
+
+# Extract SPARK_MASTER_URL from the log
+# Expecting line: SPARK_MASTER_URL: spark://...
+SPARK_MASTER_URL=$(grep "SPARK_MASTER_URL:" "${{SPARK_START_LOG}}" | awk '{{print $2}}')
+
+if [ -z "$SPARK_MASTER_URL" ]; then
+    echo "ERROR: Could not find SPARK_MASTER_URL in output"
+    exit 1
+fi
+
+echo "Detected Spark Master: $SPARK_MASTER_URL"
 echo "${{SPARK_MASTER_URL}}" > {self.master_url_file}
 echo "${{SLURM_JOB_ID}}" > {self.job_id_file}
 echo "$((SLURM_CPUS_ON_NODE - 1))" > {self.cores_file}

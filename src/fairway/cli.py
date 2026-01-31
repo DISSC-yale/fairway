@@ -147,11 +147,16 @@ def init(name, engine):
     click.echo("  Created file: README.md")
 
     # Create scripts/driver.sh and scripts/fairway-hpc.sh
-    from .templates import DRIVER_TEMPLATE, HPC_SCRIPT, RUN_PIPELINE_SCRIPT
+    from .templates import DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, HPC_SCRIPT, RUN_PIPELINE_SCRIPT
     with open(os.path.join(name, 'scripts', 'driver.sh'), 'w') as f:
         f.write(DRIVER_TEMPLATE)
     os.chmod(os.path.join(name, 'scripts', 'driver.sh'), 0o755)
     click.echo("  Created file: scripts/driver.sh")
+
+    with open(os.path.join(name, 'scripts', 'driver-schema.sh'), 'w') as f:
+        f.write(DRIVER_SCHEMA_TEMPLATE)
+    os.chmod(os.path.join(name, 'scripts', 'driver-schema.sh'), 0o755)
+    click.echo("  Created file: scripts/driver-schema.sh")
 
     with open(os.path.join(name, 'scripts', 'run_pipeline.sh'), 'w') as f:
         f.write(RUN_PIPELINE_SCRIPT)
@@ -178,22 +183,146 @@ def init(name, engine):
 @main.command()
 @click.option('--size', type=click.Choice(['small', 'large']), default='small', help='Size of dataset to generate.')
 @click.option('--partitioned/--no-partitioned', default=True, help='Generate partitioned data (year/month).')
-@click.option('--format', type=click.Choice(['csv', 'parquet']), default='csv', help='Output format (csv or parquet).')
+@click.option('--format', type=click.Choice(['csv', 'tsv', 'parquet']), default='csv', help='Output format (csv, tsv, or parquet).')
 def generate_data(size, partitioned, format):
     """Generate mock test data."""
     click.echo(f"Generating {size} test data (partitioned={partitioned}, format={format})...")
     generate_test_data(size=size, partitioned=partitioned, file_format=format)
 
 @main.command()
-@click.argument('file_path')
+@click.argument('file_path', required=False)
+@click.option('--config', help='Path to fairway.yaml config (enables Pipeline Mode).')
 @click.option('--output', help='Output file path for the schema (YAML).')
-def generate_schema(file_path, output):
-    """Generate a schema skeleton from a data file or partitioned directory."""
-    import re
-    import glob
-    import duckdb
-    import yaml
+@click.option('--engine', type=click.Choice(['duckdb', 'pyspark']), default=None, help='Engine for schema inference. Default: duckdb (portable). Use pyspark for distributed inference on slow storage.')
+@click.option('--sampling-ratio', type=float, default=1.0, help='Ratio of data to read (Spark only).')
+# Slurm Options
+@click.option('--slurm', is_flag=True, help='Submit as a Slurm job.')
+@click.option('--account', help='Slurm account.')
+@click.option('--time', help='Slurm time limit.')
+@click.option('--cpus', type=int, help='Slurm CPUs.')
+@click.option('--mem', help='Slurm Memory.')
+@click.option('--internal-run', is_flag=True, hidden=True, help='Internal flag for Slurm execution.')
+@click.option('--spark-master', hidden=True, help='Spark master URL (for internal run).')
+def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, account, time, cpus, mem, internal_run, spark_master):
+    """Generate schema from data.
     
+    Modes:
+    1. Pipeline Mode: Provide --config. Uses full pipeline (preprocessing/unzipping) to find data.
+    2. Legacy Mode: Provide FILE_PATH. Scans that specific file/dir.
+    """
+    import yaml
+    import os
+    import sys
+    
+    # ---------------------------------------------------------
+    # SLURM SUBMISSION (Wrapper)
+    # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # SLURM SUBMISSION (Distributed Cluster Mode)
+    # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # SLURM SUBMISSION (Distributed Cluster Mode)
+    # ---------------------------------------------------------
+    if slurm and not internal_run:
+        script_path = "scripts/driver-schema.sh"
+        if not os.path.exists(script_path):
+            click.echo(f"Error: {script_path} not found. Run 'fairway init' to regenerate scripts.", err=True)
+            sys.exit(1)
+            
+        click.echo(f"Submitting Schema Generation Driver Job ({script_path})...")
+        try:
+            # We assume the user has configured spark.yaml or fairway-hpc.sh variables if needed
+            # The driver script handles cluster provisioning.
+            subprocess.run(["sbatch", script_path], check=True)
+            click.echo("Job submitted. Check status with 'fairway status'.")
+            return
+        except subprocess.CalledProcessError as e:
+             click.echo(f"Error submitting job: {e}", err=True)
+             sys.exit(1)
+
+    # ---------------------------------------------------------
+    # PIPELINE MODE (Config Driven)
+    # ---------------------------------------------------------
+    if config:
+        from .config_loader import Config
+        from .schema_pipeline import SchemaDiscoveryPipeline
+
+        click.echo(f"Starting Schema Discovery (Pipeline Mode) using {config}...")
+        cfg = Config(config)
+
+        # Determine engine: CLI flag > config > default (duckdb)
+        config_engine = cfg.engine.lower() if cfg.engine else 'duckdb'
+        effective_engine = engine if engine else config_engine
+
+        click.echo(f"Using engine: {effective_engine}")
+
+        if effective_engine in ['pyspark', 'spark']:
+            # Use Spark - requires spark_master for distributed mode
+            if spark_master:
+                click.echo(f"Spark master: {spark_master}")
+            else:
+                click.echo("No spark_master provided, using local[*]")
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]")
+        else:
+            # Use DuckDB (default) - portable, no cluster needed
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=None)
+
+        pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
+        return
+
+    # ---------------------------------------------------------
+    # LEGACY MODE (Single File)
+    # ---------------------------------------------------------
+    if not file_path:
+        click.echo("Error: Must provide either FILE_PATH or --config.", err=True)
+        sys.exit(1)
+
+    # ... [Existing Legacy Logic for PySpark/DuckDB] ...
+    # (Rest of the function follows, but pasted to ensure replacement)
+    
+    if engine == 'pyspark':
+        click.echo(f"Initializing PySpark to infer schema from: {file_path}")
+        try:
+             from .engines.pyspark_engine import PySparkEngine
+             spark_engine = PySparkEngine()
+             
+             fmt = 'parquet'
+             if file_path.endswith('.csv') or '.csv' in file_path: fmt = 'csv'
+             elif file_path.endswith('.tsv') or '.tsv' in file_path: fmt = 'tsv'
+             elif file_path.endswith('.json') or '.json' in file_path: fmt = 'json'
+             
+             if os.path.isdir(file_path):
+                  entries = os.listdir(file_path)
+                  if any(e.endswith('.csv') for e in entries): fmt = 'csv'
+                  elif any(e.endswith('.tsv') for e in entries): fmt = 'tsv'
+                  elif any(e.endswith('.json') for e in entries): fmt = 'json'
+             
+             schema_dict = spark_engine.infer_schema(
+                 path=file_path, 
+                 format=fmt,
+                 sampling_ratio=sampling_ratio
+             )
+             
+             dataset_name = os.path.basename(file_path.rstrip('/'))
+             schema_output = {'name': dataset_name, 'columns': schema_dict}
+             
+             schema_yaml = yaml.dump(schema_output, sort_keys=False, default_flow_style=False)
+             if not output:
+                os.makedirs('config', exist_ok=True)
+                output = f"config/{dataset_name}_schema.yaml"
+             
+             with open(output, 'w') as f:
+                f.write(schema_yaml)
+             click.echo(f"Schema written to {output}")
+             return
+
+        except Exception as e:
+             click.echo(f"Error inferring schema with Spark: {e}", err=True)
+             sys.exit(1)
+
+    # DUCKDB PATH
+    import duckdb
+
     if not os.path.exists(file_path):
         click.echo(f"Error: Path not found: {file_path}", err=True)
         return
@@ -206,7 +335,6 @@ def generate_schema(file_path, output):
     if os.path.isdir(file_path):
         click.echo(f"Detected partitioned directory: {file_path}")
         
-        # Walk directory to extract partition columns and find a data file
         current_path = file_path
         while os.path.isdir(current_path):
             entries = os.listdir(current_path)
@@ -214,29 +342,22 @@ def generate_schema(file_path, output):
             files = [e for e in entries if os.path.isfile(os.path.join(current_path, e)) 
                      and (e.endswith('.csv') or e.endswith('.parquet') or e.endswith('.json'))]
             
-            # Check for Hive-style partition directories (key=value)
             partition_dirs = [d for d in dirs if '=' in d]
             
             if partition_dirs:
-                # Extract partition column name from first partition dir
                 partition_col = partition_dirs[0].split('=')[0]
                 if partition_col not in partition_columns:
                     partition_columns.append(partition_col)
-                # Navigate into first partition
                 current_path = os.path.join(current_path, partition_dirs[0])
             elif files:
-                # Found data files, pick first one as sample
                 sample_file = os.path.join(current_path, files[0])
                 break
             elif dirs:
-                # Non-partition subdirectory, navigate in
                 current_path = os.path.join(current_path, dirs[0])
             else:
-                click.echo("Error: No data files found in partitioned directory", err=True)
                 return
         
         if not sample_file:
-            click.echo("Error: Could not find a sample data file", err=True)
             return
             
         click.echo(f"Detected partition columns: {partition_columns}")
@@ -247,7 +368,6 @@ def generate_schema(file_path, output):
     click.echo(f"Inferring schema from {sample_file}...")
     
     try:
-        # Detect file format and read accordingly
         if sample_file.endswith('.parquet'):
             rel = duckdb.read_parquet(sample_file)
         elif sample_file.endswith('.json'):
@@ -257,11 +377,9 @@ def generate_schema(file_path, output):
         
         columns = {}
         for col_name, col_type in zip(rel.columns, rel.types):
-            # Skip partition columns since they're derived from directory structure
             if col_name not in partition_columns:
                 columns[col_name] = str(col_type)
 
-        # Build output schema
         schema_output = {'name': dataset_name}
         if partition_columns:
             schema_output['partition_by'] = partition_columns
@@ -269,7 +387,6 @@ def generate_schema(file_path, output):
 
         schema_yaml = yaml.dump(schema_output, sort_keys=False, default_flow_style=False)
         
-        # Default output path: config/{dataset_name}_schema.yaml
         if not output:
             os.makedirs('config', exist_ok=True)
             output = f"config/{dataset_name}_schema.yaml"
