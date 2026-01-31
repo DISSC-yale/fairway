@@ -1,7 +1,7 @@
 # Schema Inference Scalability
 
-## Status: Accepted
-## Date: 2025-01-24
+## Status: Updated
+## Date: 2026-01-31
 
 ## Context
 
@@ -9,127 +9,161 @@ Schema inference needs to work across multiple deployment environments:
 - **HPC clusters** (Slurm-based, fast parallel filesystems like Lustre)
 - **Cloud environments** (AWS/GCP/Azure with S3/GCS/ADLS storage)
 
-The challenge is balancing portability, scalability, and simplicity.
+The challenge is balancing portability, scalability, and completeness.
+
+## Problem: Column Loss from File Sampling
+
+**Previous approach** (random file sampling) had a critical bug:
+- Randomly sampled N files for schema inference
+- Columns unique to non-sampled files were **missing** from the schema
+- This caused data loss during ingestion
+
+**Example:**
+```
+file_a.csv: id, name, age
+file_b.csv: id, name, city
+file_c.csv: id, name, country
+
+If only file_b.csv was sampled:
+  Schema = {id, name, city}  ← Missing 'age' and 'country'!
+```
 
 ## Decision
 
-**Use DuckDB for schema inference** as the default, portable solution.
+**Use Two-Phase Schema Inference** to guarantee completeness while maintaining performance.
 
-### Rationale
+See also: [RULE-117 in rules.md](../../rules.md#rule-117-schema-inference-completeness)
 
-1. **Portability**: DuckDB runs identically on HPC and cloud without cluster provisioning
-2. **Simplicity**: No Spark cluster setup, SASL configuration, or environment-specific code
-3. **Sufficient for typical use case**: Fast storage (local SSD, Lustre, mounted volumes)
+## Implementation
 
-### Implementation
+### Two-Phase Approach
 
 ```python
-def infer_schema(self, path, format='csv', sampling_ratio=0.1, sample_files=50, rows_per_file=1000):
+def infer_schema(self, path, format='csv', sample_files=50, rows_per_file=1000):
     """
-    Infers schema using DuckDB with random sampling across files.
-
-    1. Discover all files matching pattern
-    2. Randomly sample subset of files (catches type variations)
-    3. Sample rows from each file, union together
-    4. Infer types from combined sample
+    Two-phase schema inference:
+    - Phase 1: Discover ALL columns from ALL files (headers only, fast)
+    - Phase 2: Sample files with coverage guarantee for type inference
     """
-    all_files = glob(pattern)
-    sampled_files = random.sample(all_files, num_to_sample)
+    all_files = sorted(glob(pattern))  # Sorted for determinism
 
+    # ========== PHASE 1: Column Discovery ==========
+    # Scan ALL files, but only read headers (fast)
+    all_columns = set()
+    column_sources = {}  # {col: [files_with_col]}
+
+    for f in all_files:
+        cols = get_column_names_only(f)  # Headers only, no data
+        all_columns.update(cols)
+        for col in cols:
+            column_sources.setdefault(col, []).append(f)
+
+    # ========== PHASE 2: Type Inference with Coverage Guarantee ==========
+    # Ensure at least one file per unique column is sampled
+    required_files = set()
+    columns_covered = set()
+
+    for col in sorted(all_columns):
+        if col not in columns_covered:
+            source_file = column_sources[col][0]
+            required_files.add(source_file)
+            columns_covered.update(get_column_names_only(source_file))
+
+    # Add more files up to sample_files limit
+    sample = list(required_files) + remaining_files[:budget]
+
+    # Union samples with type inference
     subqueries = [f"SELECT * FROM read_csv_auto('{f}') LIMIT {rows_per_file}"
-                  for f in sampled_files]
+                  for f in sample]
     query = " UNION ALL BY NAME ".join(subqueries)
-
-    rel = self.con.sql(query)
-    # ... type mapping
 ```
 
-**Defaults**: 50 files × 1000 rows = up to 50,000 rows sampled across dataset.
+### Key Properties
 
-## Current Limitations
+| Property | Guarantee |
+|----------|-----------|
+| **Completeness** | ALL columns from ALL files captured |
+| **Determinism** | Same input → same output (sorted files, no random) |
+| **Type Safety** | Coverage guarantee ensures real types, not defaults |
+| **Performance** | Phase 1 reads headers only; Phase 2 samples limited rows |
 
-### Scalability with 1000s of Files on Slow Storage
+### Type Conflict Resolution
+
+When the same column has different types across files:
+
+```
+TYPE_HIERARCHY = ['BOOLEAN', 'INTEGER', 'BIGINT', 'DOUBLE', 'STRING']
+```
+
+Broader type always wins. STRING is the catch-all.
+
+## Engine Support
+
+Both engines implement the same two-phase approach:
+
+| Engine | Phase 1 | Phase 2 |
+|--------|---------|---------|
+| **DuckDB** | `DESCRIBE` or `LIMIT 0` for headers | `UNION ALL BY NAME` |
+| **PySpark** | Per-file schema read | Schema union with type resolution |
+
+## Performance Characteristics
+
+### Phase 1: Column Discovery
 
 | Scenario | Performance |
 |----------|-------------|
-| 1000s files on fast storage (Lustre, local SSD) | ✅ Good |
-| 1000s files on slow storage (S3, NFS over WAN) | ⚠️ May be slow |
+| 100 files on fast storage | ~100ms |
+| 1,000 files on fast storage | ~1s |
+| 10,000 files on fast storage | ~10s |
+| 1,000 files on S3 | ~30s (parallel prefetch helps) |
 
-**Root cause**: DuckDB opens files sequentially. With 1000s of files on high-latency storage, file open overhead accumulates.
+**Note:** Phase 1 only reads file headers/metadata, not data rows.
 
-### When This Becomes a Problem
+### Phase 2: Type Inference
 
-- Files stored on S3/GCS without local caching
-- Network-mounted storage with high latency
-- Very large number of files (10,000+)
-
-## Future Enhancement: Distributed Schema Inference
-
-If scalability becomes an issue, consider these approaches:
-
-### Option 1: Spark-based Schema Inference (Parallel I/O)
-
-```python
-# Spark samples across all files in parallel
-reader = spark.read.format('csv') \
-    .option('header', 'true') \
-    .option('inferSchema', 'true') \
-    .option('samplingRatio', 0.1)  # 10% from ALL files, distributed
-df = reader.load('s3://bucket/data/*.csv')
-```
-
-**Pros**: True parallel I/O across executors
-**Cons**: Requires Spark cluster (environment-specific setup)
-
-### Option 2: Cloud-Native Schema Discovery
-
-- **AWS**: Glue Crawlers, Athena
-- **GCP**: BigQuery schema auto-detection
-- **Azure**: Synapse schema inference
-
-**Pros**: Managed, scalable, no cluster management
-**Cons**: Cloud-specific, vendor lock-in
-
-### Option 3: Parallel DuckDB with File Batching
-
-```python
-# Sample subset of files, process in parallel threads
-import concurrent.futures
-
-def sample_file(f):
-    return duckdb.sql(f"SELECT * FROM read_csv_auto('{f}') USING SAMPLE 1000 ROWS")
-
-files = glob.glob('data/*.csv')
-sampled_files = random.sample(files, min(100, len(files)))
-
-with concurrent.futures.ThreadPoolExecutor() as executor:
-    results = list(executor.map(sample_file, sampled_files))
-
-# Merge schemas from samples
-```
-
-**Pros**: Portable, parallel I/O within single node
-**Cons**: Still limited by single-node network bandwidth
+| Files Sampled | Rows per File | Total Rows | Performance |
+|---------------|---------------|------------|-------------|
+| 10 | 1,000 | 10,000 | ~500ms |
+| 50 | 1,000 | 50,000 | ~2s |
+| 100 | 1,000 | 100,000 | ~5s |
 
 ## Configuration
-
-Add config option to select inference strategy:
 
 ```yaml
 # fairway.yaml
 schema_inference:
-  engine: duckdb  # or 'spark' for distributed
-  sampling_ratio: 0.1
-  # Future: strategy: 'parallel_batch' for Option 3
+  engine: duckdb  # or 'pyspark' for distributed
+  sample_files: 50  # Max files for type inference (Phase 2)
+  rows_per_file: 1000  # Rows per file for type inference
+```
+
+## Future Enhancements
+
+### Parallel Phase 1 (for slow storage)
+
+```python
+# Parallel header scanning for S3/GCS
+with concurrent.futures.ThreadPoolExecutor() as executor:
+    results = list(executor.map(get_column_names_only, all_files))
+```
+
+### Caching Column Discovery
+
+For datasets that rarely change structure:
+```yaml
+schema_inference:
+  cache_columns: true
+  cache_ttl: 3600  # seconds
 ```
 
 ## Related
 
+- [RULE-117: Schema Inference Completeness](../../rules.md)
 - [Engine Abstraction Refactor](engine_abstraction_refactor.md)
 - [Flexible Ingestion RFC](flexible_ingestion_rfc.md)
 
 ## References
 
 - DuckDB CSV Auto-detection: https://duckdb.org/docs/data/csv/auto_detection
-- DuckDB Sampling: https://duckdb.org/docs/sql/samples
+- DuckDB DESCRIBE: https://duckdb.org/docs/sql/statements/describe
 - Spark CSV Schema Inference: https://spark.apache.org/docs/latest/sql-data-sources-csv.html
