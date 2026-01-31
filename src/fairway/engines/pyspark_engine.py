@@ -73,7 +73,7 @@ class PySparkEngine:
             
         self.spark = builder.getOrCreate()
 
-    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=False, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', target_file_size_mb=128, compression='snappy', **kwargs):
+    def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=False, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', target_file_size_mb=128, compression='snappy', max_records_per_file=None, **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
@@ -208,11 +208,25 @@ class PySparkEngine:
 
         writer = df.write.mode(write_mode)
 
-        # D.2: File size control - calculate max records per file based on target size
-        # Heuristic: ~2000 rows per MB compressed (conservative estimate, actual varies by data)
-        estimated_rows_per_mb = 2000
-        max_records_per_file = target_file_size_mb * estimated_rows_per_mb
-        writer = writer.option("maxRecordsPerFile", max_records_per_file)
+        # D.2: File size control via maxRecordsPerFile
+        # Priority: explicit max_records_per_file > heuristic from target_file_size_mb
+        if max_records_per_file:
+            # User provided explicit value - use it directly
+            computed_max_records = max_records_per_file
+        else:
+            # Heuristic: estimate rows per MB based on typical data characteristics
+            # This varies WIDELY by data type:
+            #   - Wide tables (100+ columns): ~500-2,000 rows/MB
+            #   - Narrow tables (10 columns): ~5,000-20,000 rows/MB
+            #   - String-heavy data: fewer rows/MB (less compression)
+            #   - Numeric data: more rows/MB (better compression)
+            # Default 8,000 rows/MB is a middle-ground estimate for typical analytics tables
+            # If files are too small, increase target_file_size_mb or set max_records_per_file directly
+            estimated_rows_per_mb = 8000
+            computed_max_records = target_file_size_mb * estimated_rows_per_mb
+
+        writer = writer.option("maxRecordsPerFile", computed_max_records)
+        print(f"INFO: maxRecordsPerFile set to {computed_max_records}")
 
         # Set compression (snappy is default, most efficient for Spark)
         writer = writer.option("compression", compression)

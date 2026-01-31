@@ -333,6 +333,7 @@ class IngestionPipeline:
                 target_rows=self.config.target_rows,
                 target_file_size_mb=self.config.target_file_size_mb,  # D.2: File size control
                 compression=self.config.compression,  # D.2: Compression (default snappy)
+                max_records_per_file=self.config.max_records_per_file,  # D.2: Direct control (optional)
                 hive_partitioning=hive_partitioning,
                 schema=schema,
                 write_mode=write_mode,

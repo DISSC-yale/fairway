@@ -93,6 +93,37 @@ class TestPerformanceConfig:
 
         assert config.compression == 'snappy', "Compression should default to snappy"
 
+    def test_max_records_per_file_not_set_by_default(self, tmp_path):
+        """max_records_per_file should be None by default (use heuristic)."""
+        config_file = tmp_path / "fairway.yaml"
+        config_file.write_text(yaml.dump({
+            'dataset_name': 'test',
+            'engine': 'duckdb',
+            'sources': [],
+            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
+        }))
+
+        from fairway.config_loader import Config
+        config = Config(str(config_file))
+
+        assert config.max_records_per_file is None, "max_records_per_file should be None by default"
+
+    def test_max_records_per_file_custom(self, tmp_path):
+        """max_records_per_file can be set for direct control."""
+        config_file = tmp_path / "fairway.yaml"
+        config_file.write_text(yaml.dump({
+            'dataset_name': 'test',
+            'engine': 'duckdb',
+            'sources': [],
+            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)},
+            'performance': {'max_records_per_file': 2000000}
+        }))
+
+        from fairway.config_loader import Config
+        config = Config(str(config_file))
+
+        assert config.max_records_per_file == 2000000, "max_records_per_file should be configurable"
+
     def test_scratch_dir_not_set_by_default(self, tmp_path):
         """D.4: scratch_dir should be None by default."""
         config_file = tmp_path / "fairway.yaml"

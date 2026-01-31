@@ -128,8 +128,14 @@ performance:
   target_rows: 500000
 
   # Target parquet file size in MB (default: 128)
-  # Larger files = fewer files, better for analytics; smaller = more parallelism
+  # Uses heuristic of ~8000 rows/MB to calculate maxRecordsPerFile
+  # Actual file size depends on data characteristics (column count, data types)
   # target_file_size_mb: 128
+
+  # Direct control over max records per file (overrides target_file_size_mb heuristic)
+  # Use this for precise control when the heuristic produces wrong-sized files
+  # Example: If files are too small, increase this value
+  # max_records_per_file: 1000000
 
   # Enable partition salting to prevent data skew (default: false)
   # When enabled, adds a 'salt' column to distribute data evenly across partitions.
