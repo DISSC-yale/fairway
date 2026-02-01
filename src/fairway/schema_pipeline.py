@@ -3,6 +3,7 @@ import glob
 import re
 import yaml
 from .pipeline import IngestionPipeline
+from .manifest import _get_file_hash_static
 
 
 def _get_metadata_columns_from_pattern(naming_pattern):
@@ -39,10 +40,10 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
         """
         print(f"Starting Schema Discovery Pipeline for dataset: {self.config.dataset_name}")
 
-        # Default output path: data/schemas relative to config file
+        # Default output path: schema/ relative to config file
         if output_path is None:
             config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
-            output_path = os.path.join(config_dir, "data", "schemas")
+            output_path = os.path.join(config_dir, "schema")
         
         consolidated_schema = {
             "dataset_name": self.config.dataset_name,
@@ -72,10 +73,11 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
             else:
                 files_used = [processed_path] if os.path.exists(processed_path) else []
             file_hashes = [
-                self.manifest.get_file_hash(f, fast_check=True)
+                _get_file_hash_static(f, fast_check=True)
                 for f in files_used if os.path.isfile(f)
             ]
 
+            # Store for later recording in per-table manifest
             tables_info.append({
                 "name": table['name'],
                 "files_used": files_used,
@@ -117,26 +119,22 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
                 }
                 consolidated_schema["tables"].append(table_schema)
 
-                # 4. Write each table schema to its own folder
+                # 4. Write each table schema to flat structure: schema/<table>.yaml
                 tbl_name = table['name']
-                table_schema_dir = os.path.join(output_path, tbl_name)
-                os.makedirs(table_schema_dir, exist_ok=True)
-                table_schema_path = os.path.join(table_schema_dir, "schema.yaml")
+                os.makedirs(output_path, exist_ok=True)
+                table_schema_path = os.path.join(output_path, f"{tbl_name}.yaml")
                 with open(table_schema_path, 'w') as f:
                     yaml.dump(table_schema, f, sort_keys=False)
                 print(f"  Schema written to: {table_schema_path}")
+
+                # Record schema in per-table manifest
+                table_manifest = self.manifest_store.get_table_manifest(tbl_name)
+                table_manifest.record_schema(files_used, file_hashes, table_schema_path)
 
             except Exception as e:
                 print(f"ERROR: Failed to infer schema for table {table['name']}: {e}")
                 # Continue to next source?
 
         print(f"\nAll schemas written to: {output_path}")
-
-        # 5. Record schema run in manifest
-        self.manifest.record_schema_run(
-            dataset_name=self.config.dataset_name,
-            tables_info=tables_info,
-            output_path=output_path
-        )
 
         return consolidated_schema
