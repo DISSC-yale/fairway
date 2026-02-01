@@ -82,6 +82,27 @@ tables:
   #   files: "customers_*.csv"       # Pattern for files inside the archive
   #   format: "csv"
 
+  # Example: Fixed-width text files (mainframe/legacy data)
+  # Fixed-width files have columns at specific character positions (no delimiters).
+  # A spec file defines column names, start positions, lengths, and types.
+  # - name: "legacy_records"
+  #   root: "data/raw"
+  #   path: "*.txt"
+  #   format: "fixed_width"
+  #   fixed_width_spec: "specs/legacy_spec.yaml"  # Path to column spec file
+  #   # Spec file format (YAML):
+  #   #   columns:
+  #   #     - name: id
+  #   #       start: 0      # 0-indexed character position
+  #   #       length: 5     # Number of characters
+  #   #       type: INTEGER # Native engine type (INTEGER, VARCHAR, DOUBLE, etc.)
+  #   #       trim: true    # Optional: strip whitespace (default: false)
+  #   #     - name: description
+  #   #       start: 5
+  #   #       length: 30
+  #   #       type: VARCHAR
+  #   #       trim: true
+
   # Example: Handling Zipped Data with Metadata in Filename (legacy preprocess approach)
   # File: VM2Uniform--UT--2021-07-08.zip
   - name: "vm2_uniform"

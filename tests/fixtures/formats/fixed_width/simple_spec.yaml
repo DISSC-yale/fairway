@@ -1,13 +1,18 @@
+# Fixed-width column specification
+# Defines column positions for fixed-width text files
 columns:
   - name: id
     start: 0
     length: 3
     type: INTEGER
+    trim: true
   - name: name
     start: 3
     length: 20
-    type: STRING
+    type: VARCHAR
+    trim: true   # Strip trailing spaces from name field
   - name: age
     start: 23
     length: 3
     type: INTEGER
+    trim: true

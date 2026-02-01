@@ -70,7 +70,12 @@ class PySparkEngine:
         # Enable extensions for Delta (if the pip config helper didn't handle it or for explicit clarity)
         # Note: configure_spark_with_delta_pip usually handles .config("spark.sql.extensions", ...)
         # But we ensure we catch it safely.
-            
+
+        # Fix for local testing on macOS: bind to localhost to avoid network issues
+        # This resolves "Can't assign requested address" errors when no external network
+        builder = builder.config("spark.driver.host", "127.0.0.1") \
+                         .config("spark.driver.bindAddress", "127.0.0.1")
+
         self.spark = builder.getOrCreate()
 
     def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=False, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', target_file_size_mb=128, compression='snappy', max_records_per_file=None, **kwargs):
@@ -82,6 +87,17 @@ class PySparkEngine:
             format = 'csv'
             if 'delimiter' not in kwargs and 'delim' not in kwargs:
                 kwargs['delimiter'] = '\t'
+
+        # Handle fixed-width format separately (not a standard Spark format)
+        if format == 'fixed_width':
+            fixed_width_spec = kwargs.pop('fixed_width_spec', None)
+            return self._ingest_fixed_width(
+                input_path, output_path, fixed_width_spec,
+                partition_by=partition_by, balanced=balanced, metadata=metadata,
+                write_mode=write_mode, target_file_size_mb=target_file_size_mb,
+                compression=compression, max_records_per_file=max_records_per_file,
+                **kwargs
+            )
 
         # PySpark supports generic load with format option
         print(f"INFO: PySpark Engine reading from {input_path} (format={format})")
@@ -256,7 +272,125 @@ class PySparkEngine:
              writer.save(output_path)
         else:
              writer.parquet(output_path)
-             
+
+        return True
+
+    def _ingest_fixed_width(self, input_path, output_path, spec_path, partition_by=None,
+                            balanced=False, metadata=None, write_mode='overwrite',
+                            target_file_size_mb=128, compression='snappy',
+                            max_records_per_file=None, **kwargs):
+        """
+        Converts fixed-width text files to Parquet using PySpark.
+
+        Fixed-width files have columns at specific character positions (no delimiters).
+        A spec file defines column names, start positions, lengths, and types.
+
+        Args:
+            input_path: Path to fixed-width data file(s)
+            output_path: Output Parquet path
+            spec_path: Path to YAML spec file defining columns
+            partition_by: Optional partition columns
+            balanced: Enable salting for balanced partitions
+            metadata: Optional metadata to inject
+            write_mode: 'overwrite' or 'append'
+            target_file_size_mb: Target file size for output
+            compression: Compression codec
+            max_records_per_file: Override for max records per file
+        """
+        from fairway.fixed_width import load_spec
+        from pyspark.sql.types import IntegerType, LongType, DoubleType, StringType, FloatType
+
+        if not spec_path:
+            raise ValueError("Fixed-width format requires 'fixed_width_spec' path")
+
+        # Load and validate spec
+        spec = load_spec(spec_path)
+        columns = spec['columns']
+        line_length = spec['line_length']
+
+        print(f"INFO: PySpark reading fixed-width file from {input_path}")
+        print(f"INFO: Spec defines {len(columns)} columns, expected line length: {line_length}")
+
+        # Type mapping from spec types to Spark types
+        TYPE_MAP = {
+            'INTEGER': IntegerType(),
+            'INT': IntegerType(),
+            'BIGINT': LongType(),
+            'LONG': LongType(),
+            'DOUBLE': DoubleType(),
+            'FLOAT': FloatType(),
+            'VARCHAR': StringType(),
+            'STRING': StringType(),
+        }
+
+        # Step 1: Read file as text (one line per row)
+        df = self.spark.read.text(input_path)
+
+        # Step 2: Validate line lengths using sampling (RULE-103: avoid full dataset scan)
+        # Sample first 10,000 rows for validation - catches most data issues without O(n) cost
+        validation_sample_size = 10000
+        sample_df = df.limit(validation_sample_size)
+        short_lines = sample_df.filter(F.length(F.col("value")) < line_length) \
+                               .select(F.col("value"), F.length(F.col("value")).alias("len")) \
+                               .limit(3).collect()
+
+        if short_lines:
+            sample_str = "; ".join([f"len={s['len']}: '{s['value'][:50]}...'" for s in short_lines])
+            raise ValueError(
+                f"[RULE-115] Data Integrity Error: Found lines shorter than expected "
+                f"line length {line_length} in first {validation_sample_size} rows. Samples: {sample_str}"
+            )
+
+        # Step 3: Extract columns using substr
+        # PySpark substr is 1-indexed: substr(col, start, length)
+        for col in columns:
+            name = col['name']
+            start = col['start'] + 1  # Convert 0-indexed to 1-indexed
+            length = col['length']
+            col_type = col['type'].upper()
+            trim = col.get('trim', False)
+
+            # Extract substring
+            extract_expr = F.col("value").substr(start, length)
+
+            # Apply trim if requested
+            if trim:
+                extract_expr = F.trim(extract_expr)
+
+            # Cast to target type
+            spark_type = TYPE_MAP.get(col_type, StringType())
+            df = df.withColumn(name, extract_expr.cast(spark_type))
+
+        # Drop the original 'value' column
+        df = df.drop("value")
+
+        # Inject static metadata if available
+        if metadata:
+            for key, val in metadata.items():
+                df = df.withColumn(key, F.lit(val))
+
+        # Handle partitioning
+        partition_cols = partition_by if partition_by else None
+
+        # Configure writer
+        writer = df.write.mode(write_mode)
+
+        # File size control
+        if max_records_per_file:
+            computed_max_records = max_records_per_file
+        else:
+            estimated_rows_per_mb = 8000
+            computed_max_records = target_file_size_mb * estimated_rows_per_mb
+
+        writer = writer.option("maxRecordsPerFile", computed_max_records)
+        writer = writer.option("compression", compression)
+
+        print(f"INFO: PySpark Engine writing to {output_path} (mode={write_mode}, partitions={partition_cols})")
+
+        if partition_cols:
+            writer = writer.partitionBy(*partition_cols)
+
+        writer.parquet(output_path)
         return True
 
     def inspect(self, query, limit=100000, as_pandas=True):
