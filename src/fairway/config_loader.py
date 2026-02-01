@@ -136,7 +136,7 @@ class Config:
                       continue
 
                  table_format = tbl.get('format', 'csv')
-                 valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet'}
+                 valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet', 'fixed_width'}
                  if table_format not in valid_formats:
                       raise ValueError(f"Invalid format: '{table_format}'. Must be one of {valid_formats}")
 
@@ -159,7 +159,8 @@ class Config:
                     'write_mode': tbl.get('write_mode', 'overwrite'),
                     'root': tbl.get('root'),
                     'archives': archives_pattern,
-                    'files': files_pattern
+                    'files': files_pattern,
+                    'fixed_width_spec': tbl.get('fixed_width_spec')
                 })
 
             else:
@@ -191,7 +192,7 @@ class Config:
 
                     # Create a specific table entry for each file
                     table_format = tbl.get('format', 'csv')
-                    valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet'}
+                    valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet', 'fixed_width'}
                     if table_format not in valid_formats:
                          raise ValueError(f"Invalid format: '{table_format}'. Must be one of {valid_formats}")
 
@@ -224,7 +225,8 @@ class Config:
                         'preprocess': tbl.get('preprocess', {}),
                         'write_mode': tbl.get('write_mode', 'overwrite'),
                         'archives': archives_pattern,
-                        'files': files_pattern
+                        'files': files_pattern,
+                        'fixed_width_spec': tbl.get('fixed_width_spec')
                     })
         return expanded
 
@@ -271,9 +273,20 @@ class Config:
 
             # Valid format
             fmt = table.get('format', 'csv')
-            valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet'}
+            valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet', 'fixed_width'}
             if fmt not in valid_formats:
                 errors.append(f"{prefix}: Invalid format '{fmt}'. Must be one of {valid_formats}")
+
+            # Fixed-width format requires spec file
+            if fmt == 'fixed_width':
+                fixed_width_spec = table.get('fixed_width_spec')
+                if not fixed_width_spec:
+                    errors.append(f"{prefix}: format 'fixed_width' requires 'fixed_width_spec' path")
+                else:
+                    # Check spec file exists
+                    spec_path = os.path.join(config_dir, fixed_width_spec) if not os.path.isabs(fixed_width_spec) else fixed_width_spec
+                    if not os.path.exists(spec_path):
+                        errors.append(f"{prefix}: fixed_width_spec file not found: {fixed_width_spec}")
 
             # Schema file exists (if specified as path)
             schema = table.get('schema')
