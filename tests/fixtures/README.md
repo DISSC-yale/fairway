@@ -17,7 +17,7 @@ fixtures/
 │   │   └── lines.jsonl
 │   ├── parquet/
 │   │   └── simple.parquet
-│   └── fixed_width/   # (Prepared for future implementation)
+│   └── fixed_width/   # Implemented - requires spec file
 │       ├── simple.txt
 │       ├── simple_spec.yaml
 │       └── README.md
@@ -38,7 +38,7 @@ fixtures/
 | JSON | `formats/json/records.json` | Array of objects |
 | JSONL | `formats/json/lines.jsonl` | Newline-delimited JSON |
 | Parquet | `formats/parquet/simple.parquet` | Binary columnar format |
-| Fixed-Width | `formats/fixed_width/` | Prepared for Chunk F |
+| Fixed-Width | `formats/fixed_width/` | Spec-based (no schema inference) |
 
 ## Adding New Format Support
 

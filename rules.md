@@ -238,3 +238,42 @@ Performance optimization features that incur computational cost SHOULD be opt-in
 
 **Rationale:**
 Users should not pay performance costs for features they don't need. Expensive operations should require explicit opt-in.
+
+---
+
+### [RULE-119] Input Validation for User-Provided Identifiers
+
+**Priority:** MUST
+**Category:** [SEC] Security
+
+**Rule:**
+User-provided identifiers (column names, table names) that are interpolated into SQL or code MUST be validated against a safe pattern before use.
+
+```python
+import re
+VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+if not VALID_IDENTIFIER.match(user_input):
+    raise ValueError(f"Invalid identifier: {user_input}")
+```
+
+**Rationale:**
+Prevents SQL injection and code injection from untrusted configuration files (e.g., spec files, schema definitions).
+
+---
+
+### [RULE-120] Validation Costs Must Be Bounded
+
+**Priority:** SHOULD
+**Category:** [ARC] Architectural Principles
+
+**Rule:**
+Data validation operations SHOULD have bounded cost (O(1) or O(sample_size)), not O(n) where n is dataset size. Full-dataset validation SHOULD be opt-in via explicit configuration.
+
+**Examples:**
+- Line length validation: Sample first 10,000 rows, not full count
+- Schema validation: Check structure, not every value
+- Uniqueness checks: Use sampling or probabilistic methods for large datasets
+
+**Rationale:**
+Validation should help catch errors quickly, not become the bottleneck for large datasets. A 1TB file should not require scanning 1TB just to check line lengths.

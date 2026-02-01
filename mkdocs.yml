@@ -28,10 +28,16 @@ nav:
     - Transformations: transformations.md
     - Manifest & Caching: manifest.md
 
-  - Guide:
+  - Formats:
     - Supported Formats: supported_formats.md
+    - Fixed-Width Files: fixed_width.md
+  - Reference:
+    - CLI Commands: cli.md
+    - Schema Evolution: schema_evolution.md
+    - Ingestion Options: ingestion_options.md
   - Design Docs:
     - Flexible Ingestion RFC: design_docs/flexible_ingestion_rfc.md
+    - Schema Inference: design_docs/schema_inference_scalability.md
 
 markdown_extensions:
   - pymdownx.superfences:

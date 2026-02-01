@@ -31,6 +31,9 @@ class DuckDBEngine:
             return self._ingest_json(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
         elif format == 'parquet':
             return self._ingest_parquet(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
+        elif format == 'fixed_width':
+            fixed_width_spec = kwargs.pop('fixed_width_spec', None)
+            return self._ingest_fixed_width(input_path, output_path, fixed_width_spec, partition_by, metadata, write_mode, **kwargs)
         else:
             raise ValueError(f"Unsupported format for DuckDB engine: {format}")
 
@@ -101,6 +104,104 @@ class DuckDBEngine:
         Pass-through Parquet ingestion (useful for unifying pipeline logic).
         """
         self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_parquet('{input_path}')")
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
+
+    def _ingest_fixed_width(self, input_path, output_path, spec_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
+        """
+        Converts fixed-width text files to Parquet using DuckDB.
+
+        Fixed-width files have columns at specific character positions (no delimiters).
+        A spec file defines column names, start positions, lengths, and types.
+
+        Args:
+            input_path: Path to fixed-width data file(s)
+            output_path: Output Parquet path
+            spec_path: Path to YAML spec file defining columns
+            partition_by: Optional partition columns
+            metadata: Optional metadata to inject
+            write_mode: 'overwrite' or 'append'
+        """
+        from fairway.fixed_width import load_spec
+
+        if not spec_path:
+            raise ValueError("Fixed-width format requires 'fixed_width_spec' path")
+
+        # Load and validate spec
+        spec = load_spec(spec_path)
+        columns = spec['columns']
+        line_length = spec['line_length']
+
+        print(f"INFO: DuckDB reading fixed-width file from {input_path}")
+        print(f"INFO: Spec defines {len(columns)} columns, expected line length: {line_length}")
+
+        # Handle glob patterns
+        if '*' not in input_path and os.path.isdir(input_path):
+            read_path = os.path.join(input_path, "**/*.txt")
+        else:
+            read_path = input_path
+
+        # Step 1: Read file as single text column (no header, no delimiter parsing)
+        # Use a delimiter that won't appear in fixed-width data (ASCII unit separator)
+        self.con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW raw_lines AS
+            SELECT column0 AS line
+            FROM read_csv('{read_path}', header=false, sep=E'\\x1F', columns={{'column0': 'VARCHAR'}})
+        """)
+
+        # Step 2: Validate line lengths (fail strict per RULE-115)
+        validation_query = f"""
+            SELECT COUNT(*) as short_lines
+            FROM raw_lines
+            WHERE length(line) < {line_length}
+        """
+        result = self.con.execute(validation_query).fetchone()
+        short_lines = result[0] if result else 0
+
+        if short_lines > 0:
+            # Get sample of short lines for error message
+            sample = self.con.execute(f"""
+                SELECT line, length(line) as len
+                FROM raw_lines
+                WHERE length(line) < {line_length}
+                LIMIT 3
+            """).fetchall()
+            sample_str = "; ".join([f"len={s[1]}: '{s[0][:50]}...'" for s in sample])
+            raise ValueError(
+                f"[RULE-115] Data Integrity Error: {short_lines} lines are shorter than expected "
+                f"line length {line_length}. Samples: {sample_str}"
+            )
+
+        # Step 3: Build column extraction query using substr
+        # DuckDB substr is 1-indexed: substr(string, start, length)
+        select_parts = []
+        for col in columns:
+            name = col['name']
+            start = col['start'] + 1  # Convert 0-indexed to 1-indexed
+            length = col['length']
+            col_type = col['type']
+            trim = col.get('trim', False)
+
+            # Extract substring
+            extract_expr = f"substr(line, {start}, {length})"
+
+            # Apply trim if requested
+            if trim:
+                extract_expr = f"trim({extract_expr})"
+
+            # Cast to target type
+            cast_expr = f"CAST({extract_expr} AS {col_type})"
+
+            select_parts.append(f"{cast_expr} AS {name}")
+
+        select_clause = ", ".join(select_parts)
+
+        # Step 4: Create view with extracted columns
+        self.con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW raw_data AS
+            SELECT {select_clause}
+            FROM raw_lines
+        """)
+
         return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
 
     def _write_to_parquet(self, output_path, partition_by=None, metadata=None, write_mode='overwrite'):
