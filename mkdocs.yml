@@ -26,6 +26,7 @@ nav:
     - Validations: validations.md
     - Enrichments: enrichments.md
     - Transformations: transformations.md
+    - Manifest & Caching: manifest.md
 
   - Guide:
     - Supported Formats: supported_formats.md
