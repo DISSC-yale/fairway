@@ -3,7 +3,6 @@ import pytest
 import os
 import shutil
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
 from fairway.engines.pyspark_engine import PySparkEngine
 
 # Skip if PySpark is not available (though project requires it for these features)
