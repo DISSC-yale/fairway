@@ -7,7 +7,6 @@ Tests cover:
 """
 import pytest
 import os
-import tempfile
 import yaml
 from pathlib import Path
 

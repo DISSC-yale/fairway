@@ -4,7 +4,6 @@ Tests for fixed-width file format support (Chunk F).
 import os
 import shutil
 import pytest
-import tempfile
 from pathlib import Path
 
 from fairway.fixed_width import load_spec, validate_spec, FixedWidthSpecError

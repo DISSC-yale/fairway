@@ -5,7 +5,6 @@ except ImportError:
 
 import os
 import json
-from pathlib import Path
 
 class RedivisExporter:
     def __init__(self, config):
