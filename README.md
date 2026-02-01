@@ -88,6 +88,7 @@ For comprehensive guides and API details, please refer to the documentation in t
 - **[Transformations](docs/transformations.md)**: How to write and use data transformations.
 - **[Validations](docs/validations.md)**: ensuring data quality.
 - **[Schema Evolution](docs/schema_evolution.md)**: Strategies for handling changing data (Strict vs Delta Lake).
+- **[Manifest & Caching](docs/manifest.md)**: How Fairway tracks processed files and avoids redundant work.
 
 ## Schema Evolution
 

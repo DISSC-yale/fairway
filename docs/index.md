@@ -17,3 +17,4 @@ Traditional data ingestion often suffers from undocumented transformations, rigi
 *   [**Architecture**](architecture.md): Understand the underlying pipeline lifecycle and tech stack.
 *   [**Configuration Guide**](configuration.md): Learn how to define sources, metadata, and validations.
 *   [**Custom Transformations**](transformations.md): Extend the pipeline with your own processing logic.
+*   [**Manifest & Caching**](manifest.md): How Fairway tracks processed files for incremental processing.
