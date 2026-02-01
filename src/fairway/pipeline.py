@@ -6,7 +6,7 @@ import tarfile
 import hashlib
 import importlib.util
 from .config_loader import Config
-from .manifest import ManifestManager
+from .manifest import ManifestManager, ManifestStore, _get_file_hash_static
 from .engines.duckdb_engine import DuckDBEngine
 from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
@@ -23,9 +23,10 @@ class ArchiveCache:
     extraction.
     """
 
-    def __init__(self, config, manifest):
+    def __init__(self, config, global_manifest, table_name=None):
         self.config = config
-        self.manifest = manifest
+        self.global_manifest = global_manifest
+        self.table_name = table_name
         self._session_cache = {}  # in-memory cache for current run
 
     def get_extracted_path(self, archive_path):
@@ -37,8 +38,8 @@ class ArchiveCache:
             return self._session_cache[abs_path]
 
         # Check manifest for valid existing extraction
-        if self.manifest.is_extraction_valid(archive_path):
-            entry = self.manifest.get_extraction(archive_path)
+        if self.global_manifest.is_extraction_valid(archive_path):
+            entry = self.global_manifest.get_extraction(archive_path)
             print(f"  Using cached extraction for: {archive_path}")
             self._session_cache[abs_path] = entry['extracted_dir']
             return entry['extracted_dir']
@@ -51,8 +52,8 @@ class ArchiveCache:
         self._extract(archive_path, extraction_dir)
 
         # Record in manifest
-        archive_hash = self.manifest.get_file_hash(archive_path, fast_check=True)
-        self.manifest.record_extraction(archive_path, extraction_dir, archive_hash)
+        archive_hash = _get_file_hash_static(archive_path, fast_check=True)
+        self.global_manifest.record_extraction(archive_path, extraction_dir, archive_hash, self.table_name)
 
         self._session_cache[abs_path] = extraction_dir
         return extraction_dir
@@ -61,7 +62,7 @@ class ArchiveCache:
         """Get deterministic extraction location for an archive."""
         archive_name = os.path.basename(archive_path).replace('.', '_')
         # Use mtime+size hash for speed (consistent with manifest fast_check)
-        archive_hash = self.manifest.get_file_hash(archive_path, fast_check=True)
+        archive_hash = _get_file_hash_static(archive_path, fast_check=True)
         # Create short hash for directory name
         short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
 
@@ -95,10 +96,12 @@ class IngestionPipeline:
     def __init__(self, config_path, spark_master=None):
         print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
+        self.manifest_store = ManifestStore()
+        # Keep self.manifest for backward compatibility during transition
         self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)
         self._hash_cache = {}  # Cache for distributed hash results
-        self.archive_cache = ArchiveCache(self.config, self.manifest)
+        self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
 
     def _get_engine(self, spark_master=None):
         engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
@@ -149,9 +152,9 @@ class IngestionPipeline:
             include_pattern = format_to_ext.get(file_format)
 
         # Check preprocessing cache first
-        cached = self.manifest.get_preprocessed_path(
+        table_manifest = self.manifest_store.get_table_manifest(table['name'])
+        cached = table_manifest.get_preprocessed_path(
             table['path'],
-            table['name'],
             table.get('root')
         )
         if cached:
@@ -306,11 +309,10 @@ class IngestionPipeline:
                   result_path = os.path.join(base, ".preprocessed_*", file_glob)
 
         # Record result for future reuse
-        self.manifest.record_preprocessing(
+        table_manifest.record_preprocessing(
             original_path=table['path'],
             preprocessed_path=result_path,
             action=action,
-            table_name=table['name'],
             table_root=table.get('root')
         )
 
@@ -450,8 +452,10 @@ class IngestionPipeline:
                 except Exception as e:
                     print(f"ERROR: Distributed hash check failed: {e}. Falling back to driver check.")
 
-        with self.manifest.batch():
-          for table in self.config.tables:
+        for table in self.config.tables:
+            # Get per-table manifest for this table
+            table_manifest = self.manifest_store.get_table_manifest(table['name'])
+
             # 0. Preprocessing
             # Preprocess returns a modified path (e.g. to temp unzipped files)
             # Table dict is unmodified, we just change the variable we use for input
@@ -461,7 +465,7 @@ class IngestionPipeline:
             # for now keeping it simple but URI-ready in engines
 
             computed_hash = self._hash_cache.get(original_path)
-            if not self.manifest.should_process(original_path, table_name=table['name'], table_root=table.get('root'), computed_hash=computed_hash):
+            if not table_manifest.should_process(original_path, table_root=table.get('root'), computed_hash=computed_hash):
                  # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
                  print(f"Skipping {table['name']} (already processed and hash matches)")
                  continue
@@ -660,7 +664,7 @@ class IngestionPipeline:
                     }
                     Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
 
-                    self.manifest.update_manifest(original_path, status="success", metadata=stats, table_name=table['name'], table_root=table.get('root'))
+                    table_manifest.update_file(original_path, status="success", metadata=stats, table_root=table.get('root'))
                     
                     # 7. Redivis Export
                     if self.config.redivis:
@@ -686,6 +690,6 @@ class IngestionPipeline:
                 else:
                     errors = l1['errors'] + l2['errors']
                     print(f"Validations failed for {table['name']}: {errors}")
-                    self.manifest.update_manifest(original_path, status="failed", metadata={"errors": errors}, table_name=table['name'], table_root=table.get('root'))
+                    table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
                     # raise Exception(...) # Optional blocking
 
