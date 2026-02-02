@@ -40,10 +40,9 @@ class SchemaDiscoveryPipeline(IngestionPipeline):
         """
         print(f"Starting Schema Discovery Pipeline for dataset: {self.config.dataset_name}")
 
-        # Default output path: schema/ relative to config file
+        # Default output path: schema/ relative to project root (cwd)
         if output_path is None:
-            config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
-            output_path = os.path.join(config_dir, "schema")
+            output_path = "schema"
         
         consolidated_schema = {
             "dataset_name": self.config.dataset_name,
