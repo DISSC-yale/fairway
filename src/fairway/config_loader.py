@@ -61,24 +61,35 @@ class Config:
 
 
 
+    def _resolve_path(self, path_ref, config_dir):
+        """Resolve a path relative to config directory if not absolute."""
+        if not path_ref:
+            return None
+        if os.path.isabs(path_ref):
+            return path_ref
+        return os.path.join(config_dir, path_ref)
+
     def _load_schema(self, schema_ref):
         """Loads schema from a file if schema_ref is a path string, otherwise returns it as-is."""
         if isinstance(schema_ref, str):
             # Assume it's a file path
-            if not os.path.exists(schema_ref):
-                # Try relative to config file if not absolute
-                # Note: This is simplified, might need config dir context
-                raise FileNotFoundError(f"Schema file not found: {schema_ref}")
+            schema_path = schema_ref
+            if not os.path.exists(schema_path):
+                # Try relative to config file directory
+                config_dir = os.path.dirname(os.path.abspath(self.config_path))
+                schema_path = os.path.join(config_dir, schema_ref)
+                if not os.path.exists(schema_path):
+                    raise FileNotFoundError(f"Schema file not found: {schema_ref}")
             
-            with open(schema_ref, 'r') as f:
+            with open(schema_path, 'r') as f:
                 data = None
-                if schema_ref.endswith('.yaml') or schema_ref.endswith('.yml'):
+                if schema_path.endswith('.yaml') or schema_path.endswith('.yml'):
                     data = yaml.safe_load(f)
-                elif schema_ref.endswith('.json'):
+                elif schema_path.endswith('.json'):
                     import json
                     data = json.load(f)
                 else:
-                    raise ValueError(f"Unsupported schema file format: {schema_ref}")
+                    raise ValueError(f"Unsupported schema file format: {schema_path}")
                 
                 # Handle generate-schema output format
                 if isinstance(data, dict) and 'columns' in data:
@@ -144,6 +155,15 @@ class Config:
                  # If pattern, basename might be '*.csv'. Ideally user provides name.
                  table_name = tbl.get('name', os.path.basename(resolved_path))
 
+                 # Resolve file paths relative to config dir
+                 fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
+                 transformation = self._resolve_path(tbl.get('transformation'), config_dir)
+
+                 # Resolve preprocess.action if it's a script path
+                 preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
+                 if preprocess.get('action', '').endswith('.py'):
+                     preprocess['action'] = self._resolve_path(preprocess['action'], config_dir)
+
                  expanded.append({
                     'name': table_name,
                     'path': resolved_path,
@@ -151,16 +171,16 @@ class Config:
                     'metadata': {},
                     'naming_pattern': naming_pattern,
                     'schema': resolved_schema,
-                    'transformation': tbl.get('transformation'),
+                    'transformation': transformation,
                     'hive_partitioning': hive_partitioning,
                     'partition_by': tbl.get('partition_by', []),
                     'read_options': tbl.get('read_options', {}),
-                    'preprocess': tbl.get('preprocess', {}),
+                    'preprocess': preprocess,
                     'write_mode': tbl.get('write_mode', 'overwrite'),
                     'root': tbl.get('root'),
                     'archives': archives_pattern,
                     'files': files_pattern,
-                    'fixed_width_spec': tbl.get('fixed_width_spec')
+                    'fixed_width_spec': fixed_width_spec
                 })
 
             else:
@@ -201,14 +221,15 @@ class Config:
                     if execution_mode == 'cluster' and self.engine not in ['pyspark', 'spark']:
                          raise ValueError(f"Configuration Error: 'execution_mode: cluster' is only available with 'engine: pyspark'. Table: {tbl.get('name')}")
 
-                    # Determine table root for relocatability
-                    table_root_raw = tbl.get('root')
-                    table_root = None
-                    if table_root_raw:
-                        if not os.path.isabs(table_root_raw):
-                             table_root = os.path.join(config_dir, table_root_raw)
-                        else:
-                             table_root = table_root_raw
+                    # Resolve file paths relative to config dir
+                    table_root = self._resolve_path(tbl.get('root'), config_dir)
+                    fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
+                    transformation = self._resolve_path(tbl.get('transformation'), config_dir)
+
+                    # Resolve preprocess.action if it's a script path
+                    preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
+                    if preprocess.get('action', '').endswith('.py'):
+                        preprocess['action'] = self._resolve_path(preprocess['action'], config_dir)
 
                     expanded.append({
                         'name': tbl.get('name', os.path.basename(f)),
@@ -218,15 +239,15 @@ class Config:
                         'metadata': metadata,
                         'naming_pattern': naming_pattern,
                         'schema': resolved_schema,
-                        'transformation': tbl.get('transformation'),
+                        'transformation': transformation,
                         'hive_partitioning': False,
                         'partition_by': tbl.get('partition_by', []),
                         'read_options': tbl.get('read_options', {}),
-                        'preprocess': tbl.get('preprocess', {}),
+                        'preprocess': preprocess,
                         'write_mode': tbl.get('write_mode', 'overwrite'),
                         'archives': archives_pattern,
                         'files': files_pattern,
-                        'fixed_width_spec': tbl.get('fixed_width_spec')
+                        'fixed_width_spec': fixed_width_spec
                     })
         return expanded
 
