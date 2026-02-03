@@ -488,13 +488,7 @@ class IngestionPipeline:
             if partition_by:
                 output_basename = output_name
             else:
-                # Use configured output format extension (parquet or delta? Delta is usually a directory, so no extension or .delta?)
-                # Standard convention for Delta tables is just the directory name, but if we need an extension for clarity:
-                ext = self.config.output_format if self.config.output_format != 'delta' else 'delta' 
-                # Actually delta tables usually don't have extensions in path, they are directories.
-                # But to avoid collision with file names...
-                # Current logic: output_basename = f"{output_name}.parquet"
-                
+                # Delta tables are directories (no extension), parquet files use .parquet
                 if self.config.output_format == 'delta':
                      output_basename = output_name
                 else:

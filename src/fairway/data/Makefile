@@ -71,7 +71,7 @@ run-internal: bootstrap
 		-resume
 
 # Run locally (Interactive)
-run: ## Run the pipeline locally (optionally specify TABLE)
+run: ## Run the pipeline locally (TABLE optional - if omitted, runs all tables)
 	$(MAKE) run-internal PROFILES=standard
 
 # Run on HPC (Interactive on Login Node)

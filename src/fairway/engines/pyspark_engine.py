@@ -242,17 +242,7 @@ class PySparkEngine:
         # Set compression (snappy is default, most efficient for Spark)
         writer = writer.option("compression", compression)
 
-        # --- OPTION B: Table Formats (Delta Lake) ---
-        target_format = self.config_output_format if hasattr(self, 'config_output_format') else 'parquet'
-        # Check if caller passed explicit setting or if we infer from extension? 
-        # Actually PySparkEngine doesn't know global state easily perfectly here without breaking sig.
-        # But `ingest` usually writes to parquet. 
-        # Let's see if we can detect Delta intent via kwargs or standardizing?
-        # Implementation Plan says: Support `format='delta'`.
-        # NOTE: `format` arg in ingest is INPUT format. We need OUTPUT format control.
-        # Let's assume output format defaults parquet but checks for Delta arg or config.
-        
-        # Checking if 'delta' is in kwargs for output format?
+        # Output format: 'parquet' (default) or 'delta' (Delta Lake)
         output_format = kwargs.get('output_format', 'parquet')
         
         print(f"INFO: PySpark Engine writing to {output_path} (format={output_format}, mode={write_mode}, partitions={partition_cols})")

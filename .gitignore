@@ -13,3 +13,9 @@ build/
 mock_apptainer
 tests/output
 config/sales_schema.yaml
+
+# Nextflow runtime artifacts (RULE-121)
+.nextflow/
+.nextflow.log*
+work/
+src/fairway/data/nextflow

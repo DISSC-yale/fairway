@@ -900,6 +900,25 @@ def finalize(config, table):
     click.echo(f"Finalization complete for {table}")
 
 
+@main.command('list-tables')
+@click.option('--config', default=None, help='Path to config file.')
+def list_tables(config):
+    """List all tables defined in config (one per line, for scripting)."""
+    import yaml
+
+    if config is None:
+        config = discover_config()
+
+    with open(config, 'r') as f:
+        raw_config = yaml.safe_load(f)
+
+    tables = raw_config.get('tables', [])
+    for table in tables:
+        name = table.get('name')
+        if name:
+            click.echo(name)
+
+
 @cache.command()
 @click.option('--force', is_flag=True, help='Skip confirmation prompt.')
 def clean(force):
@@ -913,7 +932,7 @@ def clean(force):
     # Calculate size
     total_size = 0
     file_count = 0
-    for dirpath, dirnames, filenames in os.walk(cache_dir):
+    for dirpath, _, filenames in os.walk(cache_dir):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             total_size += os.path.getsize(fp)

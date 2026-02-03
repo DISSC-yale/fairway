@@ -6,7 +6,6 @@ parallel processing of large datasets through Nextflow.
 import math
 import os
 import glob
-from pathlib import Path
 
 from .config_loader import Config
 

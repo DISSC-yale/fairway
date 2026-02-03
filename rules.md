@@ -299,3 +299,19 @@ This ensures configs work both locally (CWD = project root) and on HPC environme
 - `fixed_width_spec` file references
 - `transformation` script paths
 - `preprocess.action` script paths (when `.py` files)
+
+---
+
+### [RULE-122] Test Run Isolation
+
+**Priority:** MUST
+**Category:** [PRO] Process & Workflow
+
+**Rule:**
+Test runs of the pipeline MUST be isolated from the codebase:
+1. Run `make clean` after local Nextflow test runs
+2. Never commit `.nextflow/`, `work/`, `nextflow` binary, or `.nextflow.log*` files
+3. These artifacts MUST be listed in `.gitignore`
+
+**Rationale:**
+Nextflow creates substantial runtime artifacts (work directories, logs, caches) that pollute the repository and can cause stale execution issues when cached scripts don't match source files.

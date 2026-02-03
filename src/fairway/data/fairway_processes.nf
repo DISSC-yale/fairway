@@ -4,6 +4,9 @@
  * Reusable process library for batch-aware data processing.
  * These processes call fairway CLI commands for each batch.
  *
+ * All processes use tuple inputs: (table_name, batch_id, ...)
+ * This enables multi-table parallel processing.
+ *
  * NOTE: Spark cluster is started/stopped OUTSIDE Nextflow by driver.sh
  * Spark master URL is passed via --spark-master parameter
  */
@@ -14,23 +17,24 @@ nextflow.enable.dsl=2
 /*
  * SCHEMA_SCAN - Scan schema for a single batch
  *
- * Fan-out process: runs in parallel for each batch
+ * Input: tuple(table_name, batch_id)
+ * Output: tuple(table_name, schema_file)
  */
 process SCHEMA_SCAN {
-    tag "batch_${batch_id}"
+    tag "${table_name}_batch_${batch_id}"
 
     input:
-    val batch_id
+    tuple val(table_name), val(batch_id)
 
     output:
-    path "schema_${batch_id}.json"
+    tuple val(table_name), path("schema_${batch_id}.json")
 
     script:
     """
-    fairway schema-scan --config ${params.config} --table ${params.table} --batch ${batch_id}
+    fairway schema-scan --config ${params.config} --table ${table_name} --batch ${batch_id}
 
     # Copy schema file to current directory for Nextflow to collect
-    cp ${params.work_dir}/${params.table}/batch_${batch_id}/schema_${batch_id}.json .
+    cp ${params.work_dir}/${table_name}/batch_${batch_id}/schema_${batch_id}.json .
     """
 }
 
@@ -38,21 +42,24 @@ process SCHEMA_SCAN {
 /*
  * SCHEMA_MERGE - Merge all partial schemas into unified schema
  *
- * Fan-in process: waits for all SCHEMA_SCAN to complete
+ * Input: tuple(table_name, [schema_files])
+ * Output: tuple(table_name, unified_schema)
  */
 process SCHEMA_MERGE {
+    tag "${table_name}"
+
     input:
-    path schemas
+    tuple val(table_name), path(schemas)
 
     output:
-    path "unified_schema.json"
+    tuple val(table_name), path("unified_schema.json")
 
     script:
     """
-    fairway schema-merge --config ${params.config} --table ${params.table}
+    fairway schema-merge --config ${params.config} --table ${table_name}
 
     # Copy unified schema to current directory
-    cp ${params.work_dir}/${params.table}/unified_schema.json .
+    cp ${params.work_dir}/${table_name}/unified_schema.json .
     """
 }
 
@@ -60,24 +67,23 @@ process SCHEMA_MERGE {
 /*
  * INGEST - Ingest a single batch
  *
- * Fan-out process: runs in parallel for each batch
- * Requires unified schema from SCHEMA_MERGE
+ * Input: tuple(table_name, batch_id, schema), spark_master
+ * Output: tuple(table_name, partition_file)
  */
 process INGEST {
-    tag "batch_${batch_id}"
+    tag "${table_name}_batch_${batch_id}"
 
     input:
-    val batch_id
-    path schema
+    tuple val(table_name), val(batch_id), path(schema)
     val spark_master
 
     output:
-    path "partition_${batch_id}.parquet", optional: true
+    tuple val(table_name), path("partition_${batch_id}.parquet")
 
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway ingest --config ${params.config} --table ${params.table} --batch ${batch_id} ${master_arg}
+    fairway ingest --config ${params.config} --table ${table_name} --batch ${batch_id} ${master_arg}
 
     # Touch output file to signal completion
     touch partition_${batch_id}.parquet
@@ -88,23 +94,24 @@ process INGEST {
 /*
  * TRANSFORM_BATCH - Run parallel transform on single batch
  *
- * Fan-out process: processes each batch independently
+ * Input: tuple(table_name, batch_id, partition), transform_name, spark_master
+ * Output: tuple(table_name, batch_id, transformed_partition)
  */
 process TRANSFORM_BATCH {
-    tag "${transform_name}_${batch_id}"
+    tag "${table_name}_${transform_name}_${batch_id}"
 
     input:
-    tuple val(batch_id), path(partition)
+    tuple val(table_name), val(batch_id), path(partition)
     val transform_name
     val spark_master
 
     output:
-    tuple val(batch_id), path("${transform_name}_${batch_id}.parquet")
+    tuple val(table_name), val(batch_id), path("${transform_name}_${batch_id}.parquet")
 
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway transform-batch --config ${params.config} --table ${params.table} \
+    fairway transform-batch --config ${params.config} --table ${table_name} \
         --name ${transform_name} --batch ${batch_id} ${master_arg}
 
     touch ${transform_name}_${batch_id}.parquet
@@ -115,21 +122,24 @@ process TRANSFORM_BATCH {
 /*
  * TRANSFORM_FANIN - Run fan-in transform across all batches
  *
- * Fan-in process: waits for all batches, processes together
+ * Input: tuple(table_name, [partitions]), transform_name, spark_master
+ * Output: tuple(table_name, transformed_output)
  */
 process TRANSFORM_FANIN {
+    tag "${table_name}_${transform_name}"
+
     input:
-    path partitions
+    tuple val(table_name), path(partitions)
     val transform_name
     val spark_master
 
     output:
-    path "${transform_name}_out/*.parquet"
+    tuple val(table_name), path("${transform_name}_out/*.parquet")
 
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway transform-fanin --config ${params.config} --table ${params.table} \
+    fairway transform-fanin --config ${params.config} --table ${table_name} \
         --name ${transform_name} ${master_arg}
 
     mkdir -p ${transform_name}_out
@@ -141,14 +151,17 @@ process TRANSFORM_FANIN {
 /*
  * FINALIZE - Validate, export, and cleanup
  *
- * Final process: runs after all transforms complete
+ * Input: tuple(table_name, [partitions])
+ * Output: none (side effects only)
  */
 process FINALIZE {
+    tag "${table_name}"
+
     input:
-    path partitions
+    tuple val(table_name), path(partitions)
 
     script:
     """
-    fairway finalize --config ${params.config} --table ${params.table}
+    fairway finalize --config ${params.config} --table ${table_name}
     """
 }

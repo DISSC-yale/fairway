@@ -16,8 +16,6 @@
 #   OR
 #   FAIRWAY_TABLE=my_table sbatch scripts/driver.sh
 
-set -e
-
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -66,7 +64,7 @@ MASTER_URL_FILE=~/spark_master_url.txt
 if [ -f "$MASTER_URL_FILE" ]; then
     SPARK_MASTER=$(cat "$MASTER_URL_FILE")
     echo "Spark Master: $SPARK_MASTER"
-    SPARK_ARGS="--spark_master $SPARK_MASTER"
+    SPARK_ARGS="--spark-master $SPARK_MASTER"
 else
     echo "WARNING: Spark Master URL file not found. Running in local mode."
     SPARK_ARGS=""
