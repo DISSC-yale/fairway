@@ -34,7 +34,7 @@ process SCHEMA_SCAN {
 
     script:
     """
-    fairway schema-scan --config ${config_path} --table ${table_name} --batch ${batch_id}
+    fairway schema-scan --config ${config_path} --table ${table_name} --batch ${batch_id} --work-dir ${work_path}
 
     # Copy schema file to current directory for Nextflow to collect
     cp ${work_path}/${table_name}/batch_${batch_id}/schema_${batch_id}.json .
@@ -59,7 +59,7 @@ process SCHEMA_MERGE {
 
     script:
     """
-    fairway schema-merge --config ${config_path} --table ${table_name}
+    fairway schema-merge --config ${config_path} --table ${table_name} --work-dir ${work_path}
 
     # Copy unified schema to current directory
     cp ${work_path}/${table_name}/unified_schema.json .
@@ -86,7 +86,7 @@ process INGEST {
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway ingest --config ${config_path} --table ${table_name} --batch ${batch_id} ${master_arg}
+    fairway ingest --config ${config_path} --table ${table_name} --batch ${batch_id} --work-dir ${work_path} ${master_arg}
 
     # Touch output file to signal completion
     touch partition_${batch_id}.parquet
@@ -165,6 +165,6 @@ process FINALIZE {
 
     script:
     """
-    fairway finalize --config ${config_path} --table ${table_name}
+    fairway finalize --config ${config_path} --table ${table_name} --work-dir ${work_path}
     """
 }

@@ -755,7 +755,8 @@ def batches(config, table, size):
 @click.option('--config', default=None, help='Path to config file.')
 @click.option('--table', required=True, help='Table name.')
 @click.option('--batch', type=int, required=True, help='Batch number to scan.')
-def schema_scan(config, table, batch):
+@click.option('--work-dir', default=None, help='Override work directory (absolute path for Nextflow).')
+def schema_scan(config, table, batch, work_dir):
     """Scan schema for a specific batch.
 
     For Nextflow orchestration, this runs on SLURM compute nodes.
@@ -771,6 +772,10 @@ def schema_scan(config, table, batch):
         config = discover_config()
 
     bp = BatchProcessor(config, table)
+
+    # Override work_dir if provided (Nextflow passes absolute path)
+    if work_dir:
+        bp.work_dir = work_dir
 
     try:
         batch_files = bp.get_files_for_batch(batch)
@@ -843,7 +848,8 @@ def schema_scan(config, table, batch):
 @main.command('schema-merge')
 @click.option('--config', default=None, help='Path to config file.')
 @click.option('--table', required=True, help='Table name.')
-def schema_merge(config, table):
+@click.option('--work-dir', 'work_dir_override', default=None, help='Override work directory (absolute path for Nextflow).')
+def schema_merge(config, table, work_dir_override):
     """Merge partial schemas from all batches."""
     from .batch_processor import BatchProcessor
     import json
@@ -852,6 +858,11 @@ def schema_merge(config, table):
         config = discover_config()
 
     bp = BatchProcessor(config, table)
+
+    # Override work_dir if provided (Nextflow passes absolute path)
+    if work_dir_override:
+        bp.work_dir = work_dir_override
+
     work_dir = os.path.join(bp.work_dir, table)
 
     # Collect all partial schemas
@@ -893,7 +904,8 @@ def schema_merge(config, table):
 @click.option('--table', required=True, help='Table name.')
 @click.option('--batch', type=int, required=True, help='Batch number to ingest.')
 @click.option('--spark-master', default=None, help='Spark master URL.')
-def ingest(config, table, batch, spark_master):
+@click.option('--work-dir', default=None, help='Override work directory (absolute path for Nextflow).')
+def ingest(config, table, batch, spark_master, work_dir):
     """Ingest a specific batch."""
     from .batch_processor import BatchProcessor
 
@@ -901,6 +913,10 @@ def ingest(config, table, batch, spark_master):
         config = discover_config()
 
     bp = BatchProcessor(config, table)
+
+    # Override work_dir if provided (Nextflow passes absolute path)
+    if work_dir:
+        bp.work_dir = work_dir
 
     try:
         batch_files = bp.get_files_for_batch(batch)
@@ -920,7 +936,8 @@ def ingest(config, table, batch, spark_master):
 @main.command()
 @click.option('--config', default=None, help='Path to config file.')
 @click.option('--table', required=True, help='Table name.')
-def finalize(config, table):
+@click.option('--work-dir', 'work_dir_override', default=None, help='Override work directory (absolute path for Nextflow).')
+def finalize(config, table, work_dir_override):
     """Finalize processing for a table."""
     from .batch_processor import BatchProcessor
 
@@ -928,6 +945,11 @@ def finalize(config, table):
         config = discover_config()
 
     bp = BatchProcessor(config, table)
+
+    # Override work_dir if provided (Nextflow passes absolute path)
+    if work_dir_override:
+        bp.work_dir = work_dir_override
+
     work_dir = os.path.join(bp.work_dir, table)
 
     click.echo(f"Finalizing table {table}...")
