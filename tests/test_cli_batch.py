@@ -133,24 +133,44 @@ class TestSchemaMergeCommand:
     """Test fairway schema-merge command."""
 
     def test_schema_merge(self, cli_runner, batch_config, tmp_path):
-        """fairway schema-merge --table TABLE merges partial schemas."""
+        """fairway schema-merge --table TABLE merges partial schemas to schema/{table}.yaml."""
         from fairway.cli import main
+        import os
+        import yaml
 
-        # First create some schema files
+        # First create some schema files in batch subdirectories
         work_dir = tmp_path / ".fairway" / "work" / "test_table"
-        work_dir.mkdir(parents=True)
 
-        # Create partial schema files
+        # Create partial schema files in batch_{i}/ subdirectories
         for i in range(4):
-            schema_file = work_dir / f"schema_{i}.json"
+            batch_dir = work_dir / f"batch_{i}"
+            batch_dir.mkdir(parents=True)
+            schema_file = batch_dir / f"schema_{i}.json"
             schema_file.write_text('{"id": "INTEGER", "value": "VARCHAR"}')
 
-        result = cli_runner.invoke(main, [
-            'schema-merge', '--config', str(batch_config),
-            '--table', 'test_table'
-        ])
+        # Run from tmp_path so schema/ is created there
+        original_dir = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            result = cli_runner.invoke(main, [
+                'schema-merge', '--config', str(batch_config),
+                '--table', 'test_table'
+            ])
 
-        assert result.exit_code == 0
+            assert result.exit_code == 0
+
+            # Verify schema/{table}.yaml was created
+            schema_file = tmp_path / "schema" / "test_table.yaml"
+            assert schema_file.exists(), f"Expected {schema_file} to exist"
+
+            # Verify content
+            with open(schema_file) as f:
+                schema_data = yaml.safe_load(f)
+            assert schema_data['name'] == 'test_table'
+            assert 'id' in schema_data['schema']
+            assert 'value' in schema_data['schema']
+        finally:
+            os.chdir(original_dir)
 
 
 class TestIngestCommand:
