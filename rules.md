@@ -277,3 +277,25 @@ Data validation operations SHOULD have bounded cost (O(1) or O(sample_size)), no
 
 **Rationale:**
 Validation should help catch errors quickly, not become the bottleneck for large datasets. A 1TB file should not require scanning 1TB just to check line lengths.
+
+---
+
+### [RULE-121] Config Path Resolution Pattern
+
+**Priority:** MUST
+**Category:** [ARC] Architectural Principles
+
+**Rule:**
+All file paths in config files MUST be resolved using this fallback pattern:
+1. Try path as-is (absolute paths, CWD-relative)
+2. Try path relative to config file directory
+3. Raise clear error if not found
+
+**Rationale:**
+This ensures configs work both locally (CWD = project root) and on HPC environments where CWD may be a work directory (e.g., Nextflow work directories). Without this pattern, relative paths fail when the execution context differs from the config file location.
+
+**Applies to:**
+- `schema` file references
+- `fixed_width_spec` file references
+- `transformation` script paths
+- `preprocess.action` script paths (when `.py` files)
