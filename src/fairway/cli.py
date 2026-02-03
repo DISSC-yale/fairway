@@ -759,8 +759,8 @@ def batches(config, table, size):
 def schema_scan(config, table, batch, work_dir):
     """Scan schema for a specific batch.
 
+    Scans ALL files in the batch to capture all columns (not just first file).
     For Nextflow orchestration, this runs on SLURM compute nodes.
-    Unzipping is distributed via SLURM (one batch per node), not Spark.
     Extractions are cached to temp_location for reuse across batches.
     """
     from .batch_processor import BatchProcessor
@@ -787,62 +787,87 @@ def schema_scan(config, table, batch, work_dir):
     from .engines.duckdb_engine import DuckDBEngine
     engine = DuckDBEngine()
 
-    if batch_files:
-        sample_file = batch_files[0]
-        fmt = bp.table_config.get('format', 'csv')
+    if not batch_files:
+        raise click.ClickException(f"No files found for batch {batch}")
 
-        # Check if preprocessing is configured (preprocess.action: unzip)
-        preprocess = bp.table_config.get('preprocess', {})
-        action = preprocess.get('action')
+    fmt = bp.table_config.get('format', 'csv')
+    preprocess = bp.table_config.get('preprocess', {})
+    action = preprocess.get('action')
 
-        # Handle zip files - extract before schema inference
-        # Triggers if: (1) preprocess.action == 'unzip', OR (2) file is a zip
-        if action == 'unzip' or (sample_file.endswith('.zip') and zipfile.is_zipfile(sample_file)):
-            click.echo(f"  Extracting zip file: {sample_file}")
+    # Temp location for zip extraction
+    temp_base = bp.config.temp_location or '.fairway_cache'
 
-            # Temp location priority: FAIRWAY_TEMP env > config.temp_location > .fairway_cache
-            # This should be on shared storage (e.g., GPFS) for HPC clusters
-            temp_base = bp.config.temp_location or '.fairway_cache'
+    # Collect ALL scannable files from the batch
+    # For zips: extract and collect content files
+    # For regular files: use directly
+    all_scannable_files = []
 
-            # Extract to: {temp_base}/{table_name}/{zip_filename_without_ext}/
-            # Using table name + zip name for human-readable, deterministic paths
-            zip_name = os.path.splitext(os.path.basename(sample_file))[0]
+    for batch_file in batch_files:
+        # Check if this file needs extraction
+        needs_extraction = (
+            action == 'unzip' or
+            (batch_file.endswith('.zip') and zipfile.is_zipfile(batch_file))
+        )
+
+        if needs_extraction:
+            # Extract zip to deterministic location
+            zip_name = os.path.splitext(os.path.basename(batch_file))[0]
             extract_dir = os.path.join(temp_base, table, zip_name)
 
-            # Extract if not already cached (enables reuse across batches/runs)
             if not os.path.exists(extract_dir):
                 os.makedirs(extract_dir, exist_ok=True)
-                with zipfile.ZipFile(sample_file, 'r') as zf:
+                click.echo(f"  Extracting: {os.path.basename(batch_file)}")
+                with zipfile.ZipFile(batch_file, 'r') as zf:
                     zf.extractall(extract_dir)
-                click.echo(f"  Extracted to: {extract_dir}")
             else:
-                click.echo(f"  Using cached extraction: {extract_dir}")
+                click.echo(f"  Using cached: {os.path.basename(batch_file)}")
 
-            # Find extracted files matching the declared format
+            # Find extracted files matching format
             ext_map = {'csv': '**/*.csv', 'tsv': '**/*.tsv', 'tab': '**/*.tab',
                        'json': '**/*.json', 'parquet': '**/*.parquet'}
             pattern = os.path.join(extract_dir, ext_map.get(fmt, '**/*'))
-            extracted_files = glob_module.glob(pattern, recursive=True)
+            extracted = glob_module.glob(pattern, recursive=True)
+            all_scannable_files.extend(extracted)
+        else:
+            all_scannable_files.append(batch_file)
 
-            if not extracted_files:
-                raise click.ClickException(
-                    f"No {fmt} files found in zip: {sample_file}"
-                )
+    if not all_scannable_files:
+        raise click.ClickException(f"No {fmt} files found in batch {batch}")
 
-            click.echo(f"  Found {len(extracted_files)} {fmt} files in archive")
-            sample_file = extracted_files[0]
+    click.echo(f"  Total files to scan: {len(all_scannable_files)}")
 
-        schema = engine.infer_schema(sample_file, fmt)
+    # Merge schemas from all files
+    # DuckDB engine's infer_schema does two-phase: column discovery + type inference
+    merged_schema = {}
+    files_scanned = 0
 
-        # Write schema to batch work directory
-        batch_dir = bp.get_batch_dir(batch)
-        os.makedirs(batch_dir, exist_ok=True)
-        schema_path = os.path.join(batch_dir, f'schema_{batch}.json')
+    for scan_file in all_scannable_files:
+        try:
+            file_schema = engine.infer_schema(scan_file, fmt)
+            # Merge columns - later files can add new columns
+            for col, dtype in file_schema.items():
+                if col not in merged_schema:
+                    merged_schema[col] = dtype
+                # Type widening: if types differ, prefer wider type
+                elif merged_schema[col] != dtype:
+                    # Simple widening: STRING is widest
+                    if dtype == 'STRING' or merged_schema[col] == 'STRING':
+                        merged_schema[col] = 'STRING'
+            files_scanned += 1
+        except Exception as e:
+            click.echo(f"  Warning: Could not scan {os.path.basename(scan_file)}: {e}")
 
-        with open(schema_path, 'w') as f:
-            json.dump(schema, f, indent=2)
+    click.echo(f"  Scanned {files_scanned} files, found {len(merged_schema)} columns")
 
-        click.echo(f"Schema written to {schema_path}")
+    # Write schema to batch work directory
+    batch_dir = bp.get_batch_dir(batch)
+    os.makedirs(batch_dir, exist_ok=True)
+    schema_path = os.path.join(batch_dir, f'schema_{batch}.json')
+
+    with open(schema_path, 'w') as f:
+        json.dump(merged_schema, f, indent=2)
+
+    click.echo(f"Schema written to {schema_path}")
 
 
 @main.command('schema-merge')
@@ -850,9 +875,15 @@ def schema_scan(config, table, batch, work_dir):
 @click.option('--table', required=True, help='Table name.')
 @click.option('--work-dir', 'work_dir_override', default=None, help='Override work directory (absolute path for Nextflow).')
 def schema_merge(config, table, work_dir_override):
-    """Merge partial schemas from all batches."""
+    """Merge partial schemas from all batches into unified schema.
+
+    Writes to:
+    - schema/{table}.yaml (final schema for ingestion)
+    - {work_dir}/{table}/unified_schema.json (for Nextflow)
+    """
     from .batch_processor import BatchProcessor
     import json
+    import yaml
 
     if config is None:
         config = discover_config()
@@ -863,39 +894,54 @@ def schema_merge(config, table, work_dir_override):
     if work_dir_override:
         bp.work_dir = work_dir_override
 
-    work_dir = os.path.join(bp.work_dir, table)
+    batch_work_dir = os.path.join(bp.work_dir, table)
 
-    # Collect all partial schemas
+    # Collect all partial schemas with type widening
     merged_schema = {}
     schema_files = []
+    total_columns = 0
 
     for batch in range(bp.get_batch_count()):
-        schema_path = os.path.join(work_dir, f'batch_{batch}', f'schema_{batch}.json')
+        schema_path = os.path.join(batch_work_dir, f'batch_{batch}', f'schema_{batch}.json')
         if os.path.exists(schema_path):
             schema_files.append(schema_path)
             with open(schema_path, 'r') as f:
                 partial = json.load(f)
-                # Merge: later schemas can override (simple strategy)
-                merged_schema.update(partial)
+                # Merge with type widening
+                for col, dtype in partial.items():
+                    if col not in merged_schema:
+                        merged_schema[col] = dtype
+                        total_columns += 1
+                    elif merged_schema[col] != dtype:
+                        # Type widening: STRING is widest
+                        if dtype == 'STRING' or merged_schema[col] == 'STRING':
+                            merged_schema[col] = 'STRING'
 
     if not schema_files:
-        # Check for legacy schema files in work_dir directly
-        for f in os.listdir(work_dir) if os.path.exists(work_dir) else []:
-            if f.startswith('schema_') and f.endswith('.json'):
-                schema_path = os.path.join(work_dir, f)
-                schema_files.append(schema_path)
-                with open(schema_path, 'r') as sf:
-                    partial = json.load(sf)
-                    merged_schema.update(partial)
+        raise click.ClickException(
+            f"No schema files found in {batch_work_dir}. Run schema-scan first."
+        )
 
-    click.echo(f"Merged {len(schema_files)} schema files")
+    click.echo(f"Merged {len(schema_files)} batch schemas, {len(merged_schema)} total columns")
 
-    # Write unified schema
-    unified_path = os.path.join(work_dir, 'unified_schema.json')
-    os.makedirs(work_dir, exist_ok=True)
+    # 1. Write to schema/{table}.yaml (main output for ingestion)
+    schema_dir = 'schema'
+    os.makedirs(schema_dir, exist_ok=True)
+    yaml_path = os.path.join(schema_dir, f'{table}.yaml')
+
+    schema_output = {
+        'name': table,
+        'schema': merged_schema
+    }
+    with open(yaml_path, 'w') as f:
+        yaml.dump(schema_output, f, sort_keys=False, default_flow_style=False)
+    click.echo(f"Schema written to {yaml_path}")
+
+    # 2. Write to work_dir for Nextflow to collect
+    os.makedirs(batch_work_dir, exist_ok=True)
+    unified_path = os.path.join(batch_work_dir, 'unified_schema.json')
     with open(unified_path, 'w') as f:
         json.dump(merged_schema, f, indent=2)
-
     click.echo(f"Unified schema written to {unified_path}")
 
 
