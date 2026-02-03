@@ -509,6 +509,7 @@ class IngestionPipeline:
             schema = table.get('schema')
             read_options = table.get('read_options', {})
             write_mode = table.get('write_mode', 'overwrite')
+            fixed_width_spec = table.get('fixed_width_spec')
 
             # For partitioning, DuckDB creates a directory.
             print(f"INFO: Starting ingestion for {table['name']} from {input_path} to {output_path}")
@@ -528,6 +529,7 @@ class IngestionPipeline:
                 schema=schema,
                 write_mode=write_mode,
                 output_format=self.config.output_format,
+                fixed_width_spec=fixed_width_spec,
                 **read_options
             )
             
