@@ -13,6 +13,9 @@
 
 nextflow.enable.dsl=2
 
+// Resolve paths to absolute (processes run in isolated work dirs)
+def config_path = file(params.config).toAbsolutePath().toString()
+def work_path = file(params.work_dir).toAbsolutePath().toString()
 
 /*
  * SCHEMA_SCAN - Scan schema for a single batch
@@ -31,10 +34,10 @@ process SCHEMA_SCAN {
 
     script:
     """
-    fairway schema-scan --config ${params.config} --table ${table_name} --batch ${batch_id}
+    fairway schema-scan --config ${config_path} --table ${table_name} --batch ${batch_id}
 
     # Copy schema file to current directory for Nextflow to collect
-    cp ${params.work_dir}/${table_name}/batch_${batch_id}/schema_${batch_id}.json .
+    cp ${work_path}/${table_name}/batch_${batch_id}/schema_${batch_id}.json .
     """
 }
 
@@ -56,10 +59,10 @@ process SCHEMA_MERGE {
 
     script:
     """
-    fairway schema-merge --config ${params.config} --table ${table_name}
+    fairway schema-merge --config ${config_path} --table ${table_name}
 
     # Copy unified schema to current directory
-    cp ${params.work_dir}/${table_name}/unified_schema.json .
+    cp ${work_path}/${table_name}/unified_schema.json .
     """
 }
 
@@ -83,7 +86,7 @@ process INGEST {
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway ingest --config ${params.config} --table ${table_name} --batch ${batch_id} ${master_arg}
+    fairway ingest --config ${config_path} --table ${table_name} --batch ${batch_id} ${master_arg}
 
     # Touch output file to signal completion
     touch partition_${batch_id}.parquet
@@ -111,7 +114,7 @@ process TRANSFORM_BATCH {
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway transform-batch --config ${params.config} --table ${table_name} \
+    fairway transform-batch --config ${config_path} --table ${table_name} \
         --name ${transform_name} --batch ${batch_id} ${master_arg}
 
     touch ${transform_name}_${batch_id}.parquet
@@ -139,7 +142,7 @@ process TRANSFORM_FANIN {
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway transform-fanin --config ${params.config} --table ${table_name} \
+    fairway transform-fanin --config ${config_path} --table ${table_name} \
         --name ${transform_name} ${master_arg}
 
     mkdir -p ${transform_name}_out
@@ -162,6 +165,6 @@ process FINALIZE {
 
     script:
     """
-    fairway finalize --config ${params.config} --table ${table_name}
+    fairway finalize --config ${config_path} --table ${table_name}
     """
 }

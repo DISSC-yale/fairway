@@ -39,14 +39,23 @@ class BatchProcessor:
         config_batch_size = orchestration.get('batch_size', 100)
         self.batch_size = batch_size if batch_size is not None else config_batch_size
 
-        # Work directory
-        self.work_dir = orchestration.get('work_dir', '.fairway/work')
+        # Work directory - resolve relative to config file directory
+        work_dir = orchestration.get('work_dir', '.fairway/work')
+        config_dir = os.path.dirname(os.path.abspath(config_path))
+        if not os.path.isabs(work_dir):
+            work_dir = os.path.join(config_dir, work_dir)
+        self.work_dir = work_dir
 
         # Cache for discovered files (sorted for determinism)
         self._files_cache: list[str] | None = None
 
     def _discover_files(self) -> list[str]:
         """Discover all files for the table.
+
+        File resolution:
+            - If root is absolute (e.g., /gpfs/data): use root directly
+            - If root is relative: resolve from config file directory
+            - path is always joined to root (or config dir if no root)
 
         Returns sorted list for deterministic batch assignment.
         """
@@ -55,20 +64,21 @@ class BatchProcessor:
 
         table_path = self.table_config.get('path', '')
         table_root = self.table_config.get('root')
-
-        # Resolve path relative to config directory
         config_dir = os.path.dirname(os.path.abspath(self.config_path))
 
+        # Resolve root: absolute paths used as-is, relative resolved from config dir
         if table_root:
-            if not os.path.isabs(table_root):
-                table_root = os.path.join(config_dir, table_root)
-            search_path = os.path.join(table_root, table_path.lstrip(os.sep))
-        elif not os.path.isabs(table_path):
-            search_path = os.path.join(config_dir, table_path)
-        else:
+            if os.path.isabs(table_root):
+                resolved_root = table_root
+            else:
+                resolved_root = os.path.join(config_dir, table_root)
+            search_path = os.path.join(resolved_root, table_path.lstrip(os.sep))
+        elif os.path.isabs(table_path):
             search_path = table_path
+        else:
+            search_path = os.path.join(config_dir, table_path)
 
-        # Glob for files
+        # Glob for files matching pattern
         if '*' in search_path:
             files = glob.glob(search_path, recursive=True)
         elif os.path.isdir(search_path):
@@ -76,10 +86,10 @@ class BatchProcessor:
         else:
             files = [search_path] if os.path.exists(search_path) else []
 
-        # Filter to files only (not directories)
+        # Filter to files only (exclude directories)
         files = [f for f in files if os.path.isfile(f)]
 
-        # Sort for deterministic ordering
+        # Sort for deterministic batch assignment
         self._files_cache = sorted(files)
         return self._files_cache
 

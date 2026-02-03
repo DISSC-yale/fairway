@@ -761,9 +761,16 @@ def batches(config, table, size):
 @click.option('--table', required=True, help='Table name.')
 @click.option('--batch', type=int, required=True, help='Batch number to scan.')
 def schema_scan(config, table, batch):
-    """Scan schema for a specific batch."""
+    """Scan schema for a specific batch.
+
+    For Nextflow orchestration, this runs on SLURM compute nodes.
+    Unzipping is distributed via SLURM (one batch per node), not Spark.
+    Extractions are cached to temp_location for reuse across batches.
+    """
     from .batch_processor import BatchProcessor
     import json
+    import zipfile
+    import glob as glob_module
 
     if config is None:
         config = discover_config()
@@ -777,16 +784,57 @@ def schema_scan(config, table, batch):
 
     click.echo(f"Scanning schema for batch {batch} ({len(batch_files)} files)...")
 
-    # Infer schema from first file in batch
     from .engines.duckdb_engine import DuckDBEngine
     engine = DuckDBEngine()
 
     if batch_files:
         sample_file = batch_files[0]
         fmt = bp.table_config.get('format', 'csv')
+
+        # Check if preprocessing is configured (preprocess.action: unzip)
+        preprocess = bp.table_config.get('preprocess', {})
+        action = preprocess.get('action')
+
+        # Handle zip files - extract before schema inference
+        # Triggers if: (1) preprocess.action == 'unzip', OR (2) file is a zip
+        if action == 'unzip' or (sample_file.endswith('.zip') and zipfile.is_zipfile(sample_file)):
+            click.echo(f"  Extracting zip file: {sample_file}")
+
+            # Temp location priority: FAIRWAY_TEMP env > config.temp_location > .fairway_cache
+            # This should be on shared storage (e.g., GPFS) for HPC clusters
+            temp_base = bp.config.temp_location or '.fairway_cache'
+
+            # Extract to: {temp_base}/{table_name}/{zip_filename_without_ext}/
+            # Using table name + zip name for human-readable, deterministic paths
+            zip_name = os.path.splitext(os.path.basename(sample_file))[0]
+            extract_dir = os.path.join(temp_base, table, zip_name)
+
+            # Extract if not already cached (enables reuse across batches/runs)
+            if not os.path.exists(extract_dir):
+                os.makedirs(extract_dir, exist_ok=True)
+                with zipfile.ZipFile(sample_file, 'r') as zf:
+                    zf.extractall(extract_dir)
+                click.echo(f"  Extracted to: {extract_dir}")
+            else:
+                click.echo(f"  Using cached extraction: {extract_dir}")
+
+            # Find extracted files matching the declared format
+            ext_map = {'csv': '**/*.csv', 'tsv': '**/*.tsv', 'tab': '**/*.tab',
+                       'json': '**/*.json', 'parquet': '**/*.parquet'}
+            pattern = os.path.join(extract_dir, ext_map.get(fmt, '**/*'))
+            extracted_files = glob_module.glob(pattern, recursive=True)
+
+            if not extracted_files:
+                raise click.ClickException(
+                    f"No {fmt} files found in zip: {sample_file}"
+                )
+
+            click.echo(f"  Found {len(extracted_files)} {fmt} files in archive")
+            sample_file = extracted_files[0]
+
         schema = engine.infer_schema(sample_file, fmt)
 
-        # Write schema to batch directory
+        # Write schema to batch work directory
         batch_dir = bp.get_batch_dir(batch)
         os.makedirs(batch_dir, exist_ok=True)
         schema_path = os.path.join(batch_dir, f'schema_{batch}.json')
