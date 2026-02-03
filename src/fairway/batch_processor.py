@@ -39,12 +39,8 @@ class BatchProcessor:
         config_batch_size = orchestration.get('batch_size', 100)
         self.batch_size = batch_size if batch_size is not None else config_batch_size
 
-        # Work directory - resolve relative to config file directory
-        work_dir = orchestration.get('work_dir', '.fairway/work')
-        config_dir = os.path.dirname(os.path.abspath(config_path))
-        if not os.path.isabs(work_dir):
-            work_dir = os.path.join(config_dir, work_dir)
-        self.work_dir = work_dir
+        # Work directory - used as-is (relative to CWD, matching Nextflow behavior)
+        self.work_dir = orchestration.get('work_dir', '.fairway/work')
 
         # Cache for discovered files (sorted for determinism)
         self._files_cache: list[str] | None = None

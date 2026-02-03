@@ -94,12 +94,10 @@ def getTableInfo(tables) {
 }
 
 
-workflow {
-    // Spark master URL (passed by driver.sh, defaults to local for testing)
-    def spark_master = params.spark_master ?: "local[*]"
-    log.info "Spark master: ${spark_master}"
-
-    // Determine which tables to process
+/*
+ * Helper: Get tables and batches info (shared by workflows)
+ */
+def getWorkflowSetup() {
     def tables
     if (params.table) {
         tables = [params.table]
@@ -112,15 +110,12 @@ workflow {
 
     if (tables.size() == 0) {
         log.error "No tables to process"
-        return
+        return [tables: [], batches: []]
     }
 
-    // Get batch info for each table
     log.info "Calculating batches..."
     def table_info = getTableInfo(tables)
 
-    // Build channel of (table_name, batch_id) tuples for all tables
-    // This enables parallel processing across ALL batches of ALL tables
     def all_batches = []
     table_info.each { info ->
         (0..<info.n_batches).each { batch_id ->
@@ -129,42 +124,111 @@ workflow {
     }
     log.info "Total batch jobs: ${all_batches.size()}"
 
-    // Create channels
-    batch_ch = Channel.fromList(all_batches)
+    return [tables: tables, batches: all_batches, table_info: table_info]
+}
 
-    // ========================================
-    // Phase 1: Schema scan (fan-out across all tables/batches)
-    // ========================================
+
+/*
+ * SCHEMA workflow - Phase 1: Schema discovery (no Spark required)
+ *
+ * Usage: nextflow run main.nf -entry schema
+ */
+workflow schema {
+    log.info "=== SCHEMA PHASE (no Spark required) ==="
+
+    def setup = getWorkflowSetup()
+    if (setup.batches.size() == 0) return
+
+    batch_ch = Channel.fromList(setup.batches)
+
+    // Schema scan (fan-out across all tables/batches)
     schemas = SCHEMA_SCAN(batch_ch)
 
     // Group schemas by table for merge phase
     schemas_by_table = schemas.groupTuple()
 
-    // ========================================
-    // Phase 2: Schema merge (fan-in per table)
-    // ========================================
-    unified_schemas = SCHEMA_MERGE(schemas_by_table)
+    // Schema merge (fan-in per table)
+    SCHEMA_MERGE(schemas_by_table)
+}
 
-    // ========================================
-    // Phase 3: Ingest (fan-out across all tables/batches)
-    // ========================================
-    // Rebuild batch channel for ingest phase
-    ingest_batch_ch = Channel.fromList(all_batches)
+
+/*
+ * INGEST workflow - Phase 2: Data ingestion (requires Spark)
+ *
+ * Usage: nextflow run main.nf -entry ingest --spark-master <URL>
+ */
+workflow ingest {
+    def spark_master = params.spark_master ?: "local[*]"
+    log.info "=== INGEST PHASE (Spark: ${spark_master}) ==="
+
+    def setup = getWorkflowSetup()
+    if (setup.batches.size() == 0) return
+
+    // Load unified schemas from previous phase
+    // Expect schema files at: {work_dir}/{table}/unified_schema.json
+    def schema_files = []
+    setup.tables.each { table_name ->
+        def schema_path = "${params.work_dir}/${table_name}/unified_schema.json"
+        if (file(schema_path).exists()) {
+            schema_files << [table_name, file(schema_path)]
+        } else {
+            log.error "Schema not found for ${table_name}: ${schema_path}"
+            log.error "Run 'make schema' first to generate schemas"
+        }
+    }
+
+    if (schema_files.size() == 0) {
+        log.error "No schemas found. Run schema phase first."
+        return
+    }
+
+    unified_schemas = Channel.fromList(schema_files)
+    ingest_batch_ch = Channel.fromList(setup.batches)
 
     // Combine batch info with unified schema
-    // Create (table_name, batch_id, schema) tuples
     ingest_input = ingest_batch_ch
         .map { table_name, batch_id -> [table_name, batch_id] }
-        .combine(unified_schemas, by: 0)  // Join on table_name
+        .combine(unified_schemas, by: 0)
 
     partitions = INGEST(ingest_input, spark_master)
 
-    // ========================================
-    // Phase 4: Finalize (per table)
-    // ========================================
-    // Group partitions by table for finalization
+    // Finalize (per table)
     partitions_by_table = partitions.groupTuple()
+    FINALIZE(partitions_by_table)
+}
 
+
+/*
+ * Default workflow - Full pipeline (schema + ingest)
+ *
+ * Usage: nextflow run main.nf --spark-master <URL>
+ */
+workflow {
+    def spark_master = params.spark_master ?: "local[*]"
+    log.info "=== FULL PIPELINE (Spark: ${spark_master}) ==="
+
+    def setup = getWorkflowSetup()
+    if (setup.batches.size() == 0) return
+
+    batch_ch = Channel.fromList(setup.batches)
+
+    // Phase 1: Schema scan (fan-out across all tables/batches)
+    schemas = SCHEMA_SCAN(batch_ch)
+    schemas_by_table = schemas.groupTuple()
+
+    // Phase 2: Schema merge (fan-in per table)
+    unified_schemas = SCHEMA_MERGE(schemas_by_table)
+
+    // Phase 3: Ingest (fan-out across all tables/batches)
+    ingest_batch_ch = Channel.fromList(setup.batches)
+    ingest_input = ingest_batch_ch
+        .map { table_name, batch_id -> [table_name, batch_id] }
+        .combine(unified_schemas, by: 0)
+
+    partitions = INGEST(ingest_input, spark_master)
+
+    // Phase 4: Finalize (per table)
+    partitions_by_table = partitions.groupTuple()
     FINALIZE(partitions_by_table)
 }
 

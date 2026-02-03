@@ -509,3 +509,126 @@ fairway validate --check-paths config/fairway.yaml
 | `tests/test_config_validator.py` | Create |
 | `tests/fixtures/validation/*.yaml` | Create |
 | `pyproject.toml` | Modify - add jsonschema dependency |
+
+---
+
+### Chunk K: Nextflow Two-Phase Workflow & Manifest Integration
+**Goal:** Separate schema discovery from ingestion, integrate manifest for incremental processing
+
+**Status:** IN PROGRESS
+
+**Background:**
+The Nextflow orchestration currently runs schema + ingest as a single workflow, starting Spark before schema discovery even though schema doesn't need it. Additionally, batch commands (`schema-scan`, `ingest`) don't integrate with the manifest system.
+
+#### K.1: Two-Phase Workflow (COMPLETE)
+
+Separate Nextflow entry points:
+- `nextflow run main.nf -entry schema` — Schema discovery only (no Spark)
+- `nextflow run main.nf -entry ingest` — Ingestion only (requires Spark)
+- Default — Full pipeline (backwards compatible)
+
+**Makefile targets:**
+```bash
+make submit-schema    # Phase 1: Schema discovery (no Spark)
+make submit-ingest    # Phase 2: Ingestion (starts Spark automatically)
+make submit-hpc       # Full pipeline (legacy, starts Spark for everything)
+```
+
+**Benefits:**
+- Spark cluster not started until needed (saves resources)
+- Schema phase can run on smaller allocations
+- Clearer separation of concerns
+
+#### K.2: Manifest Integration for Batch Commands (PLANNED)
+
+**Current state:** Batch commands (`schema-scan`, `ingest`) don't use manifest — they process all files every time.
+
+**Target state:** All processing driven by manifest:
+
+| Command | Manifest Integration |
+|---------|---------------------|
+| `schema-scan` | Check `get_preprocessed_path()` before extracting zips |
+| `schema-scan` | Call `record_preprocessing()` after extracting |
+| `ingest` | Use `should_process()` to skip already-ingested files |
+| `ingest` | Call `update_file()` after successful ingestion |
+
+#### K.3: Incremental Schema Discovery (PLANNED)
+
+**Problem:** Schema discovery currently scans all files every time. For large datasets with 1000s of files, this is slow even though most files haven't changed.
+
+**Approach: Simple Incremental (Recommended)**
+
+```
+1. Load existing unified_schema.json (if exists)
+2. Query manifest for file status:
+   - NEW files (not in manifest) → scan for columns
+   - UNCHANGED files (hash matches) → skip
+   - CHANGED files (hash differs) → re-scan
+3. Merge discovered columns into existing schema (additive)
+4. Save updated schema
+5. Update manifest with new file hashes
+```
+
+**Why additive-only is sufficient:**
+- Raw data files rarely change (append-only datasets)
+- Columns are rarely removed from source files
+- If full rescan needed, provide `--full` flag
+
+**Implementation tasks:**
+
+| ID | Task | Description | Effort |
+|----|------|-------------|--------|
+| K.3.1 | Add manifest to BatchProcessor | Pass manifest store to batch commands | 30 min |
+| K.3.2 | Implement incremental schema-scan | Check manifest before scanning | 1 hour |
+| K.3.3 | Schema merge with existing | Load + merge + save unified schema | 45 min |
+| K.3.4 | Add `--full` flag | Force full rescan when needed | 15 min |
+| K.3.5 | Update manifest after scan | Record which files contributed to schema | 30 min |
+| K.3.6 | Tests | Test incremental behavior | 1 hour |
+
+**Total estimated effort:** 4-5 hours
+
+#### K.4: Incremental Ingestion (PLANNED)
+
+**Problem:** Ingest currently processes all files in each batch, even if already ingested.
+
+**Approach:**
+```
+1. For each file in batch:
+   - Check manifest.should_process(file)
+   - Skip if unchanged
+2. After successful ingestion:
+   - Call manifest.update_file(file, status="success")
+3. Support `--force` flag to reprocess all
+```
+
+**Implementation tasks:**
+
+| ID | Task | Description | Effort |
+|----|------|-------------|--------|
+| K.4.1 | Add manifest check to ingest | Filter batch files by should_process() | 30 min |
+| K.4.2 | Update manifest after ingest | Record successful ingestion | 30 min |
+| K.4.3 | Add `--force` flag | Bypass manifest check | 15 min |
+| K.4.4 | Handle partial batch success | Track per-file status | 45 min |
+| K.4.5 | Tests | Test incremental ingestion | 1 hour |
+
+**Total estimated effort:** 3-4 hours
+
+#### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/fairway/data/main.nf` | Add `schema` and `ingest` entry points |
+| `src/fairway/data/Makefile` | Add `submit-schema`, `submit-ingest` targets |
+| `src/fairway/data/scripts/driver.sh` | Support `FAIRWAY_ENTRY` env var |
+| `src/fairway/batch_processor.py` | Add manifest integration |
+| `src/fairway/cli.py` | Update `schema-scan` and `ingest` commands |
+| `src/fairway/manifest.py` | May need new methods for batch tracking |
+
+#### Success Criteria
+
+1. `make submit-schema` runs without starting Spark
+2. `make submit-ingest` starts Spark and uses schemas from phase 1
+3. Re-running schema phase only scans new/changed files
+4. Re-running ingest phase only processes new/changed files
+5. `--full` / `--force` flags bypass incremental behavior
+6. All file processing tracked in manifest

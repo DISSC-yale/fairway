@@ -68,6 +68,8 @@ run-internal: bootstrap
 	./scripts/run_pipeline.sh -profile $(PROFILES) \
 		$(if $(TABLE),--table $(TABLE),) \
 		$(if $(N_BATCHES),--n_batches $(N_BATCHES),) \
+		$(if $(ENTRY),-entry $(ENTRY),) \
+		$(if $(SPARK_MASTER),--spark-master '$(SPARK_MASTER)',) \
 		-resume
 
 # Run locally (Interactive)
@@ -88,6 +90,37 @@ run-hpc: ## Run on Slurm (Login Node - Orchestrator stays here)
 submit-hpc: bootstrap ## Submit the Nextflow orchestrator as a Slurm job
 	@echo "Submitting driver job..."
 	@FAIRWAY_TABLE=$(TABLE) FAIRWAY_N_BATCHES=$(N_BATCHES) FAIRWAY_VENV=$(FAIRWAY_VENV) \
+		sbatch scripts/driver.sh $(HAS_APPTAINER)
+
+# ==============================================================================
+# Two-Phase Pipeline (Schema then Ingest)
+# ==============================================================================
+
+# Phase 1: Schema discovery (no Spark required)
+schema: ## Run schema discovery phase only (no Spark)
+	@echo "=== Phase 1: Schema Discovery (no Spark) ==="
+	$(MAKE) run-internal PROFILES=slurm ENTRY=schema
+
+schema-local: ## Run schema discovery locally
+	$(MAKE) run-internal PROFILES=standard ENTRY=schema
+
+# Phase 2: Data ingestion (requires Spark)
+ingest-hpc: ## Run ingest phase on HPC (requires SPARK_MASTER)
+ifndef SPARK_MASTER
+	$(error SPARK_MASTER is required. Usage: make ingest-hpc SPARK_MASTER=spark://host:7077)
+endif
+	@echo "=== Phase 2: Ingest (Spark: $(SPARK_MASTER)) ==="
+	$(MAKE) run-internal PROFILES=slurm ENTRY=ingest SPARK_MASTER=$(SPARK_MASTER)
+
+# Submit two-phase jobs
+submit-schema: bootstrap ## Submit schema phase to Slurm (no Spark)
+	@echo "Submitting schema phase..."
+	@FAIRWAY_VENV=$(FAIRWAY_VENV) FAIRWAY_ENTRY=schema \
+		sbatch scripts/driver.sh $(HAS_APPTAINER)
+
+submit-ingest: bootstrap ## Submit ingest phase to Slurm (starts Spark first)
+	@echo "Submitting ingest phase (will start Spark cluster)..."
+	@FAIRWAY_VENV=$(FAIRWAY_VENV) FAIRWAY_ENTRY=ingest \
 		sbatch scripts/driver.sh $(HAS_APPTAINER)
 
 # ==============================================================================

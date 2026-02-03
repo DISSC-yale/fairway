@@ -13,8 +13,10 @@
 #
 # Usage:
 #   make submit-hpc TABLE=my_table [N_BATCHES=10]
+#   make submit-schema   # Schema phase only (no Spark)
+#   make submit-ingest   # Ingest phase only (starts Spark)
 #   OR
-#   FAIRWAY_TABLE=my_table sbatch scripts/driver.sh
+#   FAIRWAY_TABLE=my_table FAIRWAY_ENTRY=schema sbatch scripts/driver.sh
 
 # =============================================================================
 # Configuration
@@ -23,6 +25,7 @@
 # Table to process (from env var set by Makefile)
 TABLE=${FAIRWAY_TABLE:-}
 N_BATCHES=${FAIRWAY_N_BATCHES:-}
+ENTRY=${FAIRWAY_ENTRY:-}  # 'schema', 'ingest', or empty for full pipeline
 
 # Capture Makefile argument if provided (prioritize $1, fallback to env var)
 HAS_APPTAINER=${1:-$HAS_APPTAINER}
@@ -43,31 +46,38 @@ echo "Fairway Driver Job Starting"
 echo "=================================================="
 echo "Table: ${TABLE:-'(all tables)'}"
 echo "N_Batches: ${N_BATCHES:-'(auto)'}"
+echo "Entry: ${ENTRY:-'(full pipeline)'}"
 echo "Apptainer: $HAS_APPTAINER"
 echo "=================================================="
 
 # =============================================================================
-# 1. Start Spark Cluster
+# 1. Start Spark Cluster (only if needed)
 # =============================================================================
-# Define cleanup function to ensure cluster is stopped when driver exits
-cleanup() {
-    echo "Stopping Spark Cluster..."
-    fairway spark stop || true
-}
-trap cleanup EXIT
+SPARK_ARGS=""
 
-echo "Starting Spark Cluster..."
-fairway spark start
+# Schema phase doesn't need Spark
+if [ "$ENTRY" != "schema" ]; then
+    # Define cleanup function to ensure cluster is stopped when driver exits
+    cleanup() {
+        echo "Stopping Spark Cluster..."
+        fairway spark stop || true
+    }
+    trap cleanup EXIT
 
-# Wait/Read Master URL
-MASTER_URL_FILE=~/spark_master_url.txt
-if [ -f "$MASTER_URL_FILE" ]; then
-    SPARK_MASTER=$(cat "$MASTER_URL_FILE")
-    echo "Spark Master: $SPARK_MASTER"
-    SPARK_ARGS="--spark-master $SPARK_MASTER"
+    echo "Starting Spark Cluster..."
+    fairway spark start
+
+    # Wait/Read Master URL
+    MASTER_URL_FILE=~/spark_master_url.txt
+    if [ -f "$MASTER_URL_FILE" ]; then
+        SPARK_MASTER=$(cat "$MASTER_URL_FILE")
+        echo "Spark Master: $SPARK_MASTER"
+        SPARK_ARGS="--spark-master $SPARK_MASTER"
+    else
+        echo "WARNING: Spark Master URL file not found. Running in local mode."
+    fi
 else
-    echo "WARNING: Spark Master URL file not found. Running in local mode."
-    SPARK_ARGS=""
+    echo "Schema phase - skipping Spark cluster startup"
 fi
 
 # =============================================================================
@@ -81,6 +91,10 @@ fi
 
 if [ -n "$N_BATCHES" ]; then
     NF_ARGS="$NF_ARGS --n_batches $N_BATCHES"
+fi
+
+if [ -n "$ENTRY" ]; then
+    NF_ARGS="$NF_ARGS -entry $ENTRY"
 fi
 
 # =============================================================================
