@@ -180,7 +180,11 @@ class Config:
                     'root': tbl.get('root'),
                     'archives': archives_pattern,
                     'files': files_pattern,
-                    'fixed_width_spec': fixed_width_spec
+                    'fixed_width_spec': fixed_width_spec,
+                    # New orchestration fields
+                    'depends_on': tbl.get('depends_on'),
+                    'validation': tbl.get('validation', {}),
+                    'performance': tbl.get('performance', {}),
                 })
 
             else:
@@ -247,7 +251,11 @@ class Config:
                         'write_mode': tbl.get('write_mode', 'overwrite'),
                         'archives': archives_pattern,
                         'files': files_pattern,
-                        'fixed_width_spec': fixed_width_spec
+                        'fixed_width_spec': fixed_width_spec,
+                        # New orchestration fields
+                        'depends_on': tbl.get('depends_on'),
+                        'validation': tbl.get('validation', {}),
+                        'performance': tbl.get('performance', {}),
                     })
         return expanded
 

@@ -1,7 +1,6 @@
-import importlib.resources
-from . import data
-
 """
+Templates loader for fairway project scaffolding.
+
 These are loaded from src/fairway/data/ to ensure they're available
 when fairway is installed via pip.
 
@@ -12,10 +11,7 @@ templates as strings in this file.
 """
 
 import sys
-if sys.version_info < (3, 9):
-    import importlib.resources as pkg_resources
-else:
-    import importlib.resources as pkg_resources
+import importlib.resources as pkg_resources
 
 def _read_data_file(filename):
     """Read a file from the fairway.data package."""
@@ -39,6 +35,7 @@ DOCKERFILE_TEMPLATE = _read_data_file('Dockerfile')
 DOCKERIGNORE = _read_data_file('.dockerignore')
 NEXTFLOW_CONFIG = _read_data_file('nextflow.config')
 MAIN_NF = _read_data_file('main.nf')
+FAIRWAY_PROCESSES_NF = _read_data_file('fairway_processes.nf')
 MAKEFILE_TEMPLATE = _read_data_file('Makefile')
 CONFIG_TEMPLATE = _read_data_file('fairway.yaml')
 SPARK_YAML_TEMPLATE = _read_data_file('spark.yaml')

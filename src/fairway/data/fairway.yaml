@@ -9,7 +9,20 @@ dataset_name: "{name}"
 # Default is 'duckdb' if not specified.
 engine: "{engine_type}"
 
+# ─────────────────────────────────────────────────────────────
+# Orchestration Configuration (Nextflow fan-out/fan-in)
+# ─────────────────────────────────────────────────────────────
+orchestration:
+  # Number of files per batch for parallel processing
+  # Lower = more parallelism, higher = fewer jobs
+  batch_size: 100
+
+  # Work directory for intermediate batch outputs
+  work_dir: .fairway/work
+
+# ─────────────────────────────────────────────────────────────
 # Storage Configuration
+# ─────────────────────────────────────────────────────────────
 storage:
   # Directory for raw input files
   raw_dir: "data/raw"
@@ -38,6 +51,7 @@ storage:
 # Tables - define your data sources
 # ─────────────────────────────────────────────────────────────
 tables:
+  # Example: Basic table reading from raw files
   - name: "sales"
     # Root directory for file discovery.
     # Purpose:
@@ -64,6 +78,17 @@ tables:
       address: "STRING"
       year: "INTEGER"
       month: "INTEGER"
+
+    # Table-level validation rules (override global validations)
+    # validation:
+    #   min_rows: 1
+    #   check_nulls:
+    #     - id
+    #     - date
+
+    # Table-level performance settings (override global performance)
+    # performance:
+    #   target_rows: 500000
 
     # Write mode for output
     # Options: 'overwrite' (default), 'append'
@@ -94,6 +119,14 @@ tables:
     #   scope: "per_file" # or 'global'
     #   execution_mode: "driver" # or 'cluster' (requires pyspark)
 
+  # Example: Table with dependency (reads from another table's output)
+  # - name: "processed_sales"
+  #   depends_on: sales  # Reads from 'sales' table output instead of raw files
+  #   transforms:
+  #     - name: aggregate
+  #       script: transforms/aggregate.py
+  #       parallel: false  # Fan-in transform
+
   # Example: Archive handling with archives/files keys (recommended for zipped data)
   # Multiple tables can share the same archive - extracted once, cached.
   # - name: "customers_from_archive"
@@ -110,18 +143,6 @@ tables:
   #   path: "*.txt"
   #   format: "fixed_width"
   #   fixed_width_spec: "specs/legacy_spec.yaml"  # Path to column spec file
-  #   # Spec file format (YAML):
-  #   #   columns:
-  #   #     - name: id
-  #   #       start: 0      # 0-indexed character position
-  #   #       length: 5     # Number of characters
-  #   #       type: INTEGER # Native engine type (INTEGER, VARCHAR, DOUBLE, etc.)
-  #   #       trim: true    # Optional: strip whitespace (default: false)
-  #   #     - name: description
-  #   #       start: 5
-  #   #       length: 30
-  #   #       type: VARCHAR
-  #   #       trim: true
 
   # Example: Handling Zipped Data with Metadata in Filename (legacy preprocess approach)
   # File: VM2Uniform--UT--2021-07-08.zip
@@ -143,13 +164,8 @@ tables:
       - "year"
       - "month"
 
-    # Static metadata to attach to all records from this table
-    # metadata:
-    #   source_system: "legacy_sales_db"
-    #   environment: "production"
-
 # ─────────────────────────────────────────────────────────────
-# Validation Rules
+# Validation Rules (Global defaults, can be overridden per-table)
 # ─────────────────────────────────────────────────────────────
 validations:
   # Level 1: Basic Sanity Checks
@@ -178,7 +194,7 @@ enrichment:
   # h3_resolution: 9
 
 # ─────────────────────────────────────────────────────────────
-# Performance & Optimization
+# Performance & Optimization (Global defaults, can be overridden per-table)
 # ─────────────────────────────────────────────────────────────
 performance:
   # Target number of rows per partition (used when salting is enabled)
@@ -186,12 +202,9 @@ performance:
 
   # Target parquet file size in MB (default: 128)
   # Uses heuristic of ~8000 rows/MB to calculate maxRecordsPerFile
-  # Actual file size depends on data characteristics (column count, data types)
   # target_file_size_mb: 128
 
   # Direct control over max records per file (overrides target_file_size_mb heuristic)
-  # Use this for precise control when the heuristic produces wrong-sized files
-  # Example: If files are too small, increase this value
   # max_records_per_file: 1000000
 
   # Compression codec for parquet output
@@ -199,8 +212,6 @@ performance:
   # compression: "snappy"
 
   # Enable partition salting to prevent data skew (default: false)
-  # When enabled, adds a 'salt' column to distribute data evenly across partitions.
-  # Only applies when partition_by is set.
   # salting: false
 
 # ─────────────────────────────────────────────────────────────

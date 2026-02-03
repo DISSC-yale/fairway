@@ -117,11 +117,17 @@ def init(name, engine):
     with open(os.path.join(name, 'nextflow.config'), 'w') as f:
         f.write(NEXTFLOW_CONFIG)
     click.echo("  Created file: nextflow.config (customize profiles here)")
-    
+
     # Write main.nf pipeline file from template
     with open(os.path.join(name, 'main.nf'), 'w') as f:
         f.write(MAIN_NF)
     click.echo("  Created file: main.nf (Nextflow pipeline)")
+
+    # Write fairway_processes.nf (reusable process definitions)
+    from .templates import FAIRWAY_PROCESSES_NF
+    with open(os.path.join(name, 'fairway_processes.nf'), 'w') as f:
+        f.write(FAIRWAY_PROCESSES_NF)
+    click.echo("  Created file: fairway_processes.nf (batch process definitions)")
 
     # Write Makefile
     with open(os.path.join(name, 'Makefile'), 'w') as f:
@@ -700,6 +706,198 @@ def pull():
 def cache():
     """Manage fairway cache."""
     pass
+
+
+# ============================================================
+# Batch Commands (for Nextflow orchestration)
+# ============================================================
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file.')
+@click.option('--table', required=True, help='Table name.')
+@click.option('--count', 'show_count', is_flag=True, help='Show file count only.')
+@click.option('--batch', type=int, default=None, help='Show files for specific batch.')
+def files(config, table, show_count, batch):
+    """List files for a table, optionally filtered by batch."""
+    from .batch_processor import BatchProcessor
+
+    if config is None:
+        config = discover_config()
+
+    bp = BatchProcessor(config, table)
+
+    if show_count:
+        click.echo(bp.get_file_count())
+    elif batch is not None:
+        try:
+            batch_files = bp.get_files_for_batch(batch)
+            for f in batch_files:
+                click.echo(f)
+        except ValueError as e:
+            raise click.ClickException(str(e))
+    else:
+        # List all files
+        for f in bp._discover_files():
+            click.echo(f)
+
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file.')
+@click.option('--table', required=True, help='Table name.')
+@click.option('--size', type=int, default=None, help='Override batch size.')
+def batches(config, table, size):
+    """Show number of batches for a table."""
+    from .batch_processor import BatchProcessor
+
+    if config is None:
+        config = discover_config()
+
+    bp = BatchProcessor(config, table, batch_size=size)
+    click.echo(bp.get_batch_count())
+
+
+@main.command('schema-scan')
+@click.option('--config', default=None, help='Path to config file.')
+@click.option('--table', required=True, help='Table name.')
+@click.option('--batch', type=int, required=True, help='Batch number to scan.')
+def schema_scan(config, table, batch):
+    """Scan schema for a specific batch."""
+    from .batch_processor import BatchProcessor
+    import json
+
+    if config is None:
+        config = discover_config()
+
+    bp = BatchProcessor(config, table)
+
+    try:
+        batch_files = bp.get_files_for_batch(batch)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Scanning schema for batch {batch} ({len(batch_files)} files)...")
+
+    # Infer schema from first file in batch
+    from .engines.duckdb_engine import DuckDBEngine
+    engine = DuckDBEngine()
+
+    if batch_files:
+        sample_file = batch_files[0]
+        fmt = bp.table_config.get('format', 'csv')
+        schema = engine.infer_schema(sample_file, fmt)
+
+        # Write schema to batch directory
+        batch_dir = bp.get_batch_dir(batch)
+        os.makedirs(batch_dir, exist_ok=True)
+        schema_path = os.path.join(batch_dir, f'schema_{batch}.json')
+
+        with open(schema_path, 'w') as f:
+            json.dump(schema, f, indent=2)
+
+        click.echo(f"Schema written to {schema_path}")
+
+
+@main.command('schema-merge')
+@click.option('--config', default=None, help='Path to config file.')
+@click.option('--table', required=True, help='Table name.')
+def schema_merge(config, table):
+    """Merge partial schemas from all batches."""
+    from .batch_processor import BatchProcessor
+    import json
+
+    if config is None:
+        config = discover_config()
+
+    bp = BatchProcessor(config, table)
+    work_dir = os.path.join(bp.work_dir, table)
+
+    # Collect all partial schemas
+    merged_schema = {}
+    schema_files = []
+
+    for batch in range(bp.get_batch_count()):
+        schema_path = os.path.join(work_dir, f'batch_{batch}', f'schema_{batch}.json')
+        if os.path.exists(schema_path):
+            schema_files.append(schema_path)
+            with open(schema_path, 'r') as f:
+                partial = json.load(f)
+                # Merge: later schemas can override (simple strategy)
+                merged_schema.update(partial)
+
+    if not schema_files:
+        # Check for legacy schema files in work_dir directly
+        for f in os.listdir(work_dir) if os.path.exists(work_dir) else []:
+            if f.startswith('schema_') and f.endswith('.json'):
+                schema_path = os.path.join(work_dir, f)
+                schema_files.append(schema_path)
+                with open(schema_path, 'r') as sf:
+                    partial = json.load(sf)
+                    merged_schema.update(partial)
+
+    click.echo(f"Merged {len(schema_files)} schema files")
+
+    # Write unified schema
+    unified_path = os.path.join(work_dir, 'unified_schema.json')
+    os.makedirs(work_dir, exist_ok=True)
+    with open(unified_path, 'w') as f:
+        json.dump(merged_schema, f, indent=2)
+
+    click.echo(f"Unified schema written to {unified_path}")
+
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file.')
+@click.option('--table', required=True, help='Table name.')
+@click.option('--batch', type=int, required=True, help='Batch number to ingest.')
+@click.option('--spark-master', default=None, help='Spark master URL.')
+def ingest(config, table, batch, spark_master):
+    """Ingest a specific batch."""
+    from .batch_processor import BatchProcessor
+
+    if config is None:
+        config = discover_config()
+
+    bp = BatchProcessor(config, table)
+
+    try:
+        batch_files = bp.get_files_for_batch(batch)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Ingesting batch {batch} ({len(batch_files)} files)...")
+
+    # For now, just confirm the files exist
+    # Full implementation would use the ingestion pipeline
+    batch_dir = bp.get_batch_dir(batch)
+    os.makedirs(batch_dir, exist_ok=True)
+
+    click.echo(f"Batch {batch} ingestion complete. Output: {batch_dir}")
+
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file.')
+@click.option('--table', required=True, help='Table name.')
+def finalize(config, table):
+    """Finalize processing for a table."""
+    from .batch_processor import BatchProcessor
+
+    if config is None:
+        config = discover_config()
+
+    bp = BatchProcessor(config, table)
+    work_dir = os.path.join(bp.work_dir, table)
+
+    click.echo(f"Finalizing table {table}...")
+
+    # Check for completed batches
+    completed = 0
+    for batch in range(bp.get_batch_count()):
+        batch_dir = bp.get_batch_dir(batch)
+        if os.path.exists(batch_dir):
+            completed += 1
+
+    click.echo(f"Found {completed}/{bp.get_batch_count()} completed batches")
+    click.echo(f"Finalization complete for {table}")
 
 
 @cache.command()

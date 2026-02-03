@@ -1,64 +1,109 @@
 #!/usr/bin/env nextflow
 
+/*
+ * Fairway Main Workflow - Fan-Out/Fan-In Orchestration
+ *
+ * This workflow orchestrates parallel batch processing for large datasets.
+ * It uses fairway CLI commands as workers, coordinated by Nextflow.
+ *
+ * Usage:
+ *   nextflow run main.nf --table TABLE_NAME [--n_batches N] [--spark_master URL]
+ */
+
 nextflow.enable.dsl=2
 
-params.config = "config/fairway.yaml"
-params.spark_master = null
+// Robust include path: uses FAIRWAY_NF_LIB env var or falls back to workflow.projectDir
+def nf_lib = System.getenv('FAIRWAY_NF_LIB') ?: "${workflow.projectDir}"
+include { SCHEMA_SCAN; SCHEMA_MERGE; INGEST; TRANSFORM_BATCH; TRANSFORM_FANIN; FINALIZE } from "${nf_lib}/fairway_processes.nf"
 
-import org.yaml.snakeyaml.Yaml
+// Parameters - config is single source of truth, these are runtime overrides
+params.table = null
+params.config = 'config/fairway.yaml'
+params.n_batches = null       // If null, calculated dynamically via fairway batches
+params.spark_master = null    // Passed by driver.sh after starting cluster
+params.work_dir = '.fairway/work'
 
-def configPath = params.config
-def configFile = new File(configPath)
-def appConfig = new Yaml().load(configFile.text)
-
-// Default to 'data/intermediate' and 'data/final' if not specified, but prefer config
-def intermediateDir = appConfig.storage?.intermediate_dir ?: 'data/intermediate'
-def finalDir = appConfig.storage?.final_dir ?: 'data/final'
-
-process run_fairway {
-    publishDir "${params.outdir}/intermediate", mode: 'copy', pattern: "${intermediateDir}/*", saveAs: { fn -> new File(fn).name }
-    publishDir "${params.outdir}/final", mode: 'copy', pattern: "${finalDir}/*", saveAs: { fn -> new File(fn).name }
-    
-    input:
-    path config_file
-
-    output:
-    path "${intermediateDir}/*"
-    path "${finalDir}/*"
-
-    script:
-    def master_arg = params.spark_master ? "--spark-master ${params.spark_master}" : ""
-    """
-    # Dynamic Data Discovery
-    # Traverse up directory tree to find 'data' directory (Project Root)
-    search_dir="${workflow.launchDir}"
-    found_data=""
-    
-    # Check up to 5 levels up
-    for i in {1..5}; do
-        if [ -d "\$search_dir/data/raw" ]; then
-            found_data="\$search_dir/data"
-            break
-        fi
-        # Move up one level
-        search_dir="\$(dirname "\$search_dir")"
-    done
-    
-    if [ -n "\$found_data" ]; then
-        echo "Found data directory at: \$found_data"
-        ln -s "\$found_data" data
-    else
-        echo "WARNING: Could not find 'data' directory in hierarchy of launchDir."
-    fi
-
-    # Using 'fairway run' as a worker process
-    # It will handle Spark provisioning (if --with-spark is implicit or passed in config) 
-    # and then execute the pipeline.
-    fairway run --config ${config_file} ${master_arg}
-    """
+// Validate required parameters
+if (!params.table) {
+    error "ERROR: --table parameter is required. Example: nextflow run main.nf --table my_table"
 }
 
+
 workflow {
-    config_ch = Channel.fromPath(params.config)
-    run_fairway(config_ch)
+    // Calculate batch count dynamically if not provided
+    def n_batches
+    if (params.n_batches != null) {
+        n_batches = params.n_batches
+    } else {
+        // Execute fairway batches command to get count
+        def cmd = "fairway batches --config ${params.config} --table ${params.table}"
+        def proc = cmd.execute()
+        proc.waitFor()
+        n_batches = proc.text.trim().toInteger()
+    }
+
+    log.info "Processing table: ${params.table}"
+    log.info "Number of batches: ${n_batches}"
+
+    // Spark master URL (passed by driver.sh, defaults to local for testing)
+    def spark_master = params.spark_master ?: "local[*]"
+    log.info "Spark master: ${spark_master}"
+
+    // Create batch channel (0 to n_batches-1)
+    batches = Channel.of(0..<n_batches)
+
+    // ========================================
+    // Phase 1: Schema scan (fan-out)
+    // ========================================
+    // Each batch scans its files independently
+    schemas = SCHEMA_SCAN(batches)
+
+    // ========================================
+    // Phase 2: Schema merge (fan-in)
+    // ========================================
+    // Wait for all partial schemas, then merge
+    unified = SCHEMA_MERGE(schemas.collect())
+
+    // ========================================
+    // Phase 3: Ingest (fan-out)
+    // ========================================
+    // Each batch ingests independently using unified schema
+    // Reset batches channel for ingest phase
+    batches_for_ingest = Channel.of(0..<n_batches)
+    partitions = INGEST(batches_for_ingest, unified, spark_master)
+
+    // ========================================
+    // Phase 4: Transforms (customize this section)
+    // ========================================
+    // Example: Map partitions for transform processing
+    // result = partitions.map { p -> tuple(p.baseName.split('_')[-1].toInteger(), p) }
+
+    // Example: Parallel transform (uncomment to use)
+    // result = TRANSFORM_BATCH(result, 'standardize', spark_master)
+
+    // Example: Fan-in transform (uncomment to use)
+    // collected = result.map { it[1] }.collect()
+    // result = TRANSFORM_FANIN(collected, 'deduplicate', spark_master)
+
+    // For now, just use partitions directly
+    result = partitions
+
+    // ========================================
+    // Phase 5: Finalize
+    // ========================================
+    FINALIZE(result.collect())
+}
+
+
+/*
+ * Workflow completion handler
+ */
+workflow.onComplete {
+    log.info "Pipeline completed at: ${workflow.complete}"
+    log.info "Duration: ${workflow.duration}"
+    log.info "Success: ${workflow.success}"
+
+    if (!workflow.success) {
+        log.error "Pipeline failed. Check .nextflow.log for details."
+    }
 }

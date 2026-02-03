@@ -196,6 +196,9 @@ def validate_spec(spec):
     }
 
 
+# TODO: Integrate this function into the fixed-width parsing flow.
+# Currently not called anywhere - needs to be wired into read_fixed_width()
+# or exposed as a CLI option for auto-inferring column types.
 def infer_types_from_data(data_lines, spec, sample_size=1000):
     """
     Optionally infer column types from data when not specified in spec.

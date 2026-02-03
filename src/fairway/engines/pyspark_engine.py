@@ -6,11 +6,6 @@ except ImportError as e:
     F = None
     _spark_import_error = e
 
-except ImportError as e:
-    SparkSession = None
-    F = None
-    _spark_import_error = e
-
 import random
 import os
 import re

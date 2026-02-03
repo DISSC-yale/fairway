@@ -6,7 +6,7 @@ import tarfile
 import hashlib
 import importlib.util
 from .config_loader import Config
-from .manifest import ManifestManager, ManifestStore, _get_file_hash_static
+from .manifest import ManifestStore, _get_file_hash_static
 from .engines.duckdb_engine import DuckDBEngine
 from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
@@ -97,8 +97,6 @@ class IngestionPipeline:
         print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
-        # Keep self.manifest for backward compatibility during transition
-        self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
@@ -366,8 +364,9 @@ class IngestionPipeline:
         # Store all matched files for the engine to process
         table['_extracted_files'] = all_matched_files
 
-        # If single archive, return glob pattern
-        return result_path
+        # Return glob pattern for the first extracted directory
+        # (files are also stored in table['_extracted_files'] for direct access)
+        return os.path.join(all_extracted_dirs[0], files_pattern)
 
     def dry_run(self):
         """Show matched files without processing - for config verification."""

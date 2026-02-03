@@ -276,7 +276,7 @@ tables:
 
   # Table B: Reads from Table A, reshapes wide → long
   - name: long_claims
-    source: wide_claims          # Reads from another table's output
+    depends_on: wide_claims          # Reads from another table's output
 
     transforms:
       - name: reshape_to_long
@@ -285,7 +285,7 @@ tables:
 
   # Table C: Further processing
   - name: final_claims
-    source: long_claims
+    depends_on: long_claims
 
     transforms:
       - name: deduplicate
@@ -299,9 +299,9 @@ tables:
 | Field | Meaning |
 |-------|---------|
 | `path:` | Read from raw files (batched by file count) |
-| `source:` | Read from another table's output (starts as fan-in, reads all parquet) |
+| `depends_on:` | Read from another table's output (starts as fan-in, reads all parquet) |
 
-**Note:** `path:` + `source:` combination (join raw files with derived table) is a future consideration.
+**Note:** `path:` + `depends_on:` combination (join raw files with derived table) is a future consideration.
 
 **Config Migration:** `validations` and `performance` sections move under each table.
 
@@ -485,10 +485,10 @@ driver.sh (SLURM job):
 │   ├── 10x INGEST jobs (parallel)
 │   ├── 10x transform: standardize (parallel)
 │   │
-│   │  === long_claims (source: wide_claims) ===
+│   │  === long_claims (depends_on: wide_claims) ===
 │   ├── 1x transform: reshape_to_long (fan-in, reads all wide_claims output)
 │   │
-│   │  === final_claims (source: long_claims) ===
+│   │  === final_claims (depends_on: long_claims) ===
 │   ├── 1x transform: deduplicate (fan-in)
 │   ├── 1x FINALIZE job
 │   │
@@ -496,9 +496,9 @@ driver.sh (SLURM job):
 ```
 
 **Table dependency resolution:**
-- `--table X` triggers X and all upstream `source:` dependencies
+- `--table X` triggers X and all upstream `depends_on:` dependencies
 - Tables with `path:` are roots (no dependencies)
-- Tables with `source:` wait for source table to complete
+- Tables with `depends_on:` wait for source table to complete
 
 **Data flow (file locations):**
 ```

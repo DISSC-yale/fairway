@@ -546,3 +546,159 @@ class ManifestStore:
             if f.endswith('.json') and not f.startswith('_'):
                 tables.append(f[:-5])  # Remove .json
         return sorted(tables)
+
+
+# --- Partial Status Classes (Phase 8: Batch Concurrency) ---
+
+import time
+
+
+class PartialStatus:
+    """Append-only status tracking for batch processing.
+
+    Each batch writes to its own status.jsonl file to avoid race conditions.
+    Status files are merged during finalization.
+
+    Format (JSONL):
+        {"file": "path/to/file.csv", "status": "success", "hash": "abc123", "ts": 1706900000}
+    """
+
+    def __init__(self, work_dir: str, batch: int):
+        """Initialize PartialStatus for a specific batch.
+
+        Args:
+            work_dir: Work directory for the table (e.g., .fairway/work/table_name)
+            batch: Batch number (0-indexed)
+        """
+        self.work_dir = work_dir
+        self.batch = batch
+        self.batch_dir = os.path.join(work_dir, f"batch_{batch}")
+        self.status_path = os.path.join(self.batch_dir, "status.jsonl")
+
+    def append(self, file_path: str, status: str, file_hash: str) -> None:
+        """Append a status entry for a file.
+
+        Args:
+            file_path: Relative path to the processed file
+            status: Processing status ('success', 'failed', 'skipped')
+            file_hash: File hash for change detection
+        """
+        os.makedirs(self.batch_dir, exist_ok=True)
+
+        entry = {
+            "file": file_path,
+            "status": status,
+            "hash": file_hash,
+            "ts": time.time()
+        }
+
+        with open(self.status_path, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+
+    def read_entries(self) -> list[dict]:
+        """Read all status entries for this batch.
+
+        Returns:
+            List of status entry dictionaries
+        """
+        if not os.path.exists(self.status_path):
+            return []
+
+        entries = []
+        with open(self.status_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    entries.append(json.loads(line))
+        return entries
+
+
+class StatusMerger:
+    """Merge partial status files from multiple batches.
+
+    Handles conflict resolution using last-write-wins (by timestamp).
+    Logs conflicts for user review.
+    """
+
+    def __init__(self, work_dir: str):
+        """Initialize StatusMerger.
+
+        Args:
+            work_dir: Work directory for the table (e.g., .fairway/work/table_name)
+        """
+        self.work_dir = work_dir
+        self._conflicts: dict[str, list[dict]] = {}
+
+    def merge(self) -> dict[str, dict]:
+        """Merge all batch status files.
+
+        Returns:
+            Dictionary mapping file paths to their latest status entry
+        """
+        self._conflicts = {}
+        merged: dict[str, dict] = {}
+        all_entries: dict[str, list[dict]] = {}
+
+        # Collect all entries from all batches
+        if not os.path.exists(self.work_dir):
+            return merged
+
+        for item in os.listdir(self.work_dir):
+            batch_dir = os.path.join(self.work_dir, item)
+            if item.startswith("batch_") and os.path.isdir(batch_dir):
+                status_path = os.path.join(batch_dir, "status.jsonl")
+                if os.path.exists(status_path):
+                    with open(status_path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                entry = json.loads(line)
+                                file_key = entry['file']
+                                if file_key not in all_entries:
+                                    all_entries[file_key] = []
+                                all_entries[file_key].append(entry)
+
+        # Resolve conflicts with last-write-wins
+        for file_key, entries in all_entries.items():
+            if len(entries) > 1:
+                # Sort by timestamp, take latest
+                entries.sort(key=lambda e: e.get('ts', 0))
+                self._conflicts[file_key] = entries
+                merged[file_key] = entries[-1]  # Last write wins
+            else:
+                merged[file_key] = entries[0]
+
+        return merged
+
+    def get_conflicts(self) -> dict[str, list[dict]]:
+        """Get all detected conflicts from last merge.
+
+        Returns:
+            Dictionary mapping file paths to list of conflicting entries
+        """
+        return self._conflicts
+
+    def write_merged(self, output_path: str) -> None:
+        """Write merged status to a manifest file.
+
+        Args:
+            output_path: Path to write the merged manifest
+        """
+        merged = self.merge()
+
+        manifest = {
+            "version": "3.0",
+            "merged_at": datetime.now().isoformat(),
+            "files": {
+                file_key: {
+                    "hash": entry['hash'],
+                    "status": entry['status'],
+                    "last_processed": datetime.fromtimestamp(entry['ts']).isoformat()
+                }
+                for file_key, entry in merged.items()
+            }
+        }
+
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        with open(output_path, 'w') as f:
+            json.dump(manifest, f, indent=2)

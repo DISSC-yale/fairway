@@ -10,8 +10,22 @@
 # =============================================================================
 # This script is submitted to Slurm to run the Nextflow orchestrator on a
 # compute node (preventing login node usage for long-running processes).
+#
+# Usage:
+#   make submit-hpc TABLE=my_table [N_BATCHES=10]
+#   OR
+#   FAIRWAY_TABLE=my_table sbatch scripts/driver.sh
 
-# 3. Run Pipeline via Shared Script
+set -e
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Table to process (from env var set by Makefile)
+TABLE=${FAIRWAY_TABLE:-}
+N_BATCHES=${FAIRWAY_N_BATCHES:-}
+
 # Capture Makefile argument if provided (prioritize $1, fallback to env var)
 HAS_APPTAINER=${1:-$HAS_APPTAINER}
 
@@ -23,18 +37,24 @@ if [ -z "$HAS_APPTAINER" ]; then
         HAS_APPTAINER="no"
     fi
 fi
+
 export FAIRWAY_VENV=$FAIRWAY_VENV
 
-# =============================================================================
-# 1. Start Spark Cluster (Orchestration)
-# =============================================================================
-# We attempt to start a Spark cluster. The 'fairway spark start' command
-# reads config/spark.yaml and submits a separate Slurm job for the cluster.
+echo "=================================================="
+echo "Fairway Driver Job Starting"
+echo "=================================================="
+echo "Table: ${TABLE:-'(all tables)'}"
+echo "N_Batches: ${N_BATCHES:-'(auto)'}"
+echo "Apptainer: $HAS_APPTAINER"
+echo "=================================================="
 
+# =============================================================================
+# 1. Start Spark Cluster
+# =============================================================================
 # Define cleanup function to ensure cluster is stopped when driver exits
 cleanup() {
     echo "Stopping Spark Cluster..."
-    fairway spark stop
+    fairway spark stop || true
 }
 trap cleanup EXIT
 
@@ -42,23 +62,40 @@ echo "Starting Spark Cluster..."
 fairway spark start
 
 # Wait/Read Master URL
-# 'fairway spark start' waits for the master to be ready, but we double check
-# the file it produces.
 MASTER_URL_FILE=~/spark_master_url.txt
 if [ -f "$MASTER_URL_FILE" ]; then
     SPARK_MASTER=$(cat "$MASTER_URL_FILE")
     echo "Spark Master: $SPARK_MASTER"
-    SPARK_ARGS="--spark-master $SPARK_MASTER"
+    SPARK_ARGS="--spark_master $SPARK_MASTER"
 else
-    echo "WARNING: Spark Master URL file not found after start. Running in local mode?"
+    echo "WARNING: Spark Master URL file not found. Running in local mode."
     SPARK_ARGS=""
 fi
 
 # =============================================================================
-# 2. Run Pipeline via Shared Script
+# 2. Build Nextflow Arguments
 # =============================================================================
-if [ "$HAS_APPTAINER" = "yes" ]; then
-    ./scripts/run_pipeline.sh -profile slurm,apptainer -resume $SPARK_ARGS
-else
-    ./scripts/run_pipeline.sh -profile slurm -resume $SPARK_ARGS
+NF_ARGS=""
+
+if [ -n "$TABLE" ]; then
+    NF_ARGS="$NF_ARGS --table $TABLE"
 fi
+
+if [ -n "$N_BATCHES" ]; then
+    NF_ARGS="$NF_ARGS --n_batches $N_BATCHES"
+fi
+
+# =============================================================================
+# 3. Run Pipeline
+# =============================================================================
+echo "Running Nextflow pipeline..."
+
+if [ "$HAS_APPTAINER" = "yes" ]; then
+    ./scripts/run_pipeline.sh -profile slurm,apptainer $NF_ARGS $SPARK_ARGS -resume
+else
+    ./scripts/run_pipeline.sh -profile slurm $NF_ARGS $SPARK_ARGS -resume
+fi
+
+echo "=================================================="
+echo "Fairway Driver Job Complete"
+echo "=================================================="
