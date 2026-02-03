@@ -16,6 +16,8 @@ nextflow.enable.dsl=2
 // Resolve paths to absolute (processes run in isolated work dirs)
 def config_path = file(params.config).toAbsolutePath().toString()
 def work_path = file(params.work_dir).toAbsolutePath().toString()
+// Schema output goes to project root (where Nextflow was launched)
+def schema_path = file("schema").toAbsolutePath().toString()
 
 /*
  * SCHEMA_SCAN - Scan schema for a single batch
@@ -59,9 +61,9 @@ process SCHEMA_MERGE {
 
     script:
     """
-    fairway schema-merge --config ${config_path} --table ${table_name} --work-dir ${work_path}
+    fairway schema-merge --config ${config_path} --table ${table_name} --work-dir ${work_path} --schema-dir ${schema_path}
 
-    # Copy unified schema to current directory
+    # Copy unified schema to current directory for Nextflow
     cp ${work_path}/${table_name}/unified_schema.json .
     """
 }

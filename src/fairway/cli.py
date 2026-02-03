@@ -874,7 +874,8 @@ def schema_scan(config, table, batch, work_dir):
 @click.option('--config', default=None, help='Path to config file.')
 @click.option('--table', required=True, help='Table name.')
 @click.option('--work-dir', 'work_dir_override', default=None, help='Override work directory (absolute path for Nextflow).')
-def schema_merge(config, table, work_dir_override):
+@click.option('--schema-dir', 'schema_dir_override', default=None, help='Override schema output directory (absolute path for Nextflow).')
+def schema_merge(config, table, work_dir_override, schema_dir_override):
     """Merge partial schemas from all batches into unified schema.
 
     Writes to:
@@ -895,6 +896,9 @@ def schema_merge(config, table, work_dir_override):
         bp.work_dir = work_dir_override
 
     batch_work_dir = os.path.join(bp.work_dir, table)
+
+    # Schema output directory (default: schema/ relative to CWD)
+    schema_dir = schema_dir_override or 'schema'
 
     # Collect all partial schemas with type widening
     merged_schema = {}
@@ -925,7 +929,6 @@ def schema_merge(config, table, work_dir_override):
     click.echo(f"Merged {len(schema_files)} batch schemas, {len(merged_schema)} total columns")
 
     # 1. Write to schema/{table}.yaml (main output for ingestion)
-    schema_dir = 'schema'
     os.makedirs(schema_dir, exist_ok=True)
     yaml_path = os.path.join(schema_dir, f'{table}.yaml')
 
