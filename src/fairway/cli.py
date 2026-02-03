@@ -256,23 +256,18 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
         click.echo(f"Starting Schema Discovery (Pipeline Mode) using {config}...")
         cfg = Config(config)
 
-        # Determine engine: CLI flag > config > default (duckdb)
-        config_engine = cfg.engine.lower() if cfg.engine else 'duckdb'
-        effective_engine = engine if engine else config_engine
-
-        click.echo(f"Using engine: {effective_engine}")
+        # Schema discovery uses schema_engine (defaults to duckdb)
+        effective_engine = engine if engine else cfg.schema_engine
+        click.echo(f"Using schema engine: {effective_engine}")
 
         if effective_engine in ['pyspark', 'spark']:
-            # Use Spark - requires spark_master for distributed mode
             if spark_master:
-                click.echo(f"Spark master: {spark_master}")
+                click.echo(f"  Spark cluster: {spark_master}")
             else:
-                click.echo("No spark_master provided, using local[*]")
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]")
-        else:
-            # Use DuckDB (default) - portable, no cluster needed
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=None)
+                click.echo("  (No spark_master provided - using local mode)")
 
+        # Pipeline uses schema_engine; spark_master only used if pyspark
+        pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master)
         pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
         return
 

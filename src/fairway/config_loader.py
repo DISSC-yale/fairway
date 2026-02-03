@@ -26,6 +26,12 @@ class Config:
         if self.engine not in valid_engines:
             raise ValueError(f"Invalid engine: '{self.engine}'. Must be one of {valid_engines}")
 
+        # Schema engine - defaults to duckdb (fast local inference, no cluster needed)
+        # Even if pyspark, schema discovery always runs local (no cluster)
+        self.schema_engine = self.data.get('schema_engine', 'duckdb')
+        if self.schema_engine not in valid_engines:
+            raise ValueError(f"Invalid schema_engine: '{self.schema_engine}'. Must be one of {valid_engines}")
+
         self.storage = self.data.get('storage', {})
         
         # Support both root-level 'tables' and 'data: tables' structures

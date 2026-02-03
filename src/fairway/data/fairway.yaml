@@ -4,10 +4,16 @@
 # Name of the dataset being processed
 dataset_name: "{name}"
 
-# Execution Engine: 'duckdb' (local/single-node) or 'pyspark' (distributed)
+# Execution Engine for data ingestion: 'duckdb' (local/single-node) or 'pyspark' (distributed)
 # Options: 'duckdb', 'pyspark'
 # Default is 'duckdb' if not specified.
 engine: "{engine_type}"
+
+# Schema Discovery Engine: Engine used for schema inference (fairway generate-schema)
+# Options: 'duckdb', 'pyspark'
+# Default: 'duckdb' (fast, local - recommended for most cases)
+# If 'pyspark': uses --spark-master if provided, otherwise local[*]
+# schema_engine: duckdb
 
 # ─────────────────────────────────────────────────────────────
 # Orchestration Configuration (Nextflow fan-out/fan-in)

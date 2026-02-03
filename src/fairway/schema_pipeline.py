@@ -22,12 +22,52 @@ def _get_metadata_columns_from_pattern(naming_pattern):
 class SchemaDiscoveryPipeline(IngestionPipeline):
     """
     A specialized pipeline for Schema Discovery.
-    
+
     It reuses the IngestionPipeline's robust source discovery and preprocessing logic
-    (unzipping, custom scripts, temp handling) but instead of ingesting data, 
+    (unzipping, custom scripts, temp handling) but instead of ingesting data,
     it infers the schema and outputs a consolidated YAML definition.
+
+    Engine selection:
+    - Uses config.schema_engine (defaults to 'duckdb')
+    - If 'duckdb': fast local inference, no cluster needed
+    - If 'pyspark': uses spark_master if provided, otherwise local[*]
     """
-    
+
+    def __init__(self, config_path, spark_master=None):
+        """Initialize schema discovery pipeline.
+
+        Args:
+            config_path: Path to fairway.yaml config
+            spark_master: Spark master URL (only used if schema_engine is pyspark)
+        """
+        # Call parent but we'll override the engine
+        super().__init__(config_path, spark_master=None)  # Don't let parent set engine
+
+        # Override engine with schema_engine
+        self.engine = self._get_schema_engine(spark_master)
+
+    def _get_schema_engine(self, spark_master=None):
+        """Get engine for schema discovery based on schema_engine config."""
+        engine_type = self.config.schema_engine.lower()
+
+        if engine_type in ['pyspark', 'spark']:
+            try:
+                from .engines.pyspark_engine import PySparkEngine
+                if spark_master:
+                    print(f"Using PySpark for schema discovery (cluster: {spark_master})")
+                else:
+                    print("Using PySpark for schema discovery (local mode)")
+                    spark_master = "local[*]"
+                return PySparkEngine(spark_master=spark_master)
+            except ImportError:
+                print("PySpark not available, falling back to DuckDB for schema")
+                from .engines.duckdb_engine import DuckDBEngine
+                return DuckDBEngine()
+        else:
+            # Default: DuckDB (fast, local)
+            from .engines.duckdb_engine import DuckDBEngine
+            return DuckDBEngine()
+
     def run_inference(self, output_path=None, sampling_ratio=0.1):
         """
         Run the discovery pipeline.
