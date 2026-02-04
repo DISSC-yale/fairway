@@ -33,7 +33,15 @@ class Config:
             raise ValueError(f"Invalid schema_engine: '{self.schema_engine}'. Must be one of {valid_engines}")
 
         self.storage = self.data.get('storage', {})
-        
+
+        # Resolve storage paths relative to config file directory
+        config_dir = os.path.dirname(os.path.abspath(self.config_path))
+        for key in ['raw_dir', 'intermediate_dir', 'final_dir']:
+            if key in self.storage and self.storage[key]:
+                path = self.storage[key]
+                if not os.path.isabs(path):
+                    self.storage[key] = os.path.join(config_dir, path)
+
         # Support both root-level 'tables' and 'data: tables' structures
         raw_tables = self.data.get('tables')
         if not raw_tables:
@@ -363,3 +371,15 @@ class Config:
             if table['name'] == name:
                 return table
         return None
+
+    def get_orchestration(self):
+        """Get orchestration config with resolved paths."""
+        config_dir = os.path.dirname(os.path.abspath(self.config_path))
+        orch = self.data.get('orchestration', {}).copy()
+
+        # Resolve work_dir relative to config directory
+        work_dir = orch.get('work_dir', '.fairway/work')
+        if not os.path.isabs(work_dir):
+            orch['work_dir'] = os.path.join(config_dir, work_dir)
+
+        return orch

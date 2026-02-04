@@ -34,12 +34,12 @@ class BatchProcessor:
         if not self.table_config:
             raise ValueError(f"Table '{table}' not found in config")
 
-        # Get orchestration settings
-        orchestration = self.config.data.get('orchestration', {})
+        # Get orchestration settings (paths resolved relative to config dir)
+        orchestration = self.config.get_orchestration()
         config_batch_size = orchestration.get('batch_size', 100)
         self.batch_size = batch_size if batch_size is not None else config_batch_size
 
-        # Work directory - used as-is (relative to CWD, matching Nextflow behavior)
+        # Work directory - resolved to absolute path by config loader
         self.work_dir = orchestration.get('work_dir', '.fairway/work')
 
         # Cache for discovered files (sorted for determinism)
