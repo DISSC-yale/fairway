@@ -1,0 +1,65 @@
+# Strategy Decision: Distributed DuckDB vs. PySpark
+
+**Context**: Fairway currently uses **PySpark** on Slurm for distributed processing ([src/fairway/engines/pyspark_engine.py](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/engines/pyspark_engine.py)) and **DuckDB** for local processing ([src/fairway/engines/duckdb_engine.py](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/engines/duckdb_engine.py)).
+**Proposal**: Replace or augment the distributed Spark engine with a "Sharded DuckDB" approach, orchestrated by Nextflow/Slurm array jobs.
+
+## 1. Architectural Comparison
+
+| Feature | Current: PySpark on Slurm | Proposed: Sharded DuckDB on Slurm |
+| :--- | :--- | :--- |
+| **Orchestration** | **Driver-Executor**: One Spark Master, many Worker nodes. Driver coordinates tasks. | **Share-Nothing**: Nextflow launches $N$ independent Slurm jobs. No central coordinator (except Nextflow). |
+| **Data Plane** | **Distributed Memory (RDD/DataFrame)**: Data can be shuffled across nodes (groupBy, join). | **Partitioned Files**: Each job reads a file/slice, processes it, and writes a partial result. No direct node-to-node communication. |
+| **Complexity** | **High**: Requires JVM, Spark Cluster provision ([slurm_cluster.py](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/engines/slurm_cluster.py)), SASL configs, memory tuning. | **Low**: Single binary, standard process isolation. |
+| **Performance** | **High Latency / High Throughput**: JVM startup overhead (~5-10s), but efficient for massive shuffles. | **Low Latency / High Throughput**: Instant startup, vectorized execution. Faster for "Map-Only" or "Map-Reduce" with simple aggregation. |
+| **Cost/Resilience** | **Resource Heavy**: Needs large allocations. Node failure triggers Spark stage retry. | **Granular**: Nextflow retries individual failed batches. Efficient resource usage (small jobs). |
+| **Merge Step** | **Automatic**: `coalesce(1).write()` handles merging. | **Manual**: Dedicated "Fan-In" job needed to merge partial files (e.g., `COPY (SELECT * FROM 'part_*.parquet')`). |
+
+## 2. Applicability Analysis
+
+### When Sharded DuckDB Wins 🏆
+Fairway's current architecture (Nextflow Fan-Out) is **already** designed for this pattern.
+1.  **Map-Only Transformations**: If the workload is cleaning, validating, and enriching files independently (row-level operations).
+2.  **Schema Consistency**: Since Fairway generates a strict schema *before* ingestion, each shard can enforce it independently.
+3.  **HPC Constraints**: Slurm queues often favor many small jobs (short queue times) over effectively provisioning one massive multi-node allocation.
+4.  **Debugging**: Failing on "Batch 42" is reproducible locally with `fairway run --batch 42`. Spark debugging often requires analyzing cluster logs.
+
+### When Spark Wins 🏆
+1.  **Massive Shuffles**: Performing a heavy `GROUP BY` or `JOIN` across a 50TB dataset where keys are randomly distributed. DuckDB would require an intricate manual shuffle phase (writing to bucketed files).
+2.  **Complex SQL**: If proper distributed SQL is needed (window functions across the whole dataset), Spark handles the global state. DuckDB shards only see their slice.
+
+## 3. Migration Strategy (Why "Just Shard DuckDB" works)
+
+The user asked: *"Is a better approach just shard duckdb over the slurm cluster?"*
+**Answer: YES, for Fairway's primary use case (In-Process ETL), it is likely better.**
+
+**Fairway's "Fan-Out" architecture renders Spark's "Cluster Mode" redundant for ingestion.**
+- We currently use Nextflow to split the work into $N$ batches.
+- We then launch a Spark Cluster...
+- Only to have Spark *also* split the work?
+- **Redundancy**: Orchestrator (Nextflow) calls Orchestrator (Spark).
+
+**Proposed "Pure Orchestration" Model:**
+1.  **Split**: Nextflow calculates batches ([BatchProcessor](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/batch_processor.py#13-140)).
+2.  **Task**: Nextflow launches `fairway ingest --batch N --engine duckdb`.
+    - This runs on a single Slurm core/node using the existing [DuckDBEngine](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/engines/duckdb_engine.py#9-451).
+    - It produces `part_N.parquet`.
+3.  **Merge**: Nextflow launches `fairway finalize --engine duckdb`.
+    - DuckDB runs `COPY (SELECT * FROM 'work_dir/part_*.parquet') TO 'final.parquet'`.
+
+## 4. Recommendation
+
+**Adopt Sharded DuckDB as the primary "HPC" Engine.**
+Retain Spark only for specialized "Big Data" transformations (e.g., global dedup, massive joins) that are hard to express in a partitioned way.
+
+**Key Code Changes Required:**
+1.  **[main.nf](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/data/main.nf)**:
+    - Remove `driver.sh` / Spark provisioning requirement.
+    - Change process definitions to call `fairway ingest` without `--spark-master`.
+2.  **[src/fairway/pipeline.py](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/pipeline.py)**:
+    - Ensure `DuckDBEngine.ingest` accepts a [batch](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/manifest.py#46-55) argument (it currently processes a [table](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/manifest.py#540-549) configuration, likely implicitly handling all files unless sliced).
+    - *Correction*: [BatchProcessor](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/batch_processor.py#13-140) already slices files. [pipeline.py](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/pipeline.py) needs to respect this slice when initializing the engine or passing paths.
+3.  **[src/fairway/engines/duckdb_engine.py](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/engines/duckdb_engine.py)**:
+    - Add a [merge()](file:///Users/mad265/git-pub/DISSC/fairway/src/fairway/manifest.py#632-672) method for the Fan-In phase (simple SQL `COPY`).
+
+**Verdict**:
+Moving to Sharded DuckDB significantly reduces operational complexity (No JVM/Spark/SASL hell) and likely improves performance for 90% of ETL tasks by removing orchestration overhead.

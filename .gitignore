@@ -19,3 +19,4 @@ config/sales_schema.yaml
 .nextflow.log*
 work/
 src/fairway/data/nextflow
+nextflow

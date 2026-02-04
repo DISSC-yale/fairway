@@ -66,8 +66,8 @@ class ArchiveCache:
         # Create short hash for directory name
         short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
 
-        # Use temp_location from config, or default to .fairway_cache
-        base_dir = self.config.temp_location or os.path.join(os.getcwd(), '.fairway_cache')
+        # Use temp_location from config, or default to .fairway_cache in project root
+        base_dir = self.config.temp_location or os.path.join(self.config.project_root, '.fairway_cache')
         return os.path.join(base_dir, 'archives', f"{archive_name}_{short_hash}")
 
     def _extract(self, archive_path, dest_dir):
@@ -96,7 +96,8 @@ class IngestionPipeline:
     def __init__(self, config_path, spark_master=None):
         print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
-        self.manifest_store = ManifestStore()
+        manifest_dir = os.path.join(self.config.project_root, "manifest")
+        self.manifest_store = ManifestStore(manifest_dir)
         self.engine = self._get_engine(spark_master)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)

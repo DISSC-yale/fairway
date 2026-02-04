@@ -795,7 +795,7 @@ def schema_scan(config, table, batch, work_dir):
     action = preprocess.get('action')
 
     # Temp location for zip extraction
-    temp_base = bp.config.temp_location or '.fairway_cache'
+    temp_base = bp.config.temp_location or os.path.join(bp.config.project_root, '.fairway_cache')
 
     # Collect ALL scannable files from the batch
     # For zips: extract and collect content files
@@ -1037,7 +1037,15 @@ def list_tables(config):
 @click.option('--force', is_flag=True, help='Skip confirmation prompt.')
 def clean(force):
     """Clear the archive extraction cache (.fairway_cache/)."""
-    cache_dir = '.fairway_cache'
+    # Try to resolve cache_dir relative to project root via config
+    try:
+        config_path = discover_config()
+        from .config_loader import Config
+        cfg = Config(config_path)
+        cache_dir = cfg.temp_location or os.path.join(cfg.project_root, '.fairway_cache')
+    except click.ClickException:
+        # No config found, fall back to current directory
+        cache_dir = '.fairway_cache'
 
     if not os.path.exists(cache_dir):
         click.echo("No cache directory found.")

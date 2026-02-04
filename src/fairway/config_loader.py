@@ -37,12 +37,12 @@ class Config:
         # Resolve storage paths relative to project root (parent of config dir)
         # Assumes config is in a subdirectory like config/fairway.yaml
         config_dir = os.path.dirname(os.path.abspath(self.config_path))
-        project_root = os.path.dirname(config_dir)  # Go up one level from config/
+        self.project_root = os.path.dirname(config_dir)  # Go up one level from config/
         for key in ['raw_dir', 'intermediate_dir', 'final_dir']:
             if key in self.storage and self.storage[key]:
                 path = self.storage[key]
                 if not os.path.isabs(path):
-                    self.storage[key] = os.path.join(project_root, path)
+                    self.storage[key] = os.path.join(self.project_root, path)
 
         # Support both root-level 'tables' and 'data: tables' structures
         raw_tables = self.data.get('tables')
@@ -376,13 +376,11 @@ class Config:
 
     def get_orchestration(self):
         """Get orchestration config with resolved paths."""
-        config_dir = os.path.dirname(os.path.abspath(self.config_path))
-        project_root = os.path.dirname(config_dir)  # Go up one level from config/
         orch = self.data.get('orchestration', {}).copy()
 
         # Resolve work_dir relative to project root
         work_dir = orch.get('work_dir', '.fairway/work')
         if not os.path.isabs(work_dir):
-            orch['work_dir'] = os.path.join(project_root, work_dir)
+            orch['work_dir'] = os.path.join(self.project_root, work_dir)
 
         return orch

@@ -315,3 +315,27 @@ Test runs of the pipeline MUST be isolated from the codebase:
 
 **Rationale:**
 Nextflow creates substantial runtime artifacts (work directories, logs, caches) that pollute the repository and can cause stale execution issues when cached scripts don't match source files.
+
+---
+
+### [RULE-123] Project-Relative Runtime Directories
+
+**Priority:** MUST
+**Category:** [ARC] Architectural Principles
+
+**Rule:**
+Runtime directories (manifest, cache, work) MUST be resolved relative to the project root, not the current working directory. The project root is defined as the parent directory of the `config/` folder.
+
+**Implementation:**
+1. `Config` class MUST store `project_root` as an instance attribute
+2. `ManifestStore` MUST be initialized with an absolute path: `os.path.join(config.project_root, "manifest")`
+3. Cache directories (`.fairway_cache`) MUST use `config.project_root` as fallback, not `os.getcwd()`
+4. Work directories (`.fairway/work`) MUST be resolved via `config.get_orchestration()`
+
+**Affected paths:**
+- `manifest/` - Per-table and global manifest JSON files
+- `.fairway_cache/` - Archive extraction cache
+- `.fairway/work/` - Batch processing work directories
+
+**Rationale:**
+When the pipeline runs from a different working directory (e.g., Nextflow work directories, HPC job directories), relative paths resolve incorrectly. Using `os.getcwd()` causes manifests and caches to be written to unexpected locations, breaking incremental processing and causing data loss.
