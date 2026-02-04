@@ -136,6 +136,7 @@ class TestSchemaMergeCommand:
         """fairway schema-merge --table TABLE merges partial schemas to schema/{table}.yaml."""
         from fairway.cli import main
         import os
+        import json
         import yaml
 
         # First create some schema files in batch subdirectories
@@ -157,7 +158,7 @@ class TestSchemaMergeCommand:
                 '--table', 'test_table'
             ])
 
-            assert result.exit_code == 0
+            assert result.exit_code == 0, f"Command failed: {result.output}"
 
             # Verify schema/{table}.yaml was created
             schema_file = tmp_path / "schema" / "test_table.yaml"
@@ -169,6 +170,19 @@ class TestSchemaMergeCommand:
             assert schema_data['name'] == 'test_table'
             assert 'id' in schema_data['schema']
             assert 'value' in schema_data['schema']
+
+            # NEW: Verify manifest was created (Fix #1 regression test)
+            manifest_file = tmp_path / "manifest" / "test_table.json"
+            assert manifest_file.exists(), f"Expected manifest at {manifest_file}"
+
+            with open(manifest_file) as f:
+                manifest_data = json.load(f)
+
+            # Manifest should have schema tracking info
+            assert 'schema' in manifest_data, "Manifest missing 'schema' section"
+            assert 'output_path' in manifest_data['schema'], "Manifest missing output_path"
+            assert 'files_used' in manifest_data['schema'], "Manifest missing files_used"
+            assert 'combined_hash' in manifest_data['schema'], "Manifest missing combined_hash"
         finally:
             os.chdir(original_dir)
 
@@ -192,8 +206,8 @@ class TestIngestCommand:
 class TestFinalizeCommand:
     """Test fairway finalize command."""
 
-    def test_finalize(self, cli_runner, batch_config):
-        """fairway finalize --table TABLE finalizes processing."""
+    def test_finalize_no_batches(self, cli_runner, batch_config):
+        """fairway finalize with no completed batches warns but succeeds."""
         from fairway.cli import main
 
         result = cli_runner.invoke(main, [
@@ -201,5 +215,70 @@ class TestFinalizeCommand:
             '--table', 'test_table'
         ])
 
-        # Should succeed or indicate no work to finalize
+        # Should succeed but warn about no batches
         assert result.exit_code == 0
+        assert 'no completed batches' in result.output.lower() or '0/' in result.output
+
+    def test_finalize_with_partitions(self, cli_runner, batch_config, tmp_path):
+        """fairway finalize merges partitions to final_dir and updates manifest."""
+        from fairway.cli import main
+        import json
+        import duckdb
+
+        # Create batch directories with actual parquet files
+        work_dir = tmp_path / ".fairway" / "work" / "test_table"
+
+        for i in range(3):
+            batch_dir = work_dir / f"batch_{i}"
+            batch_dir.mkdir(parents=True)
+
+            # Create a small parquet file for each batch
+            parquet_path = batch_dir / f"partition_{i}.parquet"
+            conn = duckdb.connect()
+            conn.execute(f"""
+                COPY (SELECT {i} as batch_id, {i * 10} as value)
+                TO '{parquet_path}' (FORMAT 'parquet')
+            """)
+            conn.close()
+
+        # Run finalize
+        result = cli_runner.invoke(main, [
+            'finalize', '--config', str(batch_config),
+            '--table', 'test_table'
+        ])
+
+        assert result.exit_code == 0, f"Command failed: {result.output}"
+
+        # Verify output mentions completion
+        assert 'finalization complete' in result.output.lower()
+
+        # NEW: Verify final output was created (Fix #2 regression test)
+        final_dir = tmp_path / "data" / "final"
+        final_file = final_dir / "test_table.parquet"
+        assert final_file.exists(), f"Expected final output at {final_file}"
+
+        # Verify the merged parquet has data from all batches
+        conn = duckdb.connect()
+        result_df = conn.execute(f"SELECT * FROM '{final_file}' ORDER BY batch_id").fetchall()
+        conn.close()
+
+        assert len(result_df) == 3, f"Expected 3 rows, got {len(result_df)}"
+        assert result_df[0][0] == 0  # batch_id from first batch
+        assert result_df[1][0] == 1  # batch_id from second batch
+        assert result_df[2][0] == 2  # batch_id from third batch
+
+        # NEW: Verify manifest was updated (Fix #2 regression test)
+        manifest_file = tmp_path / "manifest" / "test_table.json"
+        assert manifest_file.exists(), f"Expected manifest at {manifest_file}"
+
+        with open(manifest_file) as f:
+            manifest_data = json.load(f)
+
+        # Manifest should have file entries with success status
+        assert 'files' in manifest_data, "Manifest missing 'files' section"
+        # At least some files should be marked as success
+        success_count = sum(
+            1 for f in manifest_data['files'].values()
+            if f.get('status') == 'success'
+        )
+        assert success_count > 0, "No files marked as success in manifest"

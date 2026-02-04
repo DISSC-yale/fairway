@@ -881,8 +881,10 @@ def schema_merge(config, table, work_dir_override, schema_dir_override):
     Writes to:
     - schema/{table}.yaml (final schema for ingestion)
     - {work_dir}/{table}/unified_schema.json (for Nextflow)
+    - manifest/{table}.json (schema tracking)
     """
     from .batch_processor import BatchProcessor
+    from .manifest import ManifestStore, _get_file_hash_static
     import json
     import yaml
 
@@ -897,8 +899,15 @@ def schema_merge(config, table, work_dir_override, schema_dir_override):
 
     batch_work_dir = os.path.join(bp.work_dir, table)
 
-    # Schema output directory (default: schema/ relative to CWD)
-    schema_dir = schema_dir_override or 'schema'
+    # Schema output directory (default: schema/ relative to project root)
+    if schema_dir_override:
+        schema_dir = schema_dir_override
+    else:
+        schema_dir = os.path.join(bp.config.project_root, 'schema')
+
+    # Initialize manifest store (absolute path)
+    manifest_dir = os.path.join(bp.config.project_root, 'manifest')
+    manifest_store = ManifestStore(manifest_dir)
 
     # Collect all partial schemas with type widening
     merged_schema = {}
@@ -947,6 +956,18 @@ def schema_merge(config, table, work_dir_override, schema_dir_override):
         json.dump(merged_schema, f, indent=2)
     click.echo(f"Unified schema written to {unified_path}")
 
+    # 3. Record schema in manifest (Fix #1: manifest tracking)
+    # Collect files used and their hashes from batch processing
+    files_used = bp._discover_files()
+    file_hashes = [
+        _get_file_hash_static(f, fast_check=True)
+        for f in files_used if os.path.isfile(f)
+    ]
+
+    table_manifest = manifest_store.get_table_manifest(table)
+    table_manifest.record_schema(files_used, file_hashes, yaml_path)
+    click.echo(f"Manifest updated: {manifest_dir}/{table}.json")
+
 
 @main.command()
 @click.option('--config', default=None, help='Path to config file.')
@@ -986,9 +1007,16 @@ def ingest(config, table, batch, spark_master, work_dir):
 @click.option('--config', default=None, help='Path to config file.')
 @click.option('--table', required=True, help='Table name.')
 @click.option('--work-dir', 'work_dir_override', default=None, help='Override work directory (absolute path for Nextflow).')
-def finalize(config, table, work_dir_override):
-    """Finalize processing for a table."""
+@click.option('--final-dir', 'final_dir_override', default=None, help='Override final output directory (absolute path).')
+def finalize(config, table, work_dir_override, final_dir_override):
+    """Finalize processing for a table.
+
+    Merges batch partitions, copies to final_dir, and updates manifest.
+    """
     from .batch_processor import BatchProcessor
+    from .manifest import ManifestStore, _get_file_hash_static
+    import shutil
+    import glob as glob_module
 
     if config is None:
         config = discover_config()
@@ -999,19 +1027,131 @@ def finalize(config, table, work_dir_override):
     if work_dir_override:
         bp.work_dir = work_dir_override
 
-    work_dir = os.path.join(bp.work_dir, table)
+    table_work_dir = os.path.join(bp.work_dir, table)
+
+    # Determine final output directory (absolute path)
+    if final_dir_override:
+        final_dir = final_dir_override
+    else:
+        final_dir = bp.config.storage.get('final_dir')
+        if not final_dir:
+            final_dir = os.path.join(bp.config.project_root, 'data', 'final')
+
+    # Initialize manifest store (absolute path)
+    manifest_dir = os.path.join(bp.config.project_root, 'manifest')
+    manifest_store = ManifestStore(manifest_dir)
+    table_manifest = manifest_store.get_table_manifest(table)
 
     click.echo(f"Finalizing table {table}...")
+    click.echo(f"  Work dir: {table_work_dir}")
+    click.echo(f"  Final dir: {final_dir}")
 
-    # Check for completed batches
-    completed = 0
-    for batch in range(bp.get_batch_count()):
+    # 1. Check for completed batches and collect partition files
+    batch_count = bp.get_batch_count()
+    completed_batches = []
+    partition_files = []
+
+    for batch in range(batch_count):
         batch_dir = bp.get_batch_dir(batch)
         if os.path.exists(batch_dir):
-            completed += 1
+            completed_batches.append(batch)
+            # Look for parquet files in batch directory
+            parquet_pattern = os.path.join(batch_dir, '*.parquet')
+            batch_parquets = glob_module.glob(parquet_pattern)
+            partition_files.extend(batch_parquets)
 
-    click.echo(f"Found {completed}/{bp.get_batch_count()} completed batches")
+            # Also check for partition directories (partitioned output)
+            for item in os.listdir(batch_dir):
+                item_path = os.path.join(batch_dir, item)
+                if os.path.isdir(item_path):
+                    nested_parquets = glob_module.glob(os.path.join(item_path, '**/*.parquet'), recursive=True)
+                    partition_files.extend(nested_parquets)
+
+    click.echo(f"  Found {len(completed_batches)}/{batch_count} completed batches")
+    click.echo(f"  Found {len(partition_files)} partition files")
+
+    if not completed_batches:
+        click.echo("WARNING: No completed batches found. Nothing to finalize.")
+        return
+
+    # 2. Ensure final directory exists
+    os.makedirs(final_dir, exist_ok=True)
+
+    # 3. Merge/copy partitions to final location
+    output_format = bp.config.output_format or 'parquet'
+    final_output_path = os.path.join(final_dir, f'{table}.{output_format}')
+
+    if partition_files:
+        # If we have actual parquet files, merge them using DuckDB
+        try:
+            from .engines.duckdb_engine import DuckDBEngine
+            engine = DuckDBEngine()
+
+            click.echo(f"  Merging {len(partition_files)} partitions...")
+
+            # Use DuckDB to merge all partitions
+            import duckdb
+            conn = duckdb.connect()
+
+            # Read all partitions and write combined output
+            partition_list = ', '.join(f"'{p}'" for p in partition_files)
+            conn.execute(f"""
+                COPY (SELECT * FROM read_parquet([{partition_list}]))
+                TO '{final_output_path}'
+                (FORMAT 'parquet', COMPRESSION 'snappy')
+            """)
+            conn.close()
+
+            click.echo(f"  Merged output written to: {final_output_path}")
+
+        except Exception as e:
+            click.echo(f"  WARNING: Could not merge with DuckDB: {e}")
+            click.echo("  Falling back to copying individual partitions...")
+
+            # Fallback: copy partitions to final dir as separate files
+            partition_dir = os.path.join(final_dir, table)
+            os.makedirs(partition_dir, exist_ok=True)
+            for i, pf in enumerate(partition_files):
+                dest = os.path.join(partition_dir, f'part_{i}.parquet')
+                shutil.copy2(pf, dest)
+            final_output_path = partition_dir
+            click.echo(f"  Partitions copied to: {partition_dir}")
+    else:
+        click.echo("  No partition files found - checking for intermediate output...")
+
+        # Check if there's intermediate output to copy
+        intermediate_dir = bp.config.storage.get('intermediate_dir')
+        if intermediate_dir:
+            intermediate_path = os.path.join(intermediate_dir, f'{table}.parquet')
+            if os.path.exists(intermediate_path):
+                shutil.copy2(intermediate_path, final_output_path)
+                click.echo(f"  Copied from intermediate: {final_output_path}")
+            else:
+                click.echo(f"  WARNING: No intermediate file found at {intermediate_path}")
+
+    # 4. Update manifest with finalized status
+    files_processed = bp._discover_files()
+    success_count = 0
+    for file_path in files_processed:
+        try:
+            file_hash = _get_file_hash_static(file_path, fast_check=True)
+            table_manifest.update_file(
+                file_path,
+                status="success",
+                metadata={
+                    "finalized_at": os.path.getmtime(final_output_path) if os.path.exists(final_output_path) else None,
+                    "output_path": final_output_path
+                },
+                table_root=bp.table_config.get('root')
+            )
+            success_count += 1
+        except Exception as e:
+            click.echo(f"  WARNING: Could not update manifest for {file_path}: {e}")
+
+    click.echo(f"  Updated manifest for {success_count} files")
     click.echo(f"Finalization complete for {table}")
+    click.echo(f"  Output: {final_output_path}")
+    click.echo(f"  Manifest: {manifest_dir}/{table}.json")
 
 
 @main.command('list-tables')

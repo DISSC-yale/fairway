@@ -38,11 +38,17 @@ class Config:
         # Assumes config is in a subdirectory like config/fairway.yaml
         config_dir = os.path.dirname(os.path.abspath(self.config_path))
         self.project_root = os.path.dirname(config_dir)  # Go up one level from config/
+
+        # Fix #3: Make ALL paths explicitly absolute at config load time
+        # This ensures consistent behavior whether run from project root, HPC, or Nextflow
         for key in ['raw_dir', 'intermediate_dir', 'final_dir']:
             if key in self.storage and self.storage[key]:
                 path = self.storage[key]
                 if not os.path.isabs(path):
                     self.storage[key] = os.path.join(self.project_root, path)
+
+        # Manifest directory (always relative to project root)
+        self.manifest_dir = os.path.join(self.project_root, 'manifest')
 
         # Support both root-level 'tables' and 'data: tables' structures
         raw_tables = self.data.get('tables')
@@ -56,12 +62,20 @@ class Config:
         self.partition_by = self.data.get('partition_by', [])
         # Temporary location for global file writes
         # Priority: Env Var > Root Config > Storage Config
-        self.temp_location = os.environ.get('FAIRWAY_TEMP') or \
-                             self.data.get('temp_location') or \
-                             self.storage.get('temp_location')
+        temp_raw = os.environ.get('FAIRWAY_TEMP') or \
+                   self.data.get('temp_location') or \
+                   self.storage.get('temp_location')
+        # Make temp_location absolute (Fix #3)
+        if temp_raw:
+            temp_raw = os.path.expandvars(temp_raw)
+            self.temp_location = temp_raw if os.path.isabs(temp_raw) else os.path.join(self.project_root, temp_raw)
+        else:
+            # Default to .fairway_cache in project root
+            self.temp_location = os.path.join(self.project_root, '.fairway_cache')
+
         self.redivis = self.data.get('redivis', {})
         self.output_format = self.storage.get('format', 'parquet').lower()
-        
+
         # Performance/Optimizations
         performance = self.data.get('performance', {})
         self.target_rows = performance.get('target_rows') or self.data.get('target_rows', 500000)
@@ -71,9 +85,13 @@ class Config:
         # Direct control over max records per file (overrides target_file_size_mb heuristic)
         self.max_records_per_file = performance.get('max_records_per_file')
 
-        # Scratch directory for intermediate files (D.4)
+        # Scratch directory for intermediate files (D.4) - make absolute (Fix #3)
         scratch_dir_raw = self.storage.get('scratch_dir')
-        self.scratch_dir = os.path.expandvars(scratch_dir_raw) if scratch_dir_raw else None
+        if scratch_dir_raw:
+            scratch_dir_raw = os.path.expandvars(scratch_dir_raw)
+            self.scratch_dir = scratch_dir_raw if os.path.isabs(scratch_dir_raw) else os.path.join(self.project_root, scratch_dir_raw)
+        else:
+            self.scratch_dir = None
 
 
 
@@ -375,12 +393,27 @@ class Config:
         return None
 
     def get_orchestration(self):
-        """Get orchestration config with resolved paths."""
+        """Get orchestration config with resolved paths (all absolute).
+
+        Returns dict with keys:
+        - work_dir: Absolute path for batch work files (.fairway/work)
+        - schema_dir: Absolute path for schema output (schema/)
+        - manifest_dir: Absolute path for manifests (manifest/)
+        - batch_size: Number of files per batch (default 100)
+        """
         orch = self.data.get('orchestration', {}).copy()
 
-        # Resolve work_dir relative to project root
+        # Resolve work_dir relative to project root (Fix #3: always absolute)
         work_dir = orch.get('work_dir', '.fairway/work')
         if not os.path.isabs(work_dir):
             orch['work_dir'] = os.path.join(self.project_root, work_dir)
+
+        # Add schema_dir (always absolute)
+        schema_dir = orch.get('schema_dir', 'schema')
+        if not os.path.isabs(schema_dir):
+            orch['schema_dir'] = os.path.join(self.project_root, schema_dir)
+
+        # Add manifest_dir (always absolute)
+        orch['manifest_dir'] = self.manifest_dir
 
         return orch
