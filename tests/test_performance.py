@@ -189,21 +189,6 @@ class TestPerformanceConfig:
 # ============ PySpark Engine Tests ============
 # These tests require PySpark to be available
 
-# Check if PySpark is available
-try:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder \
-        .master("local[1]") \
-        .appName("test_performance") \
-        .config("spark.driver.host", "localhost") \
-        .config("spark.driver.bindAddress", "127.0.0.1") \
-        .getOrCreate()
-    SPARK_AVAILABLE = True
-except Exception:
-    SPARK_AVAILABLE = False
-
-
-@pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not available")
 class TestPySparkPerformance:
     """Tests for PySpark performance improvements."""
 

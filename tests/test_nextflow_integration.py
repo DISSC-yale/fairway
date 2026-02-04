@@ -29,6 +29,28 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture
+def nextflow_env():
+    """Environment variables for running Nextflow with fairway CLI."""
+    env = os.environ.copy()
+    venv_bin = Path(__file__).parent.parent / ".venv" / "bin"
+    env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
+    env["FAIRWAY_VENV"] = str(venv_bin.parent)
+    return env
+
+
+def run_nextflow(args, cwd, env, timeout=300):
+    """Helper to run Nextflow with proper environment."""
+    return subprocess.run(
+        ['nextflow'] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env
+    )
+
+
+@pytest.fixture
 def nextflow_project(tmp_path):
     """Create a complete project structure for Nextflow testing.
 
@@ -100,21 +122,13 @@ tables:
 class TestNextflowSchemaWorkflow:
     """Test the Nextflow schema discovery workflow."""
 
-    def test_schema_workflow_creates_schema_file(self, nextflow_project):
+    def test_schema_workflow_creates_schema_file(self, nextflow_project, nextflow_env):
         """Running 'nextflow run main.nf -entry schema' creates schema/{table}.yaml."""
-        # Run Nextflow schema workflow
-        result = subprocess.run(
-            [
-                'nextflow', 'run', 'main.nf',
-                '-entry', 'schema',
-                '-profile', 'standard',
-                '--config', 'config/fairway.yaml',
-                '--work_dir', '.fairway/work'
-            ],
+        result = run_nextflow(
+            ['run', 'main.nf', '-entry', 'schema', '-profile', 'standard',
+             '--config', 'config/fairway.yaml', '--work_dir', '.fairway/work'],
             cwd=nextflow_project,
-            capture_output=True,
-            text=True,
-            timeout=300
+            env=nextflow_env
         )
 
         # Check Nextflow succeeded
@@ -138,21 +152,13 @@ class TestNextflowSchemaWorkflow:
         assert 'amount' in schema
         assert 'extra' in schema, "Schema should include 'extra' column from file2.csv"
 
-    def test_schema_workflow_creates_batch_schemas(self, nextflow_project):
+    def test_schema_workflow_creates_batch_schemas(self, nextflow_project, nextflow_env):
         """Schema workflow creates intermediate batch schema files."""
-        # Run Nextflow schema workflow
-        subprocess.run(
-            [
-                'nextflow', 'run', 'main.nf',
-                '-entry', 'schema',
-                '-profile', 'standard',
-                '--config', 'config/fairway.yaml',
-                '--work_dir', '.fairway/work'
-            ],
+        run_nextflow(
+            ['run', 'main.nf', '-entry', 'schema', '-profile', 'standard',
+             '--config', 'config/fairway.yaml', '--work_dir', '.fairway/work'],
             cwd=nextflow_project,
-            capture_output=True,
-            text=True,
-            timeout=300
+            env=nextflow_env
         )
 
         # Verify batch schema files were created
@@ -174,20 +180,13 @@ class TestNextflowSchemaWorkflow:
         assert 'id' in unified
         assert 'extra' in unified
 
-    def test_schema_workflow_merges_columns_correctly(self, nextflow_project):
+    def test_schema_workflow_merges_columns_correctly(self, nextflow_project, nextflow_env):
         """Schema merge correctly combines columns from files with different schemas."""
-        subprocess.run(
-            [
-                'nextflow', 'run', 'main.nf',
-                '-entry', 'schema',
-                '-profile', 'standard',
-                '--config', 'config/fairway.yaml',
-                '--work_dir', '.fairway/work'
-            ],
+        run_nextflow(
+            ['run', 'main.nf', '-entry', 'schema', '-profile', 'standard',
+             '--config', 'config/fairway.yaml', '--work_dir', '.fairway/work'],
             cwd=nextflow_project,
-            capture_output=True,
-            text=True,
-            timeout=300
+            env=nextflow_env
         )
 
         schema_file = nextflow_project / "schema" / "test_table.yaml"
@@ -213,20 +212,13 @@ class TestNextflowSchemaWorkflow:
 class TestNextflowPathResolution:
     """Test that paths resolve correctly in Nextflow context."""
 
-    def test_relative_paths_resolve_to_project_root(self, nextflow_project):
+    def test_relative_paths_resolve_to_project_root(self, nextflow_project, nextflow_env):
         """Relative paths in config resolve to project root, not Nextflow work dir."""
-        subprocess.run(
-            [
-                'nextflow', 'run', 'main.nf',
-                '-entry', 'schema',
-                '-profile', 'standard',
-                '--config', 'config/fairway.yaml',
-                '--work_dir', '.fairway/work'
-            ],
+        run_nextflow(
+            ['run', 'main.nf', '-entry', 'schema', '-profile', 'standard',
+             '--config', 'config/fairway.yaml', '--work_dir', '.fairway/work'],
             cwd=nextflow_project,
-            capture_output=True,
-            text=True,
-            timeout=300
+            env=nextflow_env
         )
 
         # Schema should be in project/schema/, not in Nextflow's work directory
@@ -243,20 +235,13 @@ class TestNextflowPathResolution:
 class TestNextflowParallelExecution:
     """Test that Nextflow runs batches in parallel."""
 
-    def test_multiple_batches_processed(self, nextflow_project):
+    def test_multiple_batches_processed(self, nextflow_project, nextflow_env):
         """All batches are processed by Nextflow."""
-        result = subprocess.run(
-            [
-                'nextflow', 'run', 'main.nf',
-                '-entry', 'schema',
-                '-profile', 'standard',
-                '--config', 'config/fairway.yaml',
-                '--work_dir', '.fairway/work'
-            ],
+        result = run_nextflow(
+            ['run', 'main.nf', '-entry', 'schema', '-profile', 'standard',
+             '--config', 'config/fairway.yaml', '--work_dir', '.fairway/work'],
             cwd=nextflow_project,
-            capture_output=True,
-            text=True,
-            timeout=300
+            env=nextflow_env
         )
 
         assert result.returncode == 0, f"Nextflow failed:\n{result.stderr}"
@@ -339,20 +324,13 @@ tables:
 
         return project
 
-    def test_zip_files_extracted_and_scanned(self, zip_project):
+    def test_zip_files_extracted_and_scanned(self, zip_project, nextflow_env):
         """Zip files are extracted and their contents scanned for schema."""
-        result = subprocess.run(
-            [
-                'nextflow', 'run', 'main.nf',
-                '-entry', 'schema',
-                '-profile', 'standard',
-                '--config', 'config/fairway.yaml',
-                '--work_dir', '.fairway/work'
-            ],
+        result = run_nextflow(
+            ['run', 'main.nf', '-entry', 'schema', '-profile', 'standard',
+             '--config', 'config/fairway.yaml', '--work_dir', '.fairway/work'],
             cwd=zip_project,
-            capture_output=True,
-            text=True,
-            timeout=300
+            env=nextflow_env
         )
 
         assert result.returncode == 0, f"Nextflow failed:\n{result.stderr}"

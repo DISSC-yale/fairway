@@ -4,21 +4,14 @@ from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 from fairway.engines.pyspark_engine import PySparkEngine
 
-# Attempt to initialize Spark to see if it works
-try:
-    spark = SparkSession.builder \
-        .master("local[1]") \
-        .appName("test_salting") \
-        .getOrCreate()
-    SPARK_AVAILABLE = True
-except Exception:
-    SPARK_AVAILABLE = False
 
-@pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not available or misconfigured")
 class TestPySparkSalting:
     @pytest.fixture(scope="class")
     def spark(self):
-        return spark
+        return SparkSession.builder \
+            .master("local[1]") \
+            .appName("test_salting") \
+            .getOrCreate()
 
     @pytest.fixture
     def engine(self):

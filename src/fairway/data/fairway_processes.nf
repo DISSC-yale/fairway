@@ -18,6 +18,8 @@ def config_path = file(params.config).toAbsolutePath().toString()
 def work_path = file(params.work_dir).toAbsolutePath().toString()
 // Schema output goes to project root (where Nextflow was launched)
 def schema_path = file("schema").toAbsolutePath().toString()
+// Final output directory (defaults to data/final relative to workflow launch dir)
+def final_path = params.final_dir ? file(params.final_dir).toAbsolutePath().toString() : file("data/final").toAbsolutePath().toString()
 
 /*
  * SCHEMA_SCAN - Scan schema for a single batch
@@ -70,10 +72,10 @@ process SCHEMA_MERGE {
 
 
 /*
- * INGEST - Ingest a single batch
+ * INGEST - Ingest a single batch directly to final output
  *
  * Input: tuple(table_name, batch_id, schema), spark_master
- * Output: tuple(table_name, partition_file)
+ * Output: tuple(table_name, done_marker) - actual data written to final_dir
  */
 process INGEST {
     tag "${table_name}_batch_${batch_id}"
@@ -83,15 +85,15 @@ process INGEST {
     val spark_master
 
     output:
-    tuple val(table_name), path("partition_${batch_id}.parquet")
+    tuple val(table_name), path("batch_${batch_id}.done")
 
     script:
     def master_arg = spark_master ? "--spark-master ${spark_master}" : ""
     """
-    fairway ingest --config ${config_path} --table ${table_name} --batch ${batch_id} --work-dir ${work_path} ${master_arg}
+    fairway ingest --config ${config_path} --table ${table_name} --batch ${batch_id} --final-dir ${final_path} ${master_arg}
 
-    # Touch output file to signal completion
-    touch partition_${batch_id}.parquet
+    # Create marker file - actual parquet is in final_dir/{table}/partition_{batch}.parquet
+    echo "${final_path}/${table_name}/partition_${batch_id}.parquet" > batch_${batch_id}.done
     """
 }
 
@@ -154,19 +156,22 @@ process TRANSFORM_FANIN {
 
 
 /*
- * FINALIZE - Validate, export, and cleanup
+ * FINALIZE - Validate and update manifest (data already in final_dir)
  *
- * Input: tuple(table_name, [partitions])
+ * Input: tuple(table_name, [done_markers])
  * Output: none (side effects only)
  */
 process FINALIZE {
     tag "${table_name}"
 
     input:
-    tuple val(table_name), path(partitions)
+    tuple val(table_name), path(done_markers)
 
     script:
     """
-    fairway finalize --config ${config_path} --table ${table_name} --work-dir ${work_path}
+    # Data is already in final_dir - just log completion
+    echo "Table ${table_name} complete. Output: ${final_path}/${table_name}/"
+    echo "Partitions:"
+    cat ${done_markers}
     """
 }

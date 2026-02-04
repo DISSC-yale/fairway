@@ -56,7 +56,7 @@ def verify_output(engine, output_path, expected_df):
     else:
         query_path = f"{output_path}/**/*.parquet"
         
-    df_read = engine.query(f"SELECT * FROM '{query_path}'")
+    df_read = engine.inspect(f"SELECT * FROM '{query_path}'")
     
     df_read = df_read.sort_values("id").reset_index(drop=True)
     expected_df = expected_df.sort_values("id").reset_index(drop=True)
@@ -103,15 +103,38 @@ class TestDuckDBIngestion:
         else:
             query_path = f"{output_path}/**/*.parquet"
             
-        df_read = engine.query(f"SELECT * FROM '{query_path}'")
+        df_read = engine.inspect(f"SELECT * FROM '{query_path}'")
         assert 'source' in df_read.columns
         assert df_read['source'].unique()[0] == 'test_source'
 
+@pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not installed")
 class TestPySparkIngestion:
-    @pytest.mark.skip(reason="PySpark environment misconfigured (BindException)")
     def test_ingest_csv(self, sample_data):
-        pass
+        engine = PySparkEngine(spark_master="local[*]")
+        output_path = os.path.join(os.path.dirname(sample_data['csv']), "spark_output_csv")
 
-    @pytest.mark.skip(reason="PySpark environment misconfigured (BindException)")
+        input_p = str(Path(sample_data['csv']).resolve())
+        assert engine.ingest(input_p, output_path, format='csv')
+
+        # Read back with DuckDB for verification
+        duck = DuckDBEngine()
+        df_read = duck.inspect(f"SELECT * FROM '{output_path}/**/*.parquet'")
+        df_read = df_read.sort_values("id").reset_index(drop=True)
+        expected = sample_data['df'].sort_values("id").reset_index(drop=True)
+        # check_dtype=False because Spark/DuckDB may use different int types (int32 vs int64)
+        pd.testing.assert_frame_equal(df_read, expected, check_like=True, check_dtype=False)
+
     def test_ingest_json(self, sample_data):
-        pass
+        engine = PySparkEngine(spark_master="local[*]")
+        output_path = os.path.join(os.path.dirname(sample_data['csv']), "spark_output_json")
+
+        input_p = str(Path(sample_data['json']).resolve())
+        assert engine.ingest(input_p, output_path, format='json')
+
+        # Read back with DuckDB for verification
+        duck = DuckDBEngine()
+        df_read = duck.inspect(f"SELECT * FROM '{output_path}/**/*.parquet'")
+        df_read = df_read.sort_values("id").reset_index(drop=True)
+        expected = sample_data['df'].sort_values("id").reset_index(drop=True)
+        # check_dtype=False because Spark/DuckDB may use different int types (int32 vs int64)
+        pd.testing.assert_frame_equal(df_read, expected, check_like=True, check_dtype=False)

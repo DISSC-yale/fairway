@@ -18,7 +18,7 @@ class PySparkEngine:
             raise ImportError(f"PySpark is not installed or failed to load. Please install fairway[spark] or fairway[all].{additional_info}")
         builder = SparkSession.builder.appName("fairway-ingestion")
         # Add JVM options for modern Java (17+) compatibility
-        # Java 25 requires explicitly opening javax.security.auth and others
+        # Java 25 requires explicitly opening many internal modules
         jvm_options_list = [
             "--add-opens=java.base/java.lang=ALL-UNNAMED",
             "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
@@ -33,7 +33,17 @@ class PySparkEngine:
             "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
             "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
             "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
-            "--add-opens=java.base/javax.security.auth=ALL-UNNAMED"
+            "--add-opens=java.base/javax.security.auth=ALL-UNNAMED",
+            # Java 25+ requires additional security module opens
+            "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
+            "--add-opens=java.security.jgss/sun.security.krb5.internal=ALL-UNNAMED",
+            "--add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED",
+            "--add-opens=java.base/sun.security.ssl=ALL-UNNAMED",
+            "--add-opens=java.base/sun.security.x509=ALL-UNNAMED",
+            "--add-opens=java.base/sun.security.util=ALL-UNNAMED",
+            "--add-opens=java.base/java.security=ALL-UNNAMED",
+            "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED",
+            "--add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED",
         ]
         jvm_options = " ".join(jvm_options_list)
         

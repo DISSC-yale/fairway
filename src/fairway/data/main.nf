@@ -26,6 +26,7 @@ params.config = 'config/fairway.yaml'
 params.n_batches = null       // If null, calculated dynamically via fairway batches
 params.spark_master = null    // Passed by driver.sh after starting cluster
 params.work_dir = '.fairway/work'
+params.final_dir = null       // If null, uses config's final_dir or data/final
 
 
 /*

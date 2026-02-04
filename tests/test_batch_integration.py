@@ -261,54 +261,42 @@ tables:
 
     def test_spark_schema_inference(self, test_project_spark):
         """PySpark engine can infer schema from batch files."""
-        pyspark = pytest.importorskip("pyspark")
         from fairway.batch_processor import BatchProcessor
         from fairway.engines.pyspark_engine import PySparkEngine
 
         bp = BatchProcessor(str(test_project_spark['config']), 'spark_table')
 
-        try:
-            engine = PySparkEngine(spark_master="local[2]")
-            batch_files = bp.get_files_for_batch(0)
-            schema = engine.infer_schema(batch_files[0], 'csv')
+        engine = PySparkEngine(spark_master="local[2]")
+        batch_files = bp.get_files_for_batch(0)
+        schema = engine.infer_schema(batch_files[0], 'csv')
 
-            assert 'id' in schema
-            assert 'category' in schema
-            assert 'amount' in schema
-        except Exception as e:
-            if "getSubject" in str(e) or "UnsupportedOperation" in str(e):
-                pytest.skip(f"PySpark/Java compatibility issue: {e}")
-            raise
+        assert 'id' in schema
+        assert 'category' in schema
+        assert 'amount' in schema
 
     def test_spark_batch_ingest(self, test_project_spark):
         """PySpark can ingest a batch of files."""
-        pyspark = pytest.importorskip("pyspark")
         from fairway.batch_processor import BatchProcessor
         from fairway.engines.pyspark_engine import PySparkEngine
         from pathlib import Path
 
         bp = BatchProcessor(str(test_project_spark['config']), 'spark_table')
 
-        try:
-            engine = PySparkEngine(spark_master="local[2]")
-            batch_files = bp.get_files_for_batch(0)
-            batch_dir = Path(bp.get_batch_dir(0))
-            batch_dir.mkdir(parents=True, exist_ok=True)
+        engine = PySparkEngine(spark_master="local[2]")
+        batch_files = bp.get_files_for_batch(0)
+        batch_dir = Path(bp.get_batch_dir(0))
+        batch_dir.mkdir(parents=True, exist_ok=True)
 
-            output_path = str(batch_dir / "ingested.parquet")
+        output_path = str(batch_dir / "ingested.parquet")
 
-            # Use Spark to read and write
-            spark = engine.spark
-            df = spark.read.csv(batch_files, header=True, inferSchema=True)
-            df.write.mode("overwrite").parquet(output_path)
+        # Use Spark to read and write
+        spark = engine.spark
+        df = spark.read.csv(batch_files, header=True, inferSchema=True)
+        df.write.mode("overwrite").parquet(output_path)
 
-            # Verify
-            result = spark.read.parquet(output_path)
-            assert result.count() == 100  # 2 files * 50 rows
-        except Exception as e:
-            if "getSubject" in str(e) or "UnsupportedOperation" in str(e):
-                pytest.skip(f"PySpark/Java compatibility issue: {e}")
-            raise
+        # Verify
+        result = spark.read.parquet(output_path)
+        assert result.count() == 100  # 2 files * 50 rows
 
 
 class TestPartialStatusIntegration:

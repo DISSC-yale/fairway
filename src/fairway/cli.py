@@ -974,33 +974,126 @@ def schema_merge(config, table, work_dir_override, schema_dir_override):
 @click.option('--table', required=True, help='Table name.')
 @click.option('--batch', type=int, required=True, help='Batch number to ingest.')
 @click.option('--spark-master', default=None, help='Spark master URL.')
-@click.option('--work-dir', default=None, help='Override work directory (absolute path for Nextflow).')
-def ingest(config, table, batch, spark_master, work_dir):
-    """Ingest a specific batch."""
+@click.option('--final-dir', 'final_dir_override', default=None, help='Override final output directory (absolute path).')
+def ingest(config, table, batch, spark_master, final_dir_override):
+    """Ingest a specific batch directly to final output."""
     from .batch_processor import BatchProcessor
+    from .config_loader import Config
+    from .manifest import ManifestStore, _get_file_hash_static
+    import shutil
 
     if config is None:
         config = discover_config()
 
     bp = BatchProcessor(config, table)
-
-    # Override work_dir if provided (Nextflow passes absolute path)
-    if work_dir:
-        bp.work_dir = work_dir
+    cfg = Config(config)
 
     try:
         batch_files = bp.get_files_for_batch(batch)
     except ValueError as e:
         raise click.ClickException(str(e))
 
+    if not batch_files:
+        raise click.ClickException(f"No files found for batch {batch}")
+
     click.echo(f"Ingesting batch {batch} ({len(batch_files)} files)...")
 
-    # For now, just confirm the files exist
-    # Full implementation would use the ingestion pipeline
-    batch_dir = bp.get_batch_dir(batch)
-    os.makedirs(batch_dir, exist_ok=True)
+    # Get table config
+    table_config = bp.table_config
+    fmt = table_config.get('format', 'csv')
+    read_options = table_config.get('read_options', {})
+    partition_by = table_config.get('partition_by', [])
+    metadata = table_config.get('metadata', {})
+    table_write_mode = table_config.get('write_mode', 'overwrite')
 
-    click.echo(f"Batch {batch} ingestion complete. Output: {batch_dir}")
+    # Determine final output directory
+    if final_dir_override:
+        final_dir = final_dir_override
+    else:
+        final_dir = cfg.storage.get('final_dir')
+        if not final_dir:
+            final_dir = os.path.join(cfg.project_root, 'data', 'final')
+
+    # Output to directory (supports parallel batch writes)
+    output_dir = os.path.join(final_dir, table)
+    output_path = os.path.join(output_dir, f'partition_{batch}.parquet')
+
+    # Handle write_mode: batch 0 clears directory if overwrite mode
+    if batch == 0 and table_write_mode == 'overwrite':
+        if os.path.exists(output_dir):
+            click.echo(f"  Clearing existing output directory (write_mode=overwrite)...")
+            shutil.rmtree(output_dir)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Use appropriate engine
+    engine_name = cfg.engine
+    if spark_master:
+        engine_name = 'pyspark'
+
+    if engine_name == 'pyspark':
+        from .engines.pyspark_engine import PySparkEngine
+        engine = PySparkEngine(spark_master=spark_master)
+        engine.ingest(
+            input_path=batch_files,
+            output_path=output_path,
+            format=fmt,
+            partition_by=partition_by if partition_by else None,
+            metadata=metadata if metadata else None,
+            write_mode='overwrite',  # Each batch overwrites its own partition file
+            **read_options
+        )
+    else:
+        from .engines.duckdb_engine import DuckDBEngine
+        engine = DuckDBEngine()
+
+        if len(batch_files) == 1:
+            engine.ingest(
+                input_path=batch_files[0],
+                output_path=output_path,
+                format=fmt,
+                partition_by=partition_by if partition_by else None,
+                metadata=metadata if metadata else None,
+                write_mode='overwrite',
+                **read_options
+            )
+        else:
+            # Multiple files: process each and append within this batch's output
+            click.echo(f"  Processing {len(batch_files)} files with DuckDB...")
+            for i, file_path in enumerate(batch_files):
+                file_write_mode = 'overwrite' if i == 0 else 'append'
+                engine.ingest(
+                    input_path=file_path,
+                    output_path=output_path,
+                    format=fmt,
+                    partition_by=partition_by if partition_by else None,
+                    metadata=metadata if metadata else None,
+                    write_mode=file_write_mode,
+                    **read_options
+                )
+
+    # Update manifest for processed files
+    manifest_dir = os.path.join(cfg.project_root, 'manifest')
+    manifest_store = ManifestStore(manifest_dir)
+    table_manifest = manifest_store.get_table_manifest(table)
+
+    for file_path in batch_files:
+        try:
+            file_hash = _get_file_hash_static(file_path, fast_check=True)
+            table_manifest.update_file(
+                file_path,
+                status="success",
+                metadata={
+                    "batch": batch,
+                    "output_path": output_path
+                },
+                table_root=table_config.get('root'),
+                computed_hash=file_hash
+            )
+        except Exception as e:
+            click.echo(f"  WARNING: Could not update manifest for {file_path}: {e}")
+
+    click.echo(f"Batch {batch} ingestion complete. Output: {output_path}")
 
 
 @main.command()

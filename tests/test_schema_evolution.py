@@ -1,15 +1,8 @@
-
 import pytest
 import os
 import shutil
 from pyspark.sql import SparkSession
 from fairway.engines.pyspark_engine import PySparkEngine
-
-# Skip if PySpark is not available (though project requires it for these features)
-try:
-    import pyspark
-except ImportError:
-    pytest.skip("PySpark not installed", allow_module_level=True)
 
 @pytest.fixture(scope="module")
 def spark():
