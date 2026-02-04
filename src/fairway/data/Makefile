@@ -167,3 +167,22 @@ clean: ## Clean logs and temp data
 
 clean-cache: ## Clear the fairway extraction cache
 	fairway cache clean --force
+
+# ==============================================================================
+# Testing
+# ==============================================================================
+
+test: ## Run all tests (skips Nextflow tests if not installed)
+	cd ../../../ && python -m pytest tests/ -v
+
+test-nextflow: bootstrap ## Run Nextflow integration tests (requires Nextflow)
+	cd ../../../ && python -m pytest tests/test_nextflow_integration.py -v
+
+test-schema: bootstrap ## Quick test of schema workflow
+	@echo "=== Testing Schema Workflow ==="
+	nextflow run main.nf -entry schema -profile standard --config config/fairway.yaml --work_dir .fairway/work
+	@echo ""
+	@echo "=== Checking Results ==="
+	@ls -la schema/*.yaml 2>/dev/null || echo "No schema files found"
+	@echo ""
+	@cat schema/*.yaml 2>/dev/null || echo "Could not read schema files"
