@@ -18,7 +18,7 @@ from .exporters.redivis_exporter import RedivisExporter
 class ArchiveCache:
     """Persistent cache for extracted archives.
 
-    Extracts archives to .fairway_cache/archives/{name}_{hash}/ and tracks
+    Extracts archives to .fairway/cache/archives/{name}_{hash}/ and tracks
     extractions in the manifest. Multiple tables can share the same archive
     extraction.
     """
@@ -66,8 +66,8 @@ class ArchiveCache:
         # Create short hash for directory name
         short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
 
-        # Use temp_location from config, or default to .fairway_cache in project root
-        base_dir = self.config.temp_location or os.path.join(self.config.project_root, '.fairway_cache')
+        # Use temp_location from config, or default to .fairway/cache in project root
+        base_dir = self.config.temp_location or os.path.join(self.config.project_root, '.fairway', 'cache')
         return os.path.join(base_dir, 'archives', f"{archive_name}_{short_hash}")
 
     def _extract(self, archive_path, dest_dir):

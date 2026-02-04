@@ -32,6 +32,63 @@ def discover_config():
             f"Multiple config files found: {configs}. Use --config to specify one.")
 
 
+def _extract_batch_files(batch_files, table, config, fmt, preprocess=None):
+    """Extract ZIP files and return list of actual data files to process.
+
+    This is shared logic used by both schema-scan and ingest commands.
+    Extractions are cached to temp_location for reuse across commands.
+
+    Args:
+        batch_files: List of file paths in the batch
+        table: Table name (used for cache directory)
+        config: Config object with temp_location
+        fmt: Data format (csv, tsv, tab, etc.) for finding extracted files
+        preprocess: Optional preprocess config dict
+
+    Returns:
+        List of actual data file paths to process (extracted or original)
+    """
+    import zipfile
+    import glob as glob_module
+
+    preprocess = preprocess or {}
+    action = preprocess.get('action')
+    temp_base = config.temp_location or os.path.join(config.project_root, '.fairway', 'cache')
+
+    all_files = []
+
+    for batch_file in batch_files:
+        # Check if this file needs extraction
+        needs_extraction = (
+            action == 'unzip' or
+            (batch_file.endswith('.zip') and zipfile.is_zipfile(batch_file))
+        )
+
+        if needs_extraction:
+            # Extract zip to deterministic location
+            zip_name = os.path.splitext(os.path.basename(batch_file))[0]
+            extract_dir = os.path.join(temp_base, table, zip_name)
+
+            if not os.path.exists(extract_dir):
+                os.makedirs(extract_dir, exist_ok=True)
+                click.echo(f"  Extracting: {os.path.basename(batch_file)}")
+                with zipfile.ZipFile(batch_file, 'r') as zf:
+                    zf.extractall(extract_dir)
+            else:
+                click.echo(f"  Using cached: {os.path.basename(batch_file)}")
+
+            # Find extracted files matching format
+            ext_map = {'csv': '**/*.csv', 'tsv': '**/*.tsv', 'tab': '**/*.tab',
+                       'json': '**/*.json', 'parquet': '**/*.parquet'}
+            pattern = os.path.join(extract_dir, ext_map.get(fmt, '**/*'))
+            extracted = glob_module.glob(pattern, recursive=True)
+            all_files.extend(extracted)
+        else:
+            all_files.append(batch_file)
+
+    return all_files
+
+
 def _get_apptainer_binds(cfg):
     """Calculate Apptainer bind paths from config."""
     bind_paths = set()
@@ -765,8 +822,6 @@ def schema_scan(config, table, batch, work_dir):
     """
     from .batch_processor import BatchProcessor
     import json
-    import zipfile
-    import glob as glob_module
 
     if config is None:
         config = discover_config()
@@ -792,44 +847,11 @@ def schema_scan(config, table, batch, work_dir):
 
     fmt = bp.table_config.get('format', 'csv')
     preprocess = bp.table_config.get('preprocess', {})
-    action = preprocess.get('action')
 
-    # Temp location for zip extraction
-    temp_base = bp.config.temp_location or os.path.join(bp.config.project_root, '.fairway_cache')
-
-    # Collect ALL scannable files from the batch
-    # For zips: extract and collect content files
-    # For regular files: use directly
-    all_scannable_files = []
-
-    for batch_file in batch_files:
-        # Check if this file needs extraction
-        needs_extraction = (
-            action == 'unzip' or
-            (batch_file.endswith('.zip') and zipfile.is_zipfile(batch_file))
-        )
-
-        if needs_extraction:
-            # Extract zip to deterministic location
-            zip_name = os.path.splitext(os.path.basename(batch_file))[0]
-            extract_dir = os.path.join(temp_base, table, zip_name)
-
-            if not os.path.exists(extract_dir):
-                os.makedirs(extract_dir, exist_ok=True)
-                click.echo(f"  Extracting: {os.path.basename(batch_file)}")
-                with zipfile.ZipFile(batch_file, 'r') as zf:
-                    zf.extractall(extract_dir)
-            else:
-                click.echo(f"  Using cached: {os.path.basename(batch_file)}")
-
-            # Find extracted files matching format
-            ext_map = {'csv': '**/*.csv', 'tsv': '**/*.tsv', 'tab': '**/*.tab',
-                       'json': '**/*.json', 'parquet': '**/*.parquet'}
-            pattern = os.path.join(extract_dir, ext_map.get(fmt, '**/*'))
-            extracted = glob_module.glob(pattern, recursive=True)
-            all_scannable_files.extend(extracted)
-        else:
-            all_scannable_files.append(batch_file)
+    # Extract ZIPs and collect all scannable files (uses shared helper)
+    all_scannable_files = _extract_batch_files(
+        batch_files, table, bp.config, fmt, preprocess
+    )
 
     if not all_scannable_files:
         raise click.ClickException(f"No {fmt} files found in batch {batch}")
@@ -1001,6 +1023,13 @@ def ingest(config, table, batch, spark_master, final_dir_override):
     # Get table config
     table_config = bp.table_config
     fmt = table_config.get('format', 'csv')
+    preprocess = table_config.get('preprocess', {})
+
+    # Extract ZIPs and collect all files to ingest (reuses cached extractions from schema-scan)
+    ingest_files = _extract_batch_files(batch_files, table, cfg, fmt, preprocess)
+
+    if not ingest_files:
+        raise click.ClickException(f"No {fmt} files found for batch {batch}")
     read_options = table_config.get('read_options', {})
     partition_by = table_config.get('partition_by', [])
     metadata = table_config.get('metadata', {})
@@ -1035,7 +1064,7 @@ def ingest(config, table, batch, spark_master, final_dir_override):
         from .engines.pyspark_engine import PySparkEngine
         engine = PySparkEngine(spark_master=spark_master)
         engine.ingest(
-            input_path=batch_files,
+            input_path=ingest_files,
             output_path=output_path,
             format=fmt,
             partition_by=partition_by if partition_by else None,
@@ -1047,9 +1076,9 @@ def ingest(config, table, batch, spark_master, final_dir_override):
         from .engines.duckdb_engine import DuckDBEngine
         engine = DuckDBEngine()
 
-        if len(batch_files) == 1:
+        if len(ingest_files) == 1:
             engine.ingest(
-                input_path=batch_files[0],
+                input_path=ingest_files[0],
                 output_path=output_path,
                 format=fmt,
                 partition_by=partition_by if partition_by else None,
@@ -1059,8 +1088,8 @@ def ingest(config, table, batch, spark_master, final_dir_override):
             )
         else:
             # Multiple files: process each and append within this batch's output
-            click.echo(f"  Processing {len(batch_files)} files with DuckDB...")
-            for i, file_path in enumerate(batch_files):
+            click.echo(f"  Processing {len(ingest_files)} files with DuckDB...")
+            for i, file_path in enumerate(ingest_files):
                 file_write_mode = 'overwrite' if i == 0 else 'append'
                 engine.ingest(
                     input_path=file_path,
@@ -1269,16 +1298,16 @@ def list_tables(config):
 @cache.command()
 @click.option('--force', is_flag=True, help='Skip confirmation prompt.')
 def clean(force):
-    """Clear the archive extraction cache (.fairway_cache/)."""
+    """Clear the archive extraction cache (.fairway/cache/)."""
     # Try to resolve cache_dir relative to project root via config
     try:
         config_path = discover_config()
         from .config_loader import Config
         cfg = Config(config_path)
-        cache_dir = cfg.temp_location or os.path.join(cfg.project_root, '.fairway_cache')
+        cache_dir = cfg.temp_location or os.path.join(cfg.project_root, '.fairway', 'cache')
     except click.ClickException:
         # No config found, fall back to current directory
-        cache_dir = '.fairway_cache'
+        cache_dir = os.path.join('.fairway', 'cache')
 
     if not os.path.exists(cache_dir):
         click.echo("No cache directory found.")

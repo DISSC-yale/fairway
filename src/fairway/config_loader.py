@@ -70,8 +70,8 @@ class Config:
             temp_raw = os.path.expandvars(temp_raw)
             self.temp_location = temp_raw if os.path.isabs(temp_raw) else os.path.join(self.project_root, temp_raw)
         else:
-            # Default to .fairway_cache in project root
-            self.temp_location = os.path.join(self.project_root, '.fairway_cache')
+            # Default to .fairway/cache in project root
+            self.temp_location = os.path.join(self.project_root, '.fairway', 'cache')
 
         self.redivis = self.data.get('redivis', {})
         self.output_format = self.storage.get('format', 'parquet').lower()
