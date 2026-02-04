@@ -259,13 +259,21 @@ class TestNextflowParallelExecution:
             timeout=300
         )
 
-        # Check output mentions multiple batch processing
-        output = result.stdout + result.stderr
+        assert result.returncode == 0, f"Nextflow failed:\n{result.stderr}"
+
+        # Strip ANSI codes for easier assertion
+        import re
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        output = ansi_escape.sub('', result.stdout + result.stderr)
 
         # With 3 files and batch_size=2, expect 2 batches
-        assert 'batch_0' in output.lower() or 'SCHEMA_SCAN' in output
+        assert '2 batches' in output or 'batch jobs: 2' in output.lower()
 
-        # Verify all batch schemas exist
+        # Verify final schema is in project/schema/ folder
+        schema_file = nextflow_project / "schema" / "test_table.yaml"
+        assert schema_file.exists(), f"Final schema should be at {schema_file}"
+
+        # Verify intermediate batch schemas exist in work dir
         work_dir = nextflow_project / ".fairway" / "work" / "test_table"
         batch_dirs = list(work_dir.glob("batch_*"))
         assert len(batch_dirs) == 2, f"Expected 2 batch directories, found {len(batch_dirs)}"

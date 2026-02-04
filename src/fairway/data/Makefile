@@ -172,15 +172,23 @@ clean-cache: ## Clear the fairway extraction cache
 # Testing
 # ==============================================================================
 
-test: ## Run all tests (skips Nextflow tests if not installed)
-	cd ../../../ && python -m pytest tests/ -v
+# Nextflow binary location (local install or system)
+NF_BIN := $(shell command -v nextflow 2>/dev/null || echo "../../../nextflow")
 
-test-nextflow: bootstrap ## Run Nextflow integration tests (requires Nextflow)
-	cd ../../../ && python -m pytest tests/test_nextflow_integration.py -v
+test: bootstrap ## Run all tests including Nextflow integration tests
+	@echo "=== Running All Tests (Nextflow: $(NF_BIN)) ==="
+	cd ../../../ && PATH="$$(pwd):$$PATH" python -m pytest tests/test_cli_batch.py tests/test_nextflow_integration.py -v
 
-test-schema: bootstrap ## Quick test of schema workflow
+test-unit: ## Run unit tests only (no Nextflow required)
+	cd ../../../ && python -m pytest tests/test_cli_batch.py -v
+
+test-nextflow: bootstrap ## Run Nextflow integration tests only
+	@echo "=== Running Nextflow Integration Tests ==="
+	cd ../../../ && PATH="$$(pwd):$$PATH" python -m pytest tests/test_nextflow_integration.py -v
+
+test-schema: bootstrap ## Quick manual test of schema workflow
 	@echo "=== Testing Schema Workflow ==="
-	nextflow run main.nf -entry schema -profile standard --config config/fairway.yaml --work_dir .fairway/work
+	$(NF_BIN) run main.nf -entry schema -profile standard --config config/fairway.yaml --work_dir .fairway/work
 	@echo ""
 	@echo "=== Checking Results ==="
 	@ls -la schema/*.yaml 2>/dev/null || echo "No schema files found"
