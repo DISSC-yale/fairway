@@ -283,7 +283,10 @@ class IngestionPipeline:
         
         if mode == 'cluster':
              if not hasattr(self.engine, 'distribute_task'):
-                 raise ValueError("execution_mode='cluster' requires a distributed engine (PySpark).")
+                 print("WARNING: execution_mode='cluster' requested but engine doesn't support it. Falling back to 'driver' mode.")
+                 mode = 'driver'
+
+        if mode == 'cluster':
              
              # Dispatch to cluster
              # Note: For custom scripts, ensure the script file is accessible on workers
