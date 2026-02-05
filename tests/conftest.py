@@ -52,16 +52,35 @@ def duckdb_engine():
     return DuckDBEngine()
 
 
-@pytest.fixture
-def pyspark_engine():
-    """PySpark engine in local mode. Skips if PySpark unavailable."""
+@pytest.fixture(scope="session")
+def spark_session():
+    """Shared Spark session for all tests. Properly configured for macOS/local dev."""
     pytest.importorskip("pyspark")
+    from pyspark.sql import SparkSession
+
+    spark = (SparkSession.builder
+        .master("local[1]")
+        .appName("fairway-tests")
+        .config("spark.driver.bindAddress", "127.0.0.1")
+        .config("spark.driver.host", "127.0.0.1")
+        .config("spark.ui.enabled", "false")
+        .getOrCreate())
+
+    yield spark
+    spark.stop()
+
+
+@pytest.fixture
+def pyspark_engine(spark_session):
+    """PySpark engine using shared session. Skips if PySpark unavailable."""
     from fairway.engines.pyspark_engine import PySparkEngine
-    return PySparkEngine(spark_master="local[*]")
+    engine = PySparkEngine.__new__(PySparkEngine)
+    engine.spark = spark_session
+    return engine
 
 
 @pytest.fixture(params=["duckdb", "pyspark"])
-def engine(request):
+def engine(request, spark_session):
     """Parametrized fixture - tests run against both engines.
 
     Automatically skips PySpark tests if not available.
@@ -73,7 +92,9 @@ def engine(request):
     else:
         pytest.importorskip("pyspark")
         from fairway.engines.pyspark_engine import PySparkEngine
-        return PySparkEngine(spark_master="local[*]")
+        engine = PySparkEngine.__new__(PySparkEngine)
+        engine.spark = spark_session
+        return engine
 
 
 @pytest.fixture
