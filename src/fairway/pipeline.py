@@ -116,17 +116,18 @@ class ArchiveCache:
 
 
 class IngestionPipeline:
-    def __init__(self, config_path, spark_master=None):
+    def __init__(self, config_path, spark_master=None, engine_override=None):
         print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
-        self.engine = self._get_engine(spark_master)
+        self.engine = self._get_engine(spark_master, engine_override)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
 
-    def _get_engine(self, spark_master=None):
-        engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
-        
+    def _get_engine(self, spark_master=None, engine_override=None):
+        # CLI override takes precedence over config
+        engine_type = engine_override or (self.config.engine.lower() if self.config.engine else 'duckdb')
+
         if engine_type in ['pyspark', 'spark']:
             try:
                 from .engines.pyspark_engine import PySparkEngine
@@ -137,7 +138,7 @@ class IngestionPipeline:
             from .engines.duckdb_engine import DuckDBEngine
             return DuckDBEngine()
         else:
-            raise ValueError(f"Unknown engine: {self.config.engine}. Supported engines: 'duckdb', 'spark'") 
+            raise ValueError(f"Unknown engine: {engine_type}. Supported engines: 'duckdb', 'spark'") 
 
     def _preprocess(self, table):
         """
