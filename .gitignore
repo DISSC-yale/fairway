@@ -13,3 +13,4 @@ build/
 mock_apptainer
 tests/output
 config/sales_schema.yaml
+/manifest/
