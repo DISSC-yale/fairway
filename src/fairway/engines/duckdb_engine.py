@@ -219,15 +219,10 @@ class DuckDBEngine:
             
         # Determine overwrite behavior
         # DuckDB's COPY ... (OVERWRITE TRUE) replaces the directory/file
-        # If write_mode='append', we should NOT use OVERWRITE TRUE. 
+        # If write_mode='append', we should NOT use OVERWRITE TRUE.
         # However, DuckDB 0.9.x/1.0 COPY to parquet directory behavior works as append if OVERWRITE is not specified?
         # Let's verify standard DuckDB behavior:
         # COPY ... TO 'dir' (FORMAT PARQUET, PARTITION_BY ...) -> Writes new files into dir.
-        
-        overwrite_option = "OVERWRITE_OR_IGNORE TRUE" if write_mode == 'overwrite' else "OVERWRITE_OR_IGNORE FALSE" 
-        # Actually DuckDB syntax is typically: OVERWRITE TRUE/FALSE.
-        # If write_mode is 'append', we want OVERWRITE FALSE (default usually, or just don't specify)
-        
         overwrite_val = "TRUE" if write_mode == 'overwrite' else "FALSE"
 
         self.con.execute(f"""
@@ -236,16 +231,6 @@ class DuckDBEngine:
             (FORMAT PARQUET{partition_clause}, OVERWRITE {overwrite_val})
         """)
         return True
-
-    def inspect(self, query, limit=None, as_pandas=True):
-        """
-        Inspect data using SQL (Control Plane only).
-        """
-        # DuckDB is already local, limit is less critical but kept for API consistency
-        df = self.con.execute(query).df()
-        if limit:
-             df = df.head(limit)
-        return df if as_pandas else df
 
     def read_result(self, path):
         """

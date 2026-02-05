@@ -384,56 +384,6 @@ class PySparkEngine:
         writer.parquet(output_path)
         return True
 
-    def inspect(self, query, limit=100000, as_pandas=True):
-        """
-        Inspect data using SQL (Control Plane only).
-        WARNING: This pulls data to the driver. Always limited by default (100k rows) to prevent OOM.
-        """
-        # Intercept DuckDB-style "SELECT * FROM 'path'" queries
-        match = re.search(r"SELECT\s+\*\s+FROM\s+'([^']*)'", query, re.IGNORECASE)
-        if match:
-             path = match.group(1)
-             try:
-                 # Clean up recursive glob for Spark to ensure partition discovery works best on the dir
-                 if path.endswith("/**/*.parquet"):
-                     path = path.replace("/**/*.parquet", "")
-                 elif path.endswith("/**/*.csv"):
-                     path = path.replace("/**/*.csv", "")
-                     
-                 # Spark doesn't support 'FROM "file"' syntax in SQL directly for all versions/configs
-                 # But we can easily route this to spark.read
-                 if ".parquet" in path or os.path.isdir(path):
-                      df = self.spark.read.parquet(path)
-                 elif ".csv" in path:
-                      df = self.spark.read.option("header", "true").csv(path)
-                 elif ".json" in path:
-                      df = self.spark.read.json(path)
-                 else:
-                      # Fallback
-                      df = self.spark.sql(query)
-                      
-                 if limit:
-                     print(f"Applying limit of {limit} rows to driver inspection.")
-                     df = df.limit(limit)
-                     
-                 if as_pandas:
-                     return df.toPandas()
-                 return df
-
-             except Exception as e:
-                 print(f"WARNING: Failed to optimize file query '{query}': {e}. Falling back to SQL.")
-
-        # Standard SQL
-        df = self.spark.sql(query)
-        
-        if limit:
-            print(f"Applying limit of {limit} rows to driver inspection.")
-            df = df.limit(limit)
-            
-        if as_pandas:
-            return df.toPandas()
-        return df
-
     def read_result(self, path):
         """
         Reads a Parquet result from the given path into a Spark DataFrame (Lazy).
