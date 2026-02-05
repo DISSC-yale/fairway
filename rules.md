@@ -33,7 +33,7 @@ CLI should include `status` and `cancel` commands to manage Slurm jobs (wrapping
 **Category:** [ARC] Architectural Principles
 
 **Rule:**
-`fairway run` MUST NOT launch Nextflow. It is a worker process.
+`fairway run` is a worker process. It executes the pipeline directly and MUST NOT launch orchestrators or submit jobs. Use `fairway submit` for job submission.
 
 ---
 
@@ -97,7 +97,7 @@ Ensure the Spark version is consistent across all configuration files (Use Spark
 
 **Rule:**
 Execution wrappers (e.g., `Makefile`) MUST work without external orchestrators.
-The `fairway` CLI should be available via pip install or module system. No Nextflow or other orchestrators required.
+The `fairway` CLI should be available via pip install or module system. No external orchestrators required.
 
 ---
 
@@ -293,7 +293,7 @@ All file paths in config files MUST be resolved using this fallback pattern:
 3. Raise clear error if not found
 
 **Rationale:**
-This ensures configs work both locally (CWD = project root) and on HPC environments where CWD may be a work directory (e.g., Nextflow work directories). Without this pattern, relative paths fail when the execution context differs from the config file location.
+This ensures configs work both locally (CWD = project root) and on HPC environments where CWD may be a work directory. Without this pattern, relative paths fail when the execution context differs from the config file location.
 
 **Applies to:**
 - `schema` file references
