@@ -15,31 +15,38 @@ cd my_project
 
 ## Running the Pipeline
 
-Fairway creates a `Makefile` to simplify execution.
+### Local Development (DuckDB)
 
-### Local Development
-To run the pipeline locally (on your laptop):
-
-```bash
-make run
-# Equivalent to: nextflow run main.nf -profile standard
-```
-
-### HPC Execution (Slurm)
-To submit the pipeline to a Slurm cluster:
+Run the pipeline locally on your laptop:
 
 ```bash
-make run-hpc
-# Equivalent to: nextflow run main.nf -profile slurm
-```
-
-### Manual Execution (Debugging)
-To run the pipeline logic directly (without Nextflow orchestration):
-
-```bash
+fairway run
+# Or with explicit config:
 fairway run --config config/fairway.yaml
 ```
-*Note: This runs the "Worker" logic directly. Use this for fast feedback on Python errors.*
+
+### HPC Execution (Slurm + Spark)
+
+Submit the pipeline to a Slurm cluster with Spark:
+
+```bash
+# Submit with Spark cluster
+fairway submit --with-spark
+
+# Submit with custom resources
+fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
+
+# Preview the job script first
+fairway submit --with-spark --dry-run
+```
+
+### Check Job Status
+
+```bash
+fairway status           # Show your running jobs
+fairway cancel <JOB_ID>  # Cancel a specific job
+fairway cancel --all     # Cancel all your jobs
+```
 
 ## Directory Structure
 *   `config/`: Configuration files.

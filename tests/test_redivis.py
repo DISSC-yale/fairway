@@ -3,16 +3,13 @@ from unittest.mock import MagicMock, patch
 import os
 import sys
 
-# Add src to path if needed (though pytest adds it automatically if layout is standard)
-# sys.path.append(os.path.abspath('src')) - relying on installed package or pytest path
-
 # Mock redivis module before importing exporter
-import sys
-from unittest.mock import MagicMock
 mock_redivis = MagicMock()
 sys.modules['redivis'] = mock_redivis
 
+from fairway.exporters import redivis_exporter
 from fairway.exporters.redivis_exporter import RedivisExporter
+
 
 class TestRedivisExporter(unittest.TestCase):
     def setUp(self):
@@ -22,6 +19,8 @@ class TestRedivisExporter(unittest.TestCase):
             'public_access_level': 'overview'
         }
         os.environ['REDIVIS_API_TOKEN'] = 'fake_token'
+        # Ensure the module-level redivis variable is set to our mock
+        redivis_exporter.redivis = mock_redivis
 
     @patch('redivis.user')
     def test_init(self, mock_redivis_user):

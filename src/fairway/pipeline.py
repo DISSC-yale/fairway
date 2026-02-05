@@ -6,7 +6,7 @@ import tarfile
 import hashlib
 import importlib.util
 from .config_loader import Config
-from .manifest import ManifestManager, ManifestStore, _get_file_hash_static
+from .manifest import ManifestStore, _get_file_hash_static
 from .engines.duckdb_engine import DuckDBEngine
 from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
@@ -70,21 +70,43 @@ class ArchiveCache:
         base_dir = self.config.temp_location or os.path.join(os.getcwd(), '.fairway_cache')
         return os.path.join(base_dir, 'archives', f"{archive_name}_{short_hash}")
 
+    def _safe_extract_path(self, dest_dir, member_path):
+        """Validate extracted path is within destination (prevents Zip Slip attack)."""
+        # Resolve the full path
+        dest_dir = os.path.realpath(dest_dir)
+        target_path = os.path.realpath(os.path.join(dest_dir, member_path))
+
+        # Ensure target is within destination directory
+        if not target_path.startswith(dest_dir + os.sep) and target_path != dest_dir:
+            raise ValueError(f"Path traversal detected: {member_path}")
+        return target_path
+
     def _extract(self, archive_path, dest_dir):
-        """Extract archive based on type."""
+        """Extract archive based on type with path traversal protection."""
+        dest_dir = os.path.realpath(dest_dir)
+
         if archive_path.endswith('.zip'):
             with zipfile.ZipFile(archive_path, 'r') as zf:
+                for member in zf.namelist():
+                    # Validate each path before extraction
+                    self._safe_extract_path(dest_dir, member)
                 zf.extractall(dest_dir)
         elif archive_path.endswith(('.tar.gz', '.tgz')):
             with tarfile.open(archive_path, 'r:gz') as tf:
+                for member in tf.getmembers():
+                    self._safe_extract_path(dest_dir, member.name)
                 tf.extractall(dest_dir)
         elif archive_path.endswith('.tar'):
             with tarfile.open(archive_path, 'r') as tf:
+                for member in tf.getmembers():
+                    self._safe_extract_path(dest_dir, member.name)
                 tf.extractall(dest_dir)
         elif archive_path.endswith('.gz') and not archive_path.endswith('.tar.gz'):
             import gzip
             import shutil
-            output_file = os.path.join(dest_dir, os.path.basename(archive_path)[:-3])
+            output_name = os.path.basename(archive_path)[:-3]
+            # Validate output path
+            output_file = self._safe_extract_path(dest_dir, output_name)
             with gzip.open(archive_path, 'rb') as f_in:
                 with open(output_file, 'wb') as f_out:
                     shutil.copyfileobj(f_in, f_out)
@@ -97,8 +119,6 @@ class IngestionPipeline:
         print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
-        # Keep self.manifest for backward compatibility during transition
-        self.manifest = ManifestManager()
         self.engine = self._get_engine(spark_master)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)

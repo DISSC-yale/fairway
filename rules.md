@@ -33,7 +33,7 @@ CLI should include `status` and `cancel` commands to manage Slurm jobs (wrapping
 **Category:** [ARC] Architectural Principles
 
 **Rule:**
-`fairway run` MUST NOT launch Nextflow. It is a worker process.
+`fairway run` is a worker process. It executes the pipeline directly and MUST NOT launch orchestrators or submit jobs. Use `fairway submit` for job submission.
 
 ---
 
@@ -96,8 +96,8 @@ Ensure the Spark version is consistent across all configuration files (Use Spark
 **Category:** [PRO] Process & Workflow
 
 **Rule:**
-Execution wrappers (e.g., `Makefile`) MUST robustly handle missing dependencies. 
-Nextflow Logic: Check PATH -> Check `./nextflow` -> Check `module avail` -> Download from web.
+Execution wrappers (e.g., `Makefile`) MUST work without external orchestrators.
+The `fairway` CLI should be available via pip install or module system. No external orchestrators required.
 
 ---
 
@@ -108,8 +108,9 @@ Nextflow Logic: Check PATH -> Check `./nextflow` -> Check `module avail` -> Down
 
 **Rule:**
 The preferred method for HPC submission is the "Driver Job" pattern:
-- Submit the orchestrator (Nextflow) as a small single-task Slurm job (`scripts/driver.sh`).
-- This job then runs Nextflow, which submits the actual worker tasks.
+- Use `fairway submit --with-spark` to submit the pipeline as a Slurm job.
+- The driver job provisions Spark cluster (reading config from `config/spark.yaml`), then runs `fairway run`.
+- For simple jobs without Spark: use `fairway submit` (no --with-spark flag).
 
 ---
 
@@ -292,7 +293,7 @@ All file paths in config files MUST be resolved using this fallback pattern:
 3. Raise clear error if not found
 
 **Rationale:**
-This ensures configs work both locally (CWD = project root) and on HPC environments where CWD may be a work directory (e.g., Nextflow work directories). Without this pattern, relative paths fail when the execution context differs from the config file location.
+This ensures configs work both locally (CWD = project root) and on HPC environments where CWD may be a work directory. Without this pattern, relative paths fail when the execution context differs from the config file location.
 
 **Applies to:**
 - `schema` file references

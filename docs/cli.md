@@ -100,13 +100,53 @@ fairway status
 
 Wrapper around `squeue` with fairway-specific formatting.
 
+### `fairway submit`
+
+Submit the pipeline as a Slurm job with optional Spark cluster provisioning.
+
+```bash
+fairway submit [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--config TEXT` | Auto-discover | Path to config file |
+| `--account TEXT` | From spark.yaml | Slurm account |
+| `--partition TEXT` | `day` | Slurm partition |
+| `--time TEXT` | `24:00:00` | Time limit (HH:MM:SS) |
+| `--mem TEXT` | `16G` | Memory per node |
+| `--cpus INTEGER` | `4` | CPUs per task |
+| `--with-spark` | False | Start Spark cluster before running |
+| `--dry-run` | False | Print job script without submitting |
+
+**Examples:**
+```bash
+# Submit with auto-discovered config
+fairway submit
+
+# Submit with Spark cluster
+fairway submit --with-spark
+
+# Submit with custom resources
+fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
+
+# Preview the job script
+fairway submit --with-spark --dry-run
+```
+
 ### `fairway cancel`
 
-Cancel a Slurm job.
+Cancel Slurm jobs (wrapper around `scancel`).
 
 ```bash
 fairway cancel [JOB_ID]
+fairway cancel --all
 ```
+
+| Option | Description |
+|--------|-------------|
+| `JOB_ID` | Specific job ID to cancel |
+| `--all` | Cancel all your running jobs (requires confirmation) |
 
 ### `fairway cache`
 

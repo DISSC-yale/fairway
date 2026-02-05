@@ -47,7 +47,7 @@ You can switch engines in your YAML configuration:
 engine: "pyspark" # options: "duckdb", "pyspark"
 ```
 
-When using `pyspark` on a cluster, ensure you run with the `--profile slurm --with-spark` flags to manage the Spark cluster lifecycle.
+When using `pyspark` on a cluster, submit your job with `fairway submit --with-spark` to automatically provision and manage the Spark cluster.
 
 ### Slurm Cluster Sizing
 
