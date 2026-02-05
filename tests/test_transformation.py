@@ -3,8 +3,18 @@ import pytest
 import pandas as pd
 from pathlib import Path
 
-from fairway.transformations.registry import load_transformer
+from fairway.transformations.registry import (
+    load_transformer, add_allowed_directory, clear_allowed_directories
+)
 from fairway.transformations.base import BaseTransformer
+
+
+@pytest.fixture(autouse=True)
+def allow_tmp_path_for_transforms(tmp_path):
+    """Allow tmp_path for transformation loading in tests."""
+    add_allowed_directory(str(tmp_path))
+    yield
+    clear_allowed_directories()
 
 
 class TestBaseTransformer:

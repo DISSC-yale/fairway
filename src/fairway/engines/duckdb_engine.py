@@ -5,6 +5,28 @@ except ImportError as e:
     _duckdb_import_error = e
 
 import os
+import re
+
+
+def _validate_sql_identifier(name):
+    """Validate that a string is a safe SQL identifier to prevent injection."""
+    if not name or not isinstance(name, str):
+        raise ValueError(f"Invalid SQL identifier: {name}")
+    # Allow only alphanumeric and underscores, must start with letter or underscore
+    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+        raise ValueError(f"Invalid SQL identifier (contains unsafe characters): {name}")
+    if len(name) > 128:
+        raise ValueError(f"SQL identifier too long: {name}")
+    return name
+
+
+def _escape_sql_string(value):
+    """Escape a string value for safe inclusion in SQL."""
+    if not isinstance(value, str):
+        value = str(value)
+    # Escape single quotes by doubling them
+    return value.replace("'", "''")
+
 
 class DuckDBEngine:
     def __init__(self):
@@ -174,11 +196,17 @@ class DuckDBEngine:
         # Step 3: Build column extraction query using substr
         # DuckDB substr is 1-indexed: substr(string, start, length)
         select_parts = []
+        # Allowed SQL types for fixed-width columns
+        ALLOWED_TYPES = {'VARCHAR', 'STRING', 'INTEGER', 'INT', 'BIGINT', 'DOUBLE', 'FLOAT', 'DATE', 'TIMESTAMP', 'BOOLEAN', 'DECIMAL'}
         for col in columns:
-            name = col['name']
-            start = col['start'] + 1  # Convert 0-indexed to 1-indexed
-            length = col['length']
-            col_type = col['type']
+            name = _validate_sql_identifier(col['name'])
+            start = int(col['start']) + 1  # Convert 0-indexed to 1-indexed
+            length = int(col['length'])
+            col_type = col['type'].upper()
+            # Validate column type against allowlist
+            base_type = col_type.split('(')[0]  # Handle DECIMAL(10,2) etc
+            if base_type not in ALLOWED_TYPES:
+                raise ValueError(f"Invalid column type: {col_type}")
             trim = col.get('trim', False)
 
             # Extract substring
@@ -208,14 +236,21 @@ class DuckDBEngine:
         # Inject metadata columns if provided
         select_clause = "*"
         if metadata:
-            meta_cols = ", ".join([f"'{val}' AS {key}" for key, val in metadata.items()])
+            # Validate metadata keys as SQL identifiers and escape values
+            meta_parts = []
+            for key, val in metadata.items():
+                safe_key = _validate_sql_identifier(key)
+                safe_val = _escape_sql_string(val)
+                meta_parts.append(f"'{safe_val}' AS {safe_key}")
+            meta_cols = ", ".join(meta_parts)
             select_clause = f"*, {meta_cols}"
 
         # Write to Parquet with optional Hive partitioning
         partition_clause = ""
         if partition_by:
-            # DuckDB 1.0+ supports PARTITION_BY in COPY
-            partition_clause = f", PARTITION_BY ({', '.join(partition_by)})"
+            # Validate partition column names
+            safe_partitions = [_validate_sql_identifier(p) for p in partition_by]
+            partition_clause = f", PARTITION_BY ({', '.join(safe_partitions)})"
             
         # Determine overwrite behavior
         # DuckDB's COPY ... (OVERWRITE TRUE) replaces the directory/file
