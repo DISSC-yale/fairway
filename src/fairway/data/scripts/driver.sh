@@ -40,6 +40,14 @@ fi
 # Ensure log directory exists
 mkdir -p logs/slurm
 
+# Load required modules (Spark includes Java)
+if [ "$USE_APPTAINER" != "yes" ]; then
+    echo "Loading Spark module..."
+    module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || {
+        echo "WARNING: Could not load Spark module. Ensure JAVA_HOME is set."
+    }
+fi
+
 # Load virtual environment if specified (only if not using container)
 if [ "$USE_APPTAINER" != "yes" ] && [ -n "$FAIRWAY_VENV" ]; then
     if [ -f "$FAIRWAY_VENV/bin/activate" ]; then
