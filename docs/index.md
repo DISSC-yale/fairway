@@ -8,7 +8,7 @@ Traditional data ingestion often suffers from undocumented transformations, rigi
 
 *   **Config-Driven**: Define your pipeline in YAML, not just code.
 *   **Engine-Agnostic**: Shift from local DuckDB processing to distributed PySpark on Slurm with a single config change.
-*   **Orchestration-Native**: Built to run seamlessly with Nextflow and Slurm.
+*   **HPC-Ready**: Native Slurm integration with automatic Spark cluster provisioning.
 *   **Validation-First**: Multi-level sanity and distribution checks are baked into the pipeline.
 
 ## Where to Start?

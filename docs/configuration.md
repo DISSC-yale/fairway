@@ -175,24 +175,30 @@ dynamic_allocation:
   initial_executors: 15
 ```
 
-CLI options (e.g., `--slurm-nodes 4`) override `spark.yaml` values.
+CLI options (e.g., `--mem 64G`) override `spark.yaml` values.
 
-## Nextflow Profiles
+## Slurm Submission
 
-Fairway uses Nextflow for execution orchestration. The `nextflow.config` file (copied to your project on `fairway init`) defines execution profiles:
-
-| Profile | Executor | Use Case |
-| :--- | :--- | :--- |
-| `standard` | local | Development, testing |
-| `slurm` | Slurm | HPC clusters |
-| `kubernetes` | k8s | Cloud-native |
-| `google_batch` | Google Batch | GCP |
-| `docker` | local + Docker | Containerized local |
-| `apptainer` | local + Apptainer | HPC containers |
-
-Select a profile with `--profile`:
+Submit jobs to Slurm using `fairway submit`:
 
 ```bash
-fairway run --profile slurm
+# Basic submission (uses defaults from spark.yaml)
+fairway submit
+
+# With Spark cluster
+fairway submit --with-spark
+
+# With custom resources
+fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
 ```
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--partition` | `day` | Slurm partition |
+| `--time` | `24:00:00` | Time limit (HH:MM:SS) |
+| `--mem` | `16G` | Memory per node |
+| `--cpus` | `4` | CPUs per task |
+| `--account` | From spark.yaml | Slurm account |
+| `--with-spark` | False | Provision Spark cluster |
+| `--dry-run` | False | Preview job script |
 

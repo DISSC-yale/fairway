@@ -38,6 +38,16 @@ sources:
 
 Fairway will dynamically load the specified script for each source.
 
+## Security
+
+For security reasons, transformation scripts can only be loaded from these directories within your project:
+
+- `src/transformations/`
+- `transformations/`
+- `src/`
+
+Attempting to load a transformer from outside these directories will raise a security error. This prevents arbitrary code execution from untrusted paths.
+
 ## Data Flow & State Preservation
 
 Fairway implements a "Researcher Data Flow" that preserves data at each stage:
