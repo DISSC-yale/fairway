@@ -272,10 +272,10 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
                 click.echo(f"Spark master: {spark_master}")
             else:
                 click.echo("No spark_master provided, using local[*]")
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]")
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]", engine_override='pyspark')
         else:
             # Use DuckDB (default) - portable, no cluster needed
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=None)
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=None, engine_override='duckdb')
 
         pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
         return
