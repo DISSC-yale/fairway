@@ -60,21 +60,12 @@ class PySparkEngine:
 
         if spark_master:
             builder = builder.master(spark_master)
-            # When connecting to an external Spark cluster (e.g., Slurm-provisioned),
-            # SASL authentication must match the cluster's configuration.
-            # Our Slurm cluster script disables SASL authentication, so we must match.
-            builder = builder.config("spark.authenticate", "false") \
-                             .config("spark.authenticate.enableSaslEncryption", "false") \
-                             .config("spark.network.crypto.enabled", "false")
-
-        # Enable extensions for Delta (if the pip config helper didn't handle it or for explicit clarity)
-        # Note: configure_spark_with_delta_pip usually handles .config("spark.sql.extensions", ...)
-        # But we ensure we catch it safely.
-
-        # Fix for local testing on macOS: bind to localhost to avoid network issues
-        # This resolves "Can't assign requested address" errors when no external network
-        builder = builder.config("spark.driver.host", "127.0.0.1") \
-                         .config("spark.driver.bindAddress", "127.0.0.1")
+            # Auth settings (spark.authenticate + secret) are picked up automatically
+            # from SPARK_CONF_DIR/spark-defaults.conf, which is set by driver.sh
+        else:
+            # Local mode: bind to localhost to avoid network issues on macOS
+            builder = builder.config("spark.driver.host", "127.0.0.1") \
+                             .config("spark.driver.bindAddress", "127.0.0.1")
 
         self.spark = builder.getOrCreate()
 
