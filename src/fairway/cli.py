@@ -719,6 +719,10 @@ set -e
 # Ensure log directory exists
 mkdir -p logs/slurm
 
+# Load Spark module (includes Java)
+echo "Loading Spark module..."
+module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+
 # Cleanup function to stop Spark cluster on exit
 cleanup() {{
     echo "Stopping Spark cluster..."
