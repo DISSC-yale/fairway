@@ -79,6 +79,107 @@ class TestTableManifest:
         assert tm.is_schema_stale(["hash1", "hash3"]) is True
 
 
+    def test_get_pending_files_all_new(self, tmp_path):
+        """All files are new → returns all."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f1.write_text("data1")
+        f2.write_text("data2")
+
+        tm = TableManifest(manifest_dir, "sales")
+        pending = tm.get_pending_files([str(f1), str(f2)])
+        assert len(pending) == 2
+
+    def test_get_pending_files_some_processed(self, tmp_path):
+        """Some already processed → returns only new/changed."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f1.write_text("data1")
+        f2.write_text("data2")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success")
+
+        pending = tm.get_pending_files([str(f1), str(f2)])
+        assert pending == [str(f2)]
+
+    def test_get_pending_files_all_processed(self, tmp_path):
+        """All already processed → returns empty list."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f1.write_text("data1")
+        f2.write_text("data2")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success")
+        tm.update_file(str(f2), status="success")
+
+        pending = tm.get_pending_files([str(f1), str(f2)])
+        assert pending == []
+
+    def test_get_pending_files_modified_file(self, tmp_path):
+        """Modified file detected as pending."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f1.write_text("original")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success")
+
+        # Modify the file
+        f1.write_text("modified content")
+        pending = tm.get_pending_files([str(f1)])
+        assert pending == [str(f1)]
+
+    def test_get_pending_files_empty_list(self, tmp_path):
+        manifest_dir = str(tmp_path / "manifest")
+        tm = TableManifest(manifest_dir, "sales")
+        assert tm.get_pending_files([]) == []
+
+    def test_should_process_retries_failed_files(self, tmp_path):
+        """Files with status='failed' should be retried."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f1.write_text("data1")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="failed")
+
+        # Should still need processing even though hash matches
+        assert tm.should_process(str(f1)) is True
+
+    def test_get_pending_files_includes_failed(self, tmp_path):
+        """get_pending_files returns previously failed files."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f1.write_text("data1")
+        f2.write_text("data2")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success")
+        tm.update_file(str(f2), status="failed")
+
+        pending = tm.get_pending_files([str(f1), str(f2)])
+        assert pending == [str(f2)]
+
+    def test_get_pending_files_with_table_root(self, tmp_path):
+        manifest_dir = str(tmp_path / "manifest")
+        root = tmp_path / "data"
+        root.mkdir()
+        f1 = root / "a.csv"
+        f1.write_text("data1")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success", table_root=str(root))
+
+        pending = tm.get_pending_files([str(f1)], table_root=str(root))
+        assert pending == []
+
+
 class TestGlobalManifest:
     def test_create_new_global_manifest(self, tmp_path):
         manifest_dir = str(tmp_path / "manifest")

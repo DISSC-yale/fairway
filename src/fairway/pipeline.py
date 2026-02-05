@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
+from .batcher import PartitionBatcher
 from .engines.duckdb_engine import DuckDBEngine
 from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
@@ -389,6 +390,108 @@ class IngestionPipeline:
         # If single archive, return glob pattern
         return result_path
 
+    def _run_partition_aware(self, table, input_path, table_manifest):
+        """Execute partition-aware batched ingestion.
+
+        Groups files by partition values extracted from naming_pattern,
+        then calls the engine once per batch writing directly to the
+        correct Hive-style partition directory (no shuffle required).
+        """
+        naming_pattern = table['naming_pattern']
+        partition_by = table.get('partition_by', [])
+        table_format = table.get('format', 'csv')
+        schema = table.get('schema')
+        read_options = table.get('read_options', {})
+        write_mode = table.get('write_mode', 'overwrite')
+        fixed_width_spec = table.get('fixed_width_spec')
+        output_name = os.path.splitext(table['name'])[0]
+        intermediate_dir = self.config.scratch_dir or self.config.storage['intermediate_dir']
+        base_output = os.path.join(intermediate_dir, output_name)
+
+        # 1. Resolve all input files from glob
+        all_files = sorted(glob.glob(input_path, recursive=True))
+        all_files = [f for f in all_files if os.path.isfile(f)]
+
+        if not all_files:
+            print(f"  WARNING: No files found matching {input_path}")
+            return
+
+        # 2. Filter through manifest -> pending files only
+        pending = table_manifest.get_pending_files(all_files, table.get('root'))
+        if not pending:
+            print(f"  Skipping {table['name']} - all {len(all_files)} files already processed")
+            return
+
+        # 3. Group into partition-aware batches
+        batches = PartitionBatcher.group_files(pending, naming_pattern, partition_by)
+
+        # Handle unmatched files
+        unmatched = batches.pop(None, [])
+        if unmatched:
+            print(f"  WARNING: {len(unmatched)} files didn't match naming_pattern and will be skipped:")
+            for f in unmatched[:5]:
+                print(f"    - {os.path.basename(f)}")
+            if len(unmatched) > 5:
+                print(f"    ... and {len(unmatched) - 5} more")
+
+        print(f"  Organized {len(pending) - len(unmatched)} files into {len(batches)} partition batches")
+
+        # 4. Execute each batch
+        for partition_values, batch_files in batches.items():
+            subpath = PartitionBatcher.get_output_subpath(partition_by, partition_values)
+            batch_dir = os.path.join(base_output, subpath)
+            os.makedirs(batch_dir, exist_ok=True)
+            # DuckDB needs a file path (not dir) when partition_by=None
+            batch_output = os.path.join(batch_dir, "part-0.parquet")
+
+            # Build metadata from partition values
+            metadata = dict(zip(partition_by, partition_values))
+            metadata.update(table.get('metadata', {}))
+
+            print(f"  Batch [{subpath}]: {len(batch_files)} files -> {batch_output}")
+
+            success = self.engine.ingest(
+                batch_files,
+                batch_output,
+                format=table_format,
+                partition_by=None,  # Already partitioned by batcher
+                balanced=False,
+                metadata=metadata,
+                naming_pattern=None,  # Already extracted by batcher
+                target_rows=self.config.target_rows,
+                target_file_size_mb=self.config.target_file_size_mb,
+                compression=self.config.compression,
+                max_records_per_file=self.config.max_records_per_file,
+                hive_partitioning=False,
+                schema=schema,
+                write_mode=write_mode,
+                output_format=self.config.output_format,
+                fixed_width_spec=fixed_width_spec,
+                **read_options
+            )
+
+            if success:
+                # Update manifest for each file in this batch
+                with table_manifest.batch():
+                    for f in batch_files:
+                        table_manifest.update_file(
+                            f, status="success",
+                            metadata={"partition": subpath},
+                            table_root=table.get('root')
+                        )
+                print(f"    Batch [{subpath}] complete")
+            else:
+                print(f"    ERROR: Batch [{subpath}] failed")
+                with table_manifest.batch():
+                    for f in batch_files:
+                        table_manifest.update_file(
+                            f, status="failed",
+                            metadata={"partition": subpath, "error": "ingestion_failed"},
+                            table_root=table.get('root')
+                        )
+
+        print(f"  Partition-aware ingestion complete for {table['name']}")
+
     def dry_run(self):
         """Show matched files without processing - for config verification."""
         print(f"Dataset: {self.config.dataset_name}")
@@ -480,6 +583,17 @@ class IngestionPipeline:
             # Preprocess returns a modified path (e.g. to temp unzipped files)
             # Table dict is unmodified, we just change the variable we use for input
             original_path = table['path']
+
+            # Partition-aware batching: skip whole-table manifest check,
+            # do per-file checking instead in _run_partition_aware()
+            if table.get('batch_strategy') == 'partition_aware':
+                input_path = self._preprocess(table)
+                if input_path != original_path:
+                    print(f"  Preprocessing complete. Ingesting from: {input_path}")
+                self._run_partition_aware(table, input_path, table_manifest)
+                continue
+
+            # --- Bulk mode (default) ---
             # Check manifest BEFORE preprocessing to avoid expensive work (unzipping) if table hasn't changed
             # Using fsspec for URI-aware existance check would be better,
             # for now keeping it simple but URI-ready in engines

@@ -29,6 +29,16 @@ def _escape_sql_string(value):
 
 
 class DuckDBEngine:
+    @staticmethod
+    def _format_path_sql(input_path):
+        """Format input_path (str or list) as a safe DuckDB SQL expression."""
+        if isinstance(input_path, list):
+            escaped = [p.replace("'", "''") for p in input_path]
+            return "[" + ", ".join(f"'{p}'" for p in escaped) + "]"
+        else:
+            escaped = input_path.replace("'", "''")
+            return f"'{escaped}'"
+
     def __init__(self):
         if duckdb is None:
             additional_info = f" Original error: {_duckdb_import_error}" if '_duckdb_import_error' in globals() else ""
@@ -41,6 +51,15 @@ class DuckDBEngine:
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
+        # Extract fixed_width_spec before stripping (needed by fixed_width handler)
+        fixed_width_spec = kwargs.pop('fixed_width_spec', None)
+
+        # Strip fairway-specific kwargs that shouldn't be passed to DuckDB read functions
+        _fairway_keys = {'balanced', 'target_file_size_mb', 'compression',
+                         'max_records_per_file', 'output_format', 'target_rows_per_file'}
+        for key in _fairway_keys:
+            kwargs.pop(key, None)
+
         # Normalize TSV/tab to CSV with tab delimiter
         if format in ('tsv', 'tab'):
             format = 'csv'
@@ -54,7 +73,6 @@ class DuckDBEngine:
         elif format == 'parquet':
             return self._ingest_parquet(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
         elif format == 'fixed_width':
-            fixed_width_spec = kwargs.pop('fixed_width_spec', None)
             return self._ingest_fixed_width(input_path, output_path, fixed_width_spec, partition_by, metadata, write_mode, **kwargs)
         else:
             raise ValueError(f"Unsupported format for DuckDB engine: {format}")
@@ -103,13 +121,16 @@ class DuckDBEngine:
         if options_str:
             options_str = ", " + options_str
 
-        # Check if input path looks like a glob. If not, make it recursive.
-        if '*' not in input_path and os.path.isdir(input_path):
-             read_path = os.path.join(input_path, "**/*.csv")
+        # Handle list of file paths (from partition-aware batching) or string
+        if isinstance(input_path, list):
+            read_path = input_path
+        elif '*' not in input_path and os.path.isdir(input_path):
+            read_path = os.path.join(input_path, "**/*.csv")
         else:
-             read_path = input_path
-             
-        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto('{read_path}'{options_str})")
+            read_path = input_path
+
+        path_sql = self._format_path_sql(read_path)
+        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto({path_sql}{options_str})")
         
         return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
 
@@ -117,15 +138,16 @@ class DuckDBEngine:
         """
         Converts JSON to Parquet.
         """
-        # TODO: Pass kwargs to read_json_auto if needed
-        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_json_auto('{input_path}')")
+        path_sql = self._format_path_sql(input_path)
+        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_json_auto({path_sql})")
         return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
 
     def _ingest_parquet(self, input_path, output_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
         """
         Pass-through Parquet ingestion (useful for unifying pipeline logic).
         """
-        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_parquet('{input_path}')")
+        path_sql = self._format_path_sql(input_path)
+        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_parquet({path_sql})")
         return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
 
     def _ingest_fixed_width(self, input_path, output_path, spec_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
