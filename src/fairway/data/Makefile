@@ -1,84 +1,30 @@
 # Fairway Project Makefile
-.PHONY: all run run-hpc submit-hpc clean test shell bootstrap
+.PHONY: all run submit-hpc shell build clean generate-schema submit-schema-hpc
 
 # Default: Run locally
 all: run
 
 # ==============================================================================
-# Helper: Bootstrap Nextflow (Zero-Dependency)
+# Configuration
 # ==============================================================================
-# If 'nextflow' is not in PATH, download it to the current directory
-NXF_VER := 23.10.1
-NXF_VER := 23.10.1
-
-bootstrap:
-	@if command -v nextflow >/dev/null 2>&1; then \
-		echo "Nextflow check: Found in PATH used $$(which nextflow)"; \
-	elif [ -x "./nextflow" ]; then \
-		echo "Nextflow check: Found ./nextflow"; \
-	elif command -v module >/dev/null 2>&1 && module avail Nextflow 2>&1 | grep -q -i "nextflow"; then \
-		echo "Nextflow check: Module detected. Will attempt load."; \
-	else \
-		echo "Nextflow not found. Downloading..."; \
-		curl -s https://get.nextflow.io | bash; \
-		chmod +x nextflow; \
-	fi
-
-# ==============================================================================
-# Execution Profiles
-# ==============================================================================
-# Detect Apptainer availability
-# USE_APPTAINER can be: auto (default), yes, no
+# USE_APPTAINER: auto (default), yes, no - controls container execution
 USE_APPTAINER ?= auto
 FAIRWAY_VENV ?=
-
-ifeq ($(USE_APPTAINER), yes)
-    HAS_APPTAINER := yes
-else ifeq ($(USE_APPTAINER), no)
-    HAS_APPTAINER := no
-else
-    HAS_APPTAINER := $(shell if [ -f Apptainer.def ] || [ -f fairway.sif ]; then echo "yes"; else echo "no"; fi)
-endif
-
-# Base profiles
-PROFILES := standard
 
 # ==============================================================================
 # Commands
 # ==============================================================================
 
-# Internal run target (wraps nextflow)
-# Internal run target (wraps nextflow)
-run-internal: bootstrap
-	@# Delegate to shared script
-	export FAIRWAY_VENV=$(FAIRWAY_VENV); ./scripts/run_pipeline.sh -profile $(PROFILES) -resume
-
 # Run locally (Interactive)
 run: ## Run the pipeline locally
-	$(MAKE) run-internal PROFILES=standard
-
-# Run on HPC (Interactive on Login Node)
-run-hpc: PROFILES := slurm
-run-hpc: ## Run on Slurm (Login Node - Orchestrator stays here)
-	@if [ "$(HAS_APPTAINER)" = "yes" ]; then \
-		echo "Detected Apptainer. Enabling container execution..."; \
-		$(MAKE) run-internal PROFILES=slurm,apptainer; \
-	else \
-		echo "No Apptainer detected. Using modules..."; \
-		$(MAKE) run-internal PROFILES=slurm; \
-	fi
-
-# Submit Driver Job (Fire-and-Forget)
-submit-hpc: bootstrap ## Submit the Nextflow orchestrator as a Slurm job
-	@echo "Submitting driver job..."
-	@FAIRWAY_VENV=$(FAIRWAY_VENV) sbatch scripts/driver.sh $(HAS_APPTAINER)
-
-# Run worker manually (for debugging)
-run-worker: ## Run the ingestion worker directly (no Nextflow)
 	fairway run
 
+# Submit to HPC with Spark cluster (Fire-and-Forget)
+submit-hpc: ## Submit pipeline as Slurm job with Spark cluster
+	fairway submit --with-spark
+
 # Enter a shell inside the container
-shell: ## Enter a shell inside the ecosystem
+shell: ## Enter a shell inside the container
 	fairway shell
 
 # Build the container
@@ -93,5 +39,5 @@ submit-schema-hpc: ## Submit schema generation job to Slurm
 	sbatch scripts/driver-schema.sh
 
 # Clean up artifacts
-clean: ## Clean logs and temp data
-	rm -rf logs/ .nextflow* work/ .nextflow_driver.sh
+clean: ## Clean logs, cache, and temp data
+	rm -rf logs/ .fairway_cache/ work/
