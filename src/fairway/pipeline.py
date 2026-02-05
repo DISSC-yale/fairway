@@ -254,6 +254,9 @@ class IngestionPipeline:
              
              if action == 'unzip':
                  if zipfile.is_zipfile(file_path):
+                     # Skip if already extracted (check for any files in output_dir)
+                     if os.path.exists(output_dir) and os.listdir(output_dir):
+                         return output_dir
                      with zipfile.ZipFile(file_path, 'r') as zip_ref:
                          zip_ref.extractall(output_dir)
                      return output_dir
