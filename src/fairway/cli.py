@@ -83,8 +83,6 @@ def init(name, engine):
         'docs',
         'scripts',
         'logs/slurm',
-        'logs/nextflow',
-        'scripts'
     ]
     
     for d in directories:
@@ -93,7 +91,7 @@ def init(name, engine):
 
     # Create config.yaml
     engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
-    from .templates import NEXTFLOW_CONFIG, MAIN_NF, APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+    from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
     config_content = CONFIG_TEMPLATE.format(name=name, engine_type=engine_type)
     
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
@@ -112,16 +110,6 @@ def init(name, engine):
     click.echo("  Created file: config/spark.yaml")
 
 
-
-    # Write nextflow.config from template
-    with open(os.path.join(name, 'nextflow.config'), 'w') as f:
-        f.write(NEXTFLOW_CONFIG)
-    click.echo("  Created file: nextflow.config (customize profiles here)")
-    
-    # Write main.nf pipeline file from template
-    with open(os.path.join(name, 'main.nf'), 'w') as f:
-        f.write(MAIN_NF)
-    click.echo("  Created file: main.nf (Nextflow pipeline)")
 
     # Write Makefile
     with open(os.path.join(name, 'Makefile'), 'w') as f:
@@ -147,7 +135,7 @@ def init(name, engine):
     click.echo("  Created file: README.md")
 
     # Create scripts/driver.sh and scripts/fairway-hpc.sh
-    from .templates import DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, HPC_SCRIPT, RUN_PIPELINE_SCRIPT
+    from .templates import DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, HPC_SCRIPT
     with open(os.path.join(name, 'scripts', 'driver.sh'), 'w') as f:
         f.write(DRIVER_TEMPLATE)
     os.chmod(os.path.join(name, 'scripts', 'driver.sh'), 0o755)
@@ -157,11 +145,6 @@ def init(name, engine):
         f.write(DRIVER_SCHEMA_TEMPLATE)
     os.chmod(os.path.join(name, 'scripts', 'driver-schema.sh'), 0o755)
     click.echo("  Created file: scripts/driver-schema.sh")
-
-    with open(os.path.join(name, 'scripts', 'run_pipeline.sh'), 'w') as f:
-        f.write(RUN_PIPELINE_SCRIPT)
-    os.chmod(os.path.join(name, 'scripts', 'run_pipeline.sh'), 0o755)
-    click.echo("  Created file: scripts/run_pipeline.sh")
 
     with open(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 'w') as f:
         f.write(HPC_SCRIPT)
@@ -455,10 +438,10 @@ def stop():
 @click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
 @click.option('--dry-run', is_flag=True, help='Show matched files without processing.')
 def run(config, spark_master, dry_run):
-    """Run the ingestion pipeline (Worker Mode).
+    """Run the ingestion pipeline.
 
     This command executes the pipeline directly on the current machine.
-    It does NOT launch Nextflow or submit Slurm jobs.
+    For HPC submission, use `fairway submit` instead.
     """
     from .config_loader import Config
     from .pipeline import IngestionPipeline
@@ -671,6 +654,150 @@ def cancel(job_id, kill_all):
     except subprocess.CalledProcessError as e:
         click.echo(f"Error cancelling job: {e}", err=True)
 
+
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
+@click.option('--account', default=None, help='Slurm account.')
+@click.option('--partition', default='day', help='Slurm partition.')
+@click.option('--time', default='24:00:00', help='Time limit (HH:MM:SS).')
+@click.option('--mem', default='16G', help='Memory per node.')
+@click.option('--cpus', default=4, type=int, help='CPUs per task.')
+@click.option('--with-spark', is_flag=True, help='Start Spark cluster before running pipeline.')
+@click.option('--dry-run', is_flag=True, help='Print job script without submitting.')
+def submit(config, account, partition, time, mem, cpus, with_spark, dry_run):
+    """Submit pipeline as a Slurm job.
+
+    This replaces the Nextflow orchestration layer with direct Slurm submission.
+    The job will run `fairway run` with optional Spark cluster provisioning.
+
+    Examples:
+
+        # Submit with auto-discovered config
+        fairway submit
+
+        # Submit with Spark cluster
+        fairway submit --with-spark
+
+        # Submit with custom resources
+        fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
+
+        # Preview the job script
+        fairway submit --with-spark --dry-run
+    """
+    import yaml
+    import tempfile
+
+    # Auto-discover config
+    if config is None:
+        config = discover_config()
+        click.echo(f"Auto-discovered config: {config}")
+
+    # Load spark.yaml for defaults
+    spark_yaml_path = 'config/spark.yaml'
+    spark_defaults = {}
+    if os.path.exists(spark_yaml_path):
+        with open(spark_yaml_path, 'r') as f:
+            spark_defaults = yaml.safe_load(f) or {}
+
+    # Apply defaults from spark.yaml if not specified
+    account = account or spark_defaults.get('account', 'borzekowski')
+
+    # Generate job script
+    if with_spark:
+        job_script = f'''#!/bin/bash
+#SBATCH --job-name=fairway_pipeline
+#SBATCH --output=logs/slurm/fairway_%j.log
+#SBATCH --time={time}
+#SBATCH --mem={mem}
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --partition={partition}
+#SBATCH --account={account}
+
+set -e
+
+# Ensure log directory exists
+mkdir -p logs/slurm
+
+# Cleanup function to stop Spark cluster on exit
+cleanup() {{
+    echo "Stopping Spark cluster..."
+    fairway spark stop || true
+}}
+trap cleanup EXIT
+
+# Start Spark cluster
+echo "Starting Spark cluster..."
+fairway spark start
+
+# Wait for master URL
+MASTER_URL_FILE=~/spark_master_url.txt
+SPARK_ARGS=""
+if [ -f "$MASTER_URL_FILE" ]; then
+    SPARK_MASTER=$(cat "$MASTER_URL_FILE")
+    echo "Spark Master: $SPARK_MASTER"
+    SPARK_ARGS="--spark-master $SPARK_MASTER"
+else
+    echo "WARNING: Spark master URL not found. Running in local mode."
+fi
+
+# Run pipeline
+echo "Running pipeline..."
+fairway run --config {config} $SPARK_ARGS
+
+echo "Pipeline completed successfully."
+'''
+    else:
+        job_script = f'''#!/bin/bash
+#SBATCH --job-name=fairway_pipeline
+#SBATCH --output=logs/slurm/fairway_%j.log
+#SBATCH --time={time}
+#SBATCH --mem={mem}
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --partition={partition}
+#SBATCH --account={account}
+
+set -e
+
+# Ensure log directory exists
+mkdir -p logs/slurm
+
+# Run pipeline (no Spark cluster)
+echo "Running pipeline..."
+fairway run --config {config}
+
+echo "Pipeline completed successfully."
+'''
+
+    if dry_run:
+        click.echo("Generated job script:")
+        click.echo("-" * 60)
+        click.echo(job_script)
+        click.echo("-" * 60)
+        return
+
+    # Ensure logs directory exists
+    os.makedirs('logs/slurm', exist_ok=True)
+
+    # Write to temp file and submit
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(job_script)
+        script_path = f.name
+
+    try:
+        click.echo(f"Submitting job (config: {config}, with-spark: {with_spark})...")
+        result = subprocess.run(['sbatch', script_path], capture_output=True, text=True)
+        if result.returncode == 0:
+            click.echo(result.stdout.strip())
+            click.echo("Job submitted. Check status with 'fairway status'.")
+        else:
+            click.echo(f"Error submitting job: {result.stderr}", err=True)
+            sys.exit(1)
+    except FileNotFoundError:
+        click.echo("Error: 'sbatch' command not found. Are you on a system with Slurm?", err=True)
+        sys.exit(1)
+    finally:
+        os.unlink(script_path)
 
 
 @main.command()

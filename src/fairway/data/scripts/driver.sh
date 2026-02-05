@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=fairway_driver
-#SBATCH --output=logs/driver_%j.log
+#SBATCH --output=logs/slurm/driver_%j.log
 #SBATCH --time=24:00:00
 #SBATCH --mem=4G
 #SBATCH --cpus-per-task=1
@@ -8,57 +8,83 @@
 # =============================================================================
 # Fairway Driver Job
 # =============================================================================
-# This script is submitted to Slurm to run the Nextflow orchestrator on a
-# compute node (preventing login node usage for long-running processes).
+# This script submits the fairway pipeline as a Slurm job with Spark cluster.
+# It handles Spark cluster lifecycle (start/stop) and runs the pipeline.
+#
+# Spark cluster configuration is read from config/spark.yaml by `fairway spark start`.
+# This includes: nodes, cpus_per_node, mem_per_node, partition, account, time.
+#
+# Usage:
+#   sbatch scripts/driver.sh [config_path]
+#
+# Environment Variables:
+#   USE_APPTAINER - Set to "yes" to run inside Apptainer container
+#   FAIRWAY_VENV  - Path to Python virtual environment to activate
+#
+# Prefer using `fairway submit --with-spark` instead of this script directly.
 
-# 3. Run Pipeline via Shared Script
-# Capture Makefile argument if provided (prioritize $1, fallback to env var)
-HAS_APPTAINER=${1:-$HAS_APPTAINER}
+set -e
 
-# Fallback: If not explicitly set, check file existence (for manual submission)
-if [ -z "$HAS_APPTAINER" ]; then
-    if [ -f "Apptainer.def" ] || [ -f "fairway.sif" ]; then
-        HAS_APPTAINER="yes"
+CONFIG_PATH=${1:-config/fairway.yaml}
+
+# Detect Apptainer: explicit env var or file presence
+USE_APPTAINER=${USE_APPTAINER:-}
+if [ -z "$USE_APPTAINER" ]; then
+    if [ -f "fairway.sif" ]; then
+        USE_APPTAINER="yes"
     else
-        HAS_APPTAINER="no"
+        USE_APPTAINER="no"
     fi
 fi
-export FAIRWAY_VENV=$FAIRWAY_VENV
+
+# Ensure log directory exists
+mkdir -p logs/slurm
+
+# Load virtual environment if specified (only if not using container)
+if [ "$USE_APPTAINER" != "yes" ] && [ -n "$FAIRWAY_VENV" ]; then
+    if [ -f "$FAIRWAY_VENV/bin/activate" ]; then
+        echo "Activating virtual environment: $FAIRWAY_VENV"
+        source "$FAIRWAY_VENV/bin/activate"
+    fi
+fi
 
 # =============================================================================
-# 1. Start Spark Cluster (Orchestration)
+# 1. Start Spark Cluster
 # =============================================================================
-# We attempt to start a Spark cluster. The 'fairway spark start' command
-# reads config/spark.yaml and submits a separate Slurm job for the cluster.
+# The 'fairway spark start' command reads config/spark.yaml for cluster sizing
+# and submits a separate Slurm job to provision the Spark cluster.
 
 # Define cleanup function to ensure cluster is stopped when driver exits
 cleanup() {
     echo "Stopping Spark Cluster..."
-    fairway spark stop
+    fairway spark stop || true
 }
 trap cleanup EXIT
 
-echo "Starting Spark Cluster..."
+echo "Starting Spark Cluster (using config/spark.yaml)..."
 fairway spark start
 
-# Wait/Read Master URL
-# 'fairway spark start' waits for the master to be ready, but we double check
-# the file it produces.
+# Wait for Master URL (written by fairway spark start)
 MASTER_URL_FILE=~/spark_master_url.txt
+SPARK_ARGS=""
 if [ -f "$MASTER_URL_FILE" ]; then
     SPARK_MASTER=$(cat "$MASTER_URL_FILE")
     echo "Spark Master: $SPARK_MASTER"
     SPARK_ARGS="--spark-master $SPARK_MASTER"
 else
-    echo "WARNING: Spark Master URL file not found after start. Running in local mode?"
-    SPARK_ARGS=""
+    echo "WARNING: Spark Master URL file not found. Running in local mode."
 fi
 
 # =============================================================================
-# 2. Run Pipeline via Shared Script
+# 2. Run Pipeline
 # =============================================================================
-if [ "$HAS_APPTAINER" = "yes" ]; then
-    ./scripts/run_pipeline.sh -profile slurm,apptainer -resume $SPARK_ARGS
+echo "Running pipeline with config: $CONFIG_PATH"
+
+if [ "$USE_APPTAINER" = "yes" ]; then
+    echo "Running inside Apptainer container..."
+    apptainer exec --bind /vast fairway.sif fairway run --config "$CONFIG_PATH" $SPARK_ARGS
 else
-    ./scripts/run_pipeline.sh -profile slurm -resume $SPARK_ARGS
+    fairway run --config "$CONFIG_PATH" $SPARK_ARGS
 fi
+
+echo "Pipeline completed successfully."

@@ -96,8 +96,8 @@ Ensure the Spark version is consistent across all configuration files (Use Spark
 **Category:** [PRO] Process & Workflow
 
 **Rule:**
-Execution wrappers (e.g., `Makefile`) MUST robustly handle missing dependencies. 
-Nextflow Logic: Check PATH -> Check `./nextflow` -> Check `module avail` -> Download from web.
+Execution wrappers (e.g., `Makefile`) MUST work without external orchestrators.
+The `fairway` CLI should be available via pip install or module system. No Nextflow or other orchestrators required.
 
 ---
 
@@ -108,8 +108,9 @@ Nextflow Logic: Check PATH -> Check `./nextflow` -> Check `module avail` -> Down
 
 **Rule:**
 The preferred method for HPC submission is the "Driver Job" pattern:
-- Submit the orchestrator (Nextflow) as a small single-task Slurm job (`scripts/driver.sh`).
-- This job then runs Nextflow, which submits the actual worker tasks.
+- Use `fairway submit --with-spark` to submit the pipeline as a Slurm job.
+- The driver job provisions Spark cluster (reading config from `config/spark.yaml`), then runs `fairway run`.
+- For simple jobs without Spark: use `fairway submit` (no --with-spark flag).
 
 ---
 
