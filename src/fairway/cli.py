@@ -1,10 +1,37 @@
 import click
 import os
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from .generate_test_data import generate_test_data
+
+
+def _validate_slurm_param(value, param_name, pattern, max_length=64):
+    """Validate Slurm parameter against allowed pattern to prevent command injection."""
+    if not value:
+        return value
+    value = str(value)
+    if len(value) > max_length:
+        raise click.ClickException(f"Parameter '{param_name}' exceeds maximum length ({max_length})")
+    if not re.match(pattern, value):
+        raise click.ClickException(f"Invalid {param_name}: '{value}' (contains disallowed characters)")
+    return value
+
+
+def _validate_slurm_time(time_str):
+    """Validate Slurm time format (HH:MM:SS or D-HH:MM:SS)."""
+    if not re.match(r'^(\d+-)?(\d{1,2}:)?\d{1,2}:\d{2}$', time_str):
+        raise click.ClickException(f"Invalid time format: '{time_str}' (expected HH:MM:SS or D-HH:MM:SS)")
+    return time_str
+
+
+def _validate_slurm_mem(mem_str):
+    """Validate Slurm memory format (e.g., 16G, 1024M)."""
+    if not re.match(r'^\d+[KMGT]?$', mem_str, re.IGNORECASE):
+        raise click.ClickException(f"Invalid memory format: '{mem_str}' (expected e.g., 16G, 1024M)")
+    return mem_str
 
 
 def discover_config():
@@ -702,6 +729,16 @@ def submit(config, account, partition, time, mem, cpus, with_spark, dry_run):
 
     # Apply defaults from spark.yaml if not specified
     account = account or spark_defaults.get('account', 'borzekowski')
+
+    # Validate all parameters to prevent command injection
+    time = _validate_slurm_time(time)
+    mem = _validate_slurm_mem(mem)
+    partition = _validate_slurm_param(partition, 'partition', r'^[a-zA-Z0-9_-]+$')
+    account = _validate_slurm_param(account, 'account', r'^[a-zA-Z0-9_-]+$')
+    # Config path validation: only allow safe path characters
+    config = _validate_slurm_param(config, 'config', r'^[a-zA-Z0-9_./-]+$', max_length=256)
+    if cpus < 1 or cpus > 256:
+        raise click.ClickException(f"Invalid cpus: {cpus} (must be 1-256)")
 
     # Generate job script
     if with_spark:
