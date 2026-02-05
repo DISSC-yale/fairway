@@ -695,7 +695,6 @@ def cancel(job_id, kill_all):
 def submit(config, account, partition, time, mem, cpus, with_spark, dry_run):
     """Submit pipeline as a Slurm job.
 
-    This replaces the Nextflow orchestration layer with direct Slurm submission.
     The job will run `fairway run` with optional Spark cluster provisioning.
 
     Examples:

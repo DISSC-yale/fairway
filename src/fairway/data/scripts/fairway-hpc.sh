@@ -2,24 +2,16 @@
 # =============================================================================
 # fairway-hpc.sh - User Environment Setup Helper
 # =============================================================================
-# 
+#
 # PURPOSE: This is a USER-FACING utility to set up your shell environment
 # on HPC clusters (like Yale Grace).
 #
 # USE THIS SCRIPT TO:
-# - Load necessary modules (Python, Nextflow, Spark) via 'setup' commands.
-#
-# DO NOT confuse this with 'scripts/run_pipeline.sh', which is the internal
-# runner used by the system.
+# - Load necessary modules (Python, Spark) via 'setup' commands.
 #
 # Usage:
 #   source fairway-hpc.sh setup           # Load required modules
 #   source fairway-hpc.sh setup-spark     # Load modules including Spark
-#   fairway-hpc.sh run [options]          # Submit a fairway job
-#   fairway-hpc.sh run --apptainer        # Submit using Apptainer container
-#   fairway-hpc.sh build-container        # Build/pull Apptainer image
-#   fairway-hpc.sh status                 # Check running fairway jobs
-#   fairway-hpc.sh cancel [job_id]        # Cancel a fairway job
 #
 # =============================================================================
 
@@ -41,13 +33,11 @@ CONTAINER_LOCAL="fairway.sif"
 
 # Module names - adjust these to match your HPC's module system
 MODULES_BASE=(
-    "Nextflow/25.04.6"
     "Python/3.10.8-GCCcore-12.2.0"
     "Apptainer"
 )
 
 MODULES_SPARK=(
-#    "Java/17"
     "Spark"
 )
 
@@ -68,7 +58,7 @@ print_usage() {
 Usage: fairway-hpc.sh <command> [options]
 
 Commands:
-  setup             Load base modules (Nextflow, Python)
+  setup             Load base modules (Python)
   setup-spark       Load all modules including Spark
 
 Examples:
@@ -80,10 +70,10 @@ EOF
 
 load_modules() {
     echo "Loading HPC modules..."
-    
+
     # Clear any conflicting modules first
     module purge 2>/dev/null || true
-    
+
     for mod in "${MODULES_BASE[@]}"; do
         echo "  Loading: $mod"
         module load "$mod" 2>/dev/null || {
@@ -91,7 +81,7 @@ load_modules() {
             echo "  Available modules can be listed with: module avail"
         }
     done
-    
+
     echo ""
     echo "Modules loaded successfully."
     echo "Python: $(which python)"
@@ -102,17 +92,17 @@ load_modules() {
 
 load_spark_modules() {
     load_modules
-    
+
     echo ""
     echo "Loading Spark modules..."
-    
+
     for mod in "${MODULES_SPARK[@]}"; do
         echo "  Loading: $mod"
         module load "$mod" 2>/dev/null || {
             echo "  Warning: Could not load module '$mod'"
         }
     done
-    
+
     echo ""
     echo "Spark modules loaded."
 }
@@ -131,14 +121,10 @@ check_fairway() {
 # Main Command Handler
 # -----------------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# Main Command Handler
-# -----------------------------------------------------------------------------
-
 main() {
     local COMMAND="${1:-}"
     shift || true
-    
+
     case "$COMMAND" in
         setup)
             print_header

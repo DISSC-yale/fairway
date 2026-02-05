@@ -102,7 +102,7 @@ Wrapper around `squeue` with fairway-specific formatting.
 
 ### `fairway submit`
 
-Submit the pipeline as a Slurm job. This replaces Nextflow orchestration with direct Slurm submission.
+Submit the pipeline as a Slurm job with optional Spark cluster provisioning.
 
 ```bash
 fairway submit [OPTIONS]

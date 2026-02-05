@@ -36,20 +36,18 @@ Edit `config/fairway.yaml` to define your data sources, validations, transformat
 
 **Local execution:**
 ```bash
-make run
+fairway run
 ```
 
-**Slurm cluster (Interactive):**
+**Slurm cluster:**
 ```bash
-make run-hpc
+fairway submit
 ```
-*Runs Nextflow on the login node, submitting tasks to Slurm.*
 
-**Slurm cluster (Driver Job - Recommended):**
+**Slurm cluster with Spark:**
 ```bash
-make submit-hpc
+fairway submit --with-spark
 ```
-*Submits Nextflow itself as a job ("Fire-and-Forget").*
 
 ### 5. Manual Spark Management (Debugging)
 
@@ -63,31 +61,15 @@ fairway spark start --slurm-nodes 2
 fairway spark stop
 ```
 
-**Containerized execution:**
+## Job Management
+
 ```bash
-nextflow run main.nf -profile apptainer
-```
+# Check job status
+fairway status
 
-## Extending the Pipeline
+# Cancel a job
+fairway cancel <job_id>
 
-To add a post-processing step (e.g., reshaping), edit `main.nf`. For example:
-
-```groovy
-process RESHAPE {{
-    input:
-    path "data/final/*"
- 
-    output:
-    path "data/reshaped/*"
- 
-    script:
-    \"\"\"
-    python3 src/reshape.py ...
-    \"\"\"
-}}
-
-workflow {{
-    // ... existing ...
-    RESHAPE(run_fairway.out)
-}}
+# Cancel all jobs
+fairway cancel --all
 ```
