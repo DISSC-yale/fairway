@@ -46,17 +46,12 @@ def verify_output(engine, output_path, expected_df):
     files = glob.glob(f"{output_path}/**/*.parquet", recursive=True)
     if not files:
         files = glob.glob(f"{output_path}")
-    
+
     if not files:
         raise FileNotFoundError(f"No parquet files found in {output_path}")
-    
-    # If output_path is a file, query it directly
-    if os.path.isfile(output_path):
-        query_path = output_path
-    else:
-        query_path = f"{output_path}/**/*.parquet"
-        
-    df_read = engine.query(f"SELECT * FROM '{query_path}'")
+
+    # Use read_result which handles both file and directory paths
+    df_read = engine.read_result(output_path).df()
     
     df_read = df_read.sort_values("id").reset_index(drop=True)
     expected_df = expected_df.sort_values("id").reset_index(drop=True)
@@ -96,22 +91,20 @@ class TestDuckDBIngestion:
         
         input_p = str(Path(sample_data['csv']).resolve())
         engine.ingest(input_p, output_path, format='csv', metadata=metadata)
-        
-        # Determine query path
-        if os.path.isfile(output_path):
-            query_path = output_path
-        else:
-            query_path = f"{output_path}/**/*.parquet"
-            
-        df_read = engine.query(f"SELECT * FROM '{query_path}'")
+
+        # Read the output using read_result
+        df_read = engine.read_result(output_path).df()
         assert 'source' in df_read.columns
         assert df_read['source'].unique()[0] == 'test_source'
 
 @pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not available")
 class TestPySparkIngestion:
     @pytest.fixture
-    def engine(self):
-        return PySparkEngine(spark_master="local[1]")
+    def engine(self, spark_session):
+        """Use the shared spark session from conftest."""
+        engine = PySparkEngine.__new__(PySparkEngine)
+        engine.spark = spark_session
+        return engine
 
     def test_ingest_csv(self, sample_data, engine):
         output_path = os.path.join(os.path.dirname(sample_data['csv']), "spark_output_csv")

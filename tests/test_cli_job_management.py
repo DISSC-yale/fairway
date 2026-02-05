@@ -41,26 +41,26 @@ def test_status_command_with_spark_cluster(runner):
                 assert "spark://master:7077" in result.output
                 assert "12345" in result.output
 
-def test_kill_command(runner):
-    """Test fairway kill command."""
+def test_cancel_command(runner):
+    """Test fairway cancel command."""
     with runner.isolated_filesystem():
         with patch('subprocess.run') as mock_run:
-            # Test killing specific job
-            result = runner.invoke(main, ['kill', '12345'])
+            # Test cancelling specific job
+            result = runner.invoke(main, ['cancel', '12345'])
             assert result.exit_code == 0
             mock_run.assert_called_with(['scancel', '12345'], check=True)
 
-def test_kill_all_command(runner):
-    """Test fairway kill --all command."""
+def test_cancel_all_command(runner):
+    """Test fairway cancel --all command."""
     with runner.isolated_filesystem():
         with patch('subprocess.run') as mock_run:
             with patch('getpass.getuser', return_value='testuser'):
                 # Decline confirmation
-                result = runner.invoke(main, ['kill', '--all'], input='n\n')
+                result = runner.invoke(main, ['cancel', '--all'], input='n\n')
                 assert result.exit_code == 0
                 mock_run.assert_not_called()
-                
+
                 # Accept confirmation
-                result = runner.invoke(main, ['kill', '--all'], input='y\n')
+                result = runner.invoke(main, ['cancel', '--all'], input='y\n')
                 assert result.exit_code == 0
                 mock_run.assert_called_with(['scancel', '--user', 'testuser'], check=True)

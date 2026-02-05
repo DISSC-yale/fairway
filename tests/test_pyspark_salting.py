@@ -1,28 +1,24 @@
 import pytest
 import pandas as pd
-from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 from fairway.engines.pyspark_engine import PySparkEngine
 
-# Attempt to initialize Spark to see if it works
+# Check if PySpark is available
 try:
-    spark = SparkSession.builder \
-        .master("local[1]") \
-        .appName("test_salting") \
-        .getOrCreate()
+    from pyspark.sql import SparkSession
     SPARK_AVAILABLE = True
-except Exception:
+except ImportError:
     SPARK_AVAILABLE = False
+
 
 @pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not available or misconfigured")
 class TestPySparkSalting:
-    @pytest.fixture(scope="class")
-    def spark(self):
-        return spark
-
     @pytest.fixture
-    def engine(self):
-        return PySparkEngine(spark_master="local[1]")
+    def engine(self, spark_session):
+        """Use the shared spark session from conftest."""
+        engine = PySparkEngine.__new__(PySparkEngine)
+        engine.spark = spark_session
+        return engine
 
     def test_salting_logic(self, engine, tmp_path):
         # Create a dataframe with 1000 rows
