@@ -116,13 +116,20 @@ These are intentional helper methods for user subclasses:
 
 ## Completed Actions
 
+### Commit 1: Dead Code Cleanup
 1. **REMOVED** `Config.get_table_by_name()` from config_loader.py
 2. **REMOVED** `infer_types_from_data()` from fixed_width.py (~70 lines)
 3. **REMOVED** `DuckDBEngine.inspect()` from duckdb_engine.py
 4. **REMOVED** `PySparkEngine.inspect()` from pyspark_engine.py (~50 lines)
 5. **REMOVED** unused `overwrite_option` variable from duckdb_engine.py
 
+### Commit 2: Legacy ManifestManager Removal
+6. **REMOVED** entire `ManifestManager` class from manifest.py (~310 lines)
+7. **REMOVED** unused import and instantiation from pipeline.py
+8. **REMOVED** 17 legacy test methods from test_manifest.py (~270 lines)
+
+**Total lines removed: ~700 lines**
+
 ## Remaining Recommendations
 
-1. **Evaluate ManifestManager** - Consider if legacy class should be deprecated
-2. **Fix code style** in geospatial.py - Use `_` prefix for intentionally unused vars
+1. **Fix code style** in geospatial.py - Use `_` prefix for intentionally unused vars
