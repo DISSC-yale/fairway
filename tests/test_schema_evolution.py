@@ -11,25 +11,11 @@ try:
 except ImportError:
     pytest.skip("PySpark not installed", allow_module_level=True)
 
-@pytest.fixture(scope="module")
-def spark():
-    builder = SparkSession.builder.master("local[1]").appName("fairway-test-schema")
-    # Try to add delta if available for testing
-    try:
-        from delta import configure_spark_with_delta_pip
-        builder = configure_spark_with_delta_pip(builder)
-    except ImportError:
-        pass
-    
-    sess = builder.getOrCreate()
-    yield sess
-    sess.stop()
-
 @pytest.fixture
-def engine(spark):
-    # Hack engine to use our fixture spark session
-    eng = PySparkEngine(spark_master="local[1]")
-    eng.spark = spark 
+def engine(spark_session):
+    """Use the shared spark session from conftest."""
+    eng = PySparkEngine.__new__(PySparkEngine)
+    eng.spark = spark_session
     return eng
 
 @pytest.fixture

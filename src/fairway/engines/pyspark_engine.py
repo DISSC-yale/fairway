@@ -60,21 +60,12 @@ class PySparkEngine:
 
         if spark_master:
             builder = builder.master(spark_master)
-            # When connecting to an external Spark cluster (e.g., Slurm-provisioned),
-            # SASL authentication must match the cluster's configuration.
-            # Our Slurm cluster script disables SASL authentication, so we must match.
-            builder = builder.config("spark.authenticate", "false") \
-                             .config("spark.authenticate.enableSaslEncryption", "false") \
-                             .config("spark.network.crypto.enabled", "false")
-
-        # Enable extensions for Delta (if the pip config helper didn't handle it or for explicit clarity)
-        # Note: configure_spark_with_delta_pip usually handles .config("spark.sql.extensions", ...)
-        # But we ensure we catch it safely.
-
-        # Fix for local testing on macOS: bind to localhost to avoid network issues
-        # This resolves "Can't assign requested address" errors when no external network
-        builder = builder.config("spark.driver.host", "127.0.0.1") \
-                         .config("spark.driver.bindAddress", "127.0.0.1")
+            # Auth settings (spark.authenticate + secret) are picked up automatically
+            # from SPARK_CONF_DIR/spark-defaults.conf, which is set by driver.sh
+        else:
+            # Local mode: bind to localhost to avoid network issues on macOS
+            builder = builder.config("spark.driver.host", "127.0.0.1") \
+                             .config("spark.driver.bindAddress", "127.0.0.1")
 
         self.spark = builder.getOrCreate()
 
@@ -392,56 +383,6 @@ class PySparkEngine:
 
         writer.parquet(output_path)
         return True
-
-    def inspect(self, query, limit=100000, as_pandas=True):
-        """
-        Inspect data using SQL (Control Plane only).
-        WARNING: This pulls data to the driver. Always limited by default (100k rows) to prevent OOM.
-        """
-        # Intercept DuckDB-style "SELECT * FROM 'path'" queries
-        match = re.search(r"SELECT\s+\*\s+FROM\s+'([^']*)'", query, re.IGNORECASE)
-        if match:
-             path = match.group(1)
-             try:
-                 # Clean up recursive glob for Spark to ensure partition discovery works best on the dir
-                 if path.endswith("/**/*.parquet"):
-                     path = path.replace("/**/*.parquet", "")
-                 elif path.endswith("/**/*.csv"):
-                     path = path.replace("/**/*.csv", "")
-                     
-                 # Spark doesn't support 'FROM "file"' syntax in SQL directly for all versions/configs
-                 # But we can easily route this to spark.read
-                 if ".parquet" in path or os.path.isdir(path):
-                      df = self.spark.read.parquet(path)
-                 elif ".csv" in path:
-                      df = self.spark.read.option("header", "true").csv(path)
-                 elif ".json" in path:
-                      df = self.spark.read.json(path)
-                 else:
-                      # Fallback
-                      df = self.spark.sql(query)
-                      
-                 if limit:
-                     print(f"Applying limit of {limit} rows to driver inspection.")
-                     df = df.limit(limit)
-                     
-                 if as_pandas:
-                     return df.toPandas()
-                 return df
-
-             except Exception as e:
-                 print(f"WARNING: Failed to optimize file query '{query}': {e}. Falling back to SQL.")
-
-        # Standard SQL
-        df = self.spark.sql(query)
-        
-        if limit:
-            print(f"Applying limit of {limit} rows to driver inspection.")
-            df = df.limit(limit)
-            
-        if as_pandas:
-            return df.toPandas()
-        return df
 
     def read_result(self, path):
         """

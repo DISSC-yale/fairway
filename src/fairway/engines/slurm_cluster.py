@@ -8,11 +8,17 @@ class SlurmSparkManager:
         self.config = config
         self.master_url_file = os.path.expanduser("~/spark_master_url.txt")
         self.job_id_file = os.path.expanduser("~/cluster_job_id.txt")
+        self.conf_dir_file = os.path.expanduser("~/spark_conf_dir.txt")
         self.cores_file = os.path.expanduser("~/totalexecutorcores.txt")
 
     def start_cluster(self):
         """Submit a Slurm job to start a Spark cluster."""
         click.echo("Provisioning Spark cluster on Slurm...")
+
+        # Remove stale files from any previous cluster so we don't read old values
+        for stale in [self.master_url_file, self.job_id_file, self.conf_dir_file, self.cores_file]:
+            if os.path.exists(stale):
+                os.remove(stale)
         
         # Determine resource requirements from config or defaults
         nodes = self.config.get('slurm_nodes', 2)
@@ -24,6 +30,7 @@ class SlurmSparkManager:
         
         sbatch_script = f"""#!/bin/bash
 #SBATCH --job-name=fairway-spark
+#SBATCH --output=logs/slurm/spark_cluster_%j.log
 #SBATCH --nodes={nodes}
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task={cpus}
@@ -32,40 +39,32 @@ class SlurmSparkManager:
 #SBATCH --time={time_limit}
 #SBATCH --partition={partition}
 
+# Ensure log directory exists
+mkdir -p logs/slurm
+
 module load Spark/3.5.1-foss-2022b-Scala-2.13
 
-# --- Spark Tuning Parity (data_l2) ---
-# Discover the ephemeral config path BEFORE starting Spark
-# IMPORTANT: Export SPARK_CONF_DIR so spark-start and all child processes use it
-export SPARK_CONF_DIR="${{HOME}}/.spark-local/${{SLURM_JOB_ID}}/spark/conf"
-DEFAULTS_FILE="${{SPARK_CONF_DIR}}/spark-defaults.conf"
-
-# Create config directory if it doesn't exist
-mkdir -p "${{SPARK_CONF_DIR}}"
-
-# Inject tuning parameters BEFORE spark-start
-# Disable SASL authentication for cluster-internal communication
-echo "spark.authenticate false" >> $DEFAULTS_FILE
-echo "spark.authenticate.enableSaslEncryption false" >> $DEFAULTS_FILE
-echo "spark.network.crypto.enabled false" >> $DEFAULTS_FILE
-
-echo "spark.dynamicAllocation.enabled True" >> $DEFAULTS_FILE
-echo "spark.dynamicAllocation.minExecutors 5" >> $DEFAULTS_FILE
-echo "spark.dynamicAllocation.maxExecutors 150" >> $DEFAULTS_FILE
-echo "spark.dynamicAllocation.initialExecutors 15" >> $DEFAULTS_FILE
-echo "spark.port.maxRetries 40" >> $DEFAULTS_FILE
-# --- End Tuning ---
-
-echo "DEBUG: SPARK_CONF_DIR=$SPARK_CONF_DIR"
-echo "DEBUG: spark-defaults.conf contents:"
-cat $DEFAULTS_FILE
-
-# Now start Spark with the correct configuration
+# Let spark-start handle cluster setup (creates spark-defaults.conf with auth secret)
 SPARK_START_LOG="spark_start_${{SLURM_JOB_ID}}.log"
 spark-start > "${{SPARK_START_LOG}}" 2>&1
 
 # Display log for debugging
 cat "${{SPARK_START_LOG}}"
+
+# spark-start sets SPARK_CONF_DIR to ~/.spark-local/$SLURM_JOB_ID/spark/conf
+export SPARK_CONF_DIR="${{HOME}}/.spark-local/${{SLURM_JOB_ID}}/spark/conf"
+DEFAULTS_FILE="${{SPARK_CONF_DIR}}/spark-defaults.conf"
+
+# Append tuning parameters AFTER spark-start (it overwrites the file with cat >)
+echo "spark.dynamicAllocation.enabled True" >> $DEFAULTS_FILE
+echo "spark.dynamicAllocation.minExecutors 5" >> $DEFAULTS_FILE
+echo "spark.dynamicAllocation.maxExecutors 150" >> $DEFAULTS_FILE
+echo "spark.dynamicAllocation.initialExecutors 15" >> $DEFAULTS_FILE
+echo "spark.port.maxRetries 40" >> $DEFAULTS_FILE
+
+echo "DEBUG: SPARK_CONF_DIR=$SPARK_CONF_DIR"
+echo "DEBUG: spark-defaults.conf contents:"
+cat $DEFAULTS_FILE
 
 # Extract SPARK_MASTER_URL from the log
 # Expecting line: SPARK_MASTER_URL: spark://...
@@ -79,6 +78,7 @@ fi
 echo "Detected Spark Master: $SPARK_MASTER_URL"
 echo "${{SPARK_MASTER_URL}}" > {self.master_url_file}
 echo "${{SLURM_JOB_ID}}" > {self.job_id_file}
+echo "${{SPARK_CONF_DIR}}" > {self.conf_dir_file}
 echo "$((SLURM_CPUS_ON_NODE - 1))" > {self.cores_file}
 
 sleep infinity
@@ -117,7 +117,8 @@ sleep infinity
                 job_id = f.read().strip()
             click.echo(f"Stopping Spark cluster (Slurm Job ID: {job_id})...")
             subprocess.run(["scancel", job_id])
-            os.remove(self.master_url_file)
-            os.remove(self.job_id_file)
+            for f in [self.master_url_file, self.job_id_file, self.conf_dir_file]:
+                if os.path.exists(f):
+                    os.remove(f)
         else:
             click.echo("No active Spark cluster found to stop.")

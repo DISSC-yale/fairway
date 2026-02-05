@@ -343,9 +343,3 @@ class Config:
         # Raise on errors
         if errors:
             raise ConfigValidationError(errors)
-
-    def get_table_by_name(self, name):
-        for table in self.tables:
-            if table['name'] == name:
-                return table
-        return None

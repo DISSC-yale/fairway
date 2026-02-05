@@ -219,10 +219,12 @@ class TestPySparkFixedWidth:
             shutil.rmtree(base_dir)
 
     @pytest.fixture
-    def spark_engine(self):
-        """Create PySpark engine."""
+    def spark_engine(self, spark_session):
+        """Use the shared spark session from conftest."""
         from fairway.engines.pyspark_engine import PySparkEngine
-        return PySparkEngine()
+        engine = PySparkEngine.__new__(PySparkEngine)
+        engine.spark = spark_session
+        return engine
 
     def test_basic_read(self, output_dir, spark_engine):
         """Read simple.txt with spec and verify values."""

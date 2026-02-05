@@ -9,7 +9,6 @@ This project was initialized with the **{engine_type}** engine.
 *   `src/transformations/`: Custom Python transformation logic
 *   `scripts/`: Helper scripts for execution
     *   `fairway-hpc.sh`: **User Utility** - Use this to setup your environment (load modules).
-    *   `run_pipeline.sh`: **Internal Runner** - Used by Makefile/Driver to launch Nextflow. Do not run directly.
     *   `driver.sh`: Slurm batch script for submitting the pipeline.
 *   `logs/`: Execution logs
 
@@ -28,17 +27,26 @@ source .venv/bin/activate
 Use the Makefile shortcuts:
 
 *   `make run`: Run locally (validation + ingestion)
-*   `make run-hpc`: Run on Login Node (Interactive)
-*   `make submit-hpc`: Submit Driver Job (Fire-and-Forget)
+*   `make submit`: Submit pipeline as Slurm job
+
+Or use the CLI directly:
+
+```bash
+# Local execution
+fairway run
+
+# Submit to Slurm (without Spark)
+fairway submit
+
+# Submit to Slurm with Spark cluster
+fairway submit --with-spark
+```
 
 ## HPC vs Local Execution
 
 - **Local (`make run`)**: Runs everything on the current machine. Great for small data (DuckDB) or testing.
-- **HPC Interactive (`make run-hpc`)**:
-    - Runs Nextflow on the login node. Output streams to your terminal.
-- **HPC Driver Job (`make submit-hpc`)**:
-    - Submits Nextflow itself as a job. Logs are written to `logs/driver_*.log`.
-    - Best for long-running pipelines.
+- **HPC (`fairway submit`)**: Submits the pipeline as a Slurm job.
+- **HPC with Spark (`fairway submit --with-spark`)**: Provisions a Spark cluster and runs the pipeline.
 
 ## Configuration
 

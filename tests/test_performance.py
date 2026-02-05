@@ -192,14 +192,8 @@ class TestPerformanceConfig:
 # Check if PySpark is available
 try:
     from pyspark.sql import SparkSession
-    spark = SparkSession.builder \
-        .master("local[1]") \
-        .appName("test_performance") \
-        .config("spark.driver.host", "localhost") \
-        .config("spark.driver.bindAddress", "127.0.0.1") \
-        .getOrCreate()
     SPARK_AVAILABLE = True
-except Exception:
+except ImportError:
     SPARK_AVAILABLE = False
 
 
@@ -208,9 +202,12 @@ class TestPySparkPerformance:
     """Tests for PySpark performance improvements."""
 
     @pytest.fixture
-    def engine(self):
+    def engine(self, spark_session):
+        """Use the shared spark session from conftest."""
         from fairway.engines.pyspark_engine import PySparkEngine
-        return PySparkEngine(spark_master="local[1]")
+        engine = PySparkEngine.__new__(PySparkEngine)
+        engine.spark = spark_session
+        return engine
 
     def test_salting_disabled_by_default_in_engine(self, engine, tmp_path):
         """D.1: Engine should not add salt column when balanced=False (default)."""
