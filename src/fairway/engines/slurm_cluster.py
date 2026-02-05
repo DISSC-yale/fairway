@@ -14,6 +14,11 @@ class SlurmSparkManager:
     def start_cluster(self):
         """Submit a Slurm job to start a Spark cluster."""
         click.echo("Provisioning Spark cluster on Slurm...")
+
+        # Remove stale files from any previous cluster so we don't read old values
+        for stale in [self.master_url_file, self.job_id_file, self.conf_dir_file, self.cores_file]:
+            if os.path.exists(stale):
+                os.remove(stale)
         
         # Determine resource requirements from config or defaults
         nodes = self.config.get('slurm_nodes', 2)

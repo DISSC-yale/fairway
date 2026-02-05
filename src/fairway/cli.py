@@ -734,8 +734,9 @@ trap cleanup EXIT
 echo "Starting Spark cluster..."
 fairway spark start
 
-# Wait for master URL
+# Wait for master URL and conf dir
 MASTER_URL_FILE=~/spark_master_url.txt
+CONF_DIR_FILE=~/spark_conf_dir.txt
 SPARK_ARGS=""
 if [ -f "$MASTER_URL_FILE" ]; then
     SPARK_MASTER=$(cat "$MASTER_URL_FILE")
@@ -743,6 +744,12 @@ if [ -f "$MASTER_URL_FILE" ]; then
     SPARK_ARGS="--spark-master $SPARK_MASTER"
 else
     echo "WARNING: Spark master URL not found. Running in local mode."
+fi
+
+# Export SPARK_CONF_DIR so the driver picks up auth settings (SASL secret) from spark-start
+if [ -f "$CONF_DIR_FILE" ]; then
+    export SPARK_CONF_DIR=$(cat "$CONF_DIR_FILE")
+    echo "Spark Conf Dir: $SPARK_CONF_DIR"
 fi
 
 # Run pipeline
