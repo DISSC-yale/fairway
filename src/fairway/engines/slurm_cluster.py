@@ -24,6 +24,7 @@ class SlurmSparkManager:
         
         sbatch_script = f"""#!/bin/bash
 #SBATCH --job-name=fairway-spark
+#SBATCH --output=logs/slurm/spark_cluster_%j.log
 #SBATCH --nodes={nodes}
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task={cpus}
@@ -31,6 +32,9 @@ class SlurmSparkManager:
 #SBATCH --account={account}
 #SBATCH --time={time_limit}
 #SBATCH --partition={partition}
+
+# Ensure log directory exists
+mkdir -p logs/slurm
 
 module load Spark/3.5.1-foss-2022b-Scala-2.13
 
