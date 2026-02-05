@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=fairway_schema
-#SBATCH --output=logs/schema_%j.log
+#SBATCH --output=logs/slurm/schema_%j.log
 #SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
@@ -16,6 +16,9 @@
 # see docs/design_docs/schema_inference_scalability.md
 
 set -e
+
+# Ensure log directory exists
+mkdir -p logs/slurm
 
 export FAIRWAY_VENV=$FAIRWAY_VENV
 
