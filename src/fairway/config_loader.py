@@ -180,7 +180,8 @@ class Config:
                     'root': tbl.get('root'),
                     'archives': archives_pattern,
                     'files': files_pattern,
-                    'fixed_width_spec': fixed_width_spec
+                    'fixed_width_spec': fixed_width_spec,
+                    'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                 })
 
             else:
@@ -247,7 +248,8 @@ class Config:
                         'write_mode': tbl.get('write_mode', 'overwrite'),
                         'archives': archives_pattern,
                         'files': files_pattern,
-                        'fixed_width_spec': fixed_width_spec
+                        'fixed_width_spec': fixed_width_spec,
+                        'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                     })
         return expanded
 
@@ -323,6 +325,30 @@ class Config:
                 root_path = os.path.join(config_dir, root) if not os.path.isabs(root) else root
                 if not os.path.isdir(root_path):
                     errors.append(f"{prefix}: Root directory does not exist: {root}")
+
+            # batch_strategy validation
+            batch_strategy = table.get('batch_strategy', 'bulk')
+            valid_strategies = {'bulk', 'partition_aware'}
+            if batch_strategy not in valid_strategies:
+                errors.append(f"{prefix}: Invalid batch_strategy '{batch_strategy}'. Must be one of {valid_strategies}")
+
+            if batch_strategy == 'partition_aware':
+                naming_pattern = table.get('naming_pattern')
+                partition_by = table.get('partition_by', [])
+
+                if not naming_pattern:
+                    errors.append(f"{prefix}: batch_strategy 'partition_aware' requires 'naming_pattern'")
+                if not partition_by:
+                    errors.append(f"{prefix}: batch_strategy 'partition_aware' requires 'partition_by'")
+
+                # Verify all partition_by keys appear as named groups in naming_pattern
+                if naming_pattern and partition_by:
+                    regex_groups = set(re.findall(r'\?P<([^>]+)>', naming_pattern))
+                    for key in partition_by:
+                        if key not in regex_groups:
+                            errors.append(
+                                f"{prefix}: partition_by key '{key}' not found as named group in naming_pattern"
+                            )
 
             # Glob pattern must match at least one file
             if path and '*' in path:

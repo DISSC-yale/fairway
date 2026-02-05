@@ -76,6 +76,9 @@ class TableManifest:
         if key not in self.data["files"]:
             return True
         entry = self.data["files"][key]
+        # Retry files that previously failed
+        if entry.get("status") == "failed":
+            return True
         current_hash = computed_hash or _get_file_hash_static(file_path, fast_check)
         return entry.get("hash") != current_hash
 
@@ -91,6 +94,17 @@ class TableManifest:
             "metadata": metadata or {}
         }
         self._save()
+
+    def get_pending_files(self, file_paths, table_root=None, fast_check=True):
+        """Filter file_paths to only those needing processing.
+
+        Convenience wrapper around should_process() for batch use.
+        Returns subset of file_paths where should_process() is True.
+        """
+        return [
+            f for f in file_paths
+            if self.should_process(f, table_root=table_root, fast_check=fast_check)
+        ]
 
     def record_preprocessing(self, original_path, preprocessed_path, action, table_root=None):
         """Record preprocessing result."""
