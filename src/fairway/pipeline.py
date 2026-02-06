@@ -156,7 +156,13 @@ class IngestionPipeline:
 
         preprocess_config = table.get('preprocess')
         if not preprocess_config:
-            return table['path']
+            # No preprocessing needed - resolve root + path and return
+            input_path = table['path']
+            root = table.get('root')
+            if root and not os.path.isabs(input_path):
+                rel_input = input_path.lstrip(os.sep)
+                return os.path.join(root, rel_input)
+            return input_path
 
         action = preprocess_config.get('action')
         scope = preprocess_config.get('scope', 'per_file') # 'global' or 'per_file'
