@@ -868,6 +868,132 @@ def pull():
         click.echo("apptainer command not found. Is Apptainer installed?", err=True)
 
 
+# =============================================================================
+# MANIFEST COMMANDS
+# =============================================================================
+
+@main.group()
+def manifest():
+    """Inspect and query the file manifest."""
+    pass
+
+
+@manifest.command('list')
+def manifest_list():
+    """List all tables with manifests."""
+    from .manifest import ManifestStore
+    from tabulate import tabulate
+
+    store = ManifestStore()
+    tables = store.list_tables()
+
+    if not tables:
+        click.echo("No tables found in manifest. Run 'fairway run' first.")
+        return
+
+    # Gather stats for each table
+    rows = []
+    for table_name in tables:
+        tm = store.get_table_manifest(table_name)
+        files = tm.data.get("files", {})
+        total = len(files)
+        success = sum(1 for f in files.values() if f.get("status") == "success")
+        failed = sum(1 for f in files.values() if f.get("status") == "failed")
+        rows.append([table_name, total, success, failed])
+
+    headers = ["Table", "Files", "Success", "Failed"]
+    click.echo(tabulate(rows, headers=headers, tablefmt="simple"))
+
+
+@manifest.command('query')
+@click.option('--table', '-t', required=False, help='Table name to query.')
+@click.option('--file', '-f', 'file_key', help='Query a specific file by key.')
+@click.option('--status', '-s', type=click.Choice(['success', 'failed']), help='Filter by status.')
+@click.option('--batch-id', '-b', help='Filter by batch ID.')
+@click.option('--json', 'json_output', is_flag=True, help='Output as JSON.')
+def manifest_query(table, file_key, status, batch_id, json_output):
+    """Query files in the manifest.
+
+    Examples:
+
+        fairway manifest query --table claims
+
+        fairway manifest query --table claims --status failed
+
+        fairway manifest query --table claims --batch-id batch_001
+
+        fairway manifest query --table claims --file CT_2023_01.csv
+
+        fairway manifest query --table claims --json
+    """
+    import json as json_module
+    from .manifest import ManifestStore
+    from tabulate import tabulate
+
+    store = ManifestStore()
+
+    # If no table specified, show error
+    if not table:
+        click.echo("Error: --table is required. Use 'fairway manifest list' to see available tables.")
+        raise SystemExit(1)
+
+    # Check if table exists
+    tables = store.list_tables()
+    if table not in tables:
+        click.echo(f"Error: Table '{table}' not found. Available tables: {', '.join(tables) if tables else 'none'}")
+        raise SystemExit(1)
+
+    tm = store.get_table_manifest(table)
+
+    # Query single file
+    if file_key:
+        entry = tm.query_file(file_key)
+        if entry is None:
+            click.echo(f"File '{file_key}' not found in {table} manifest.")
+            raise SystemExit(1)
+
+        if json_output:
+            result = entry.copy()
+            result["file_key"] = file_key
+            click.echo(json_module.dumps(result, indent=2, default=str))
+        else:
+            click.echo(f"File: {file_key}")
+            click.echo(f"  Status: {entry.get('status', 'unknown')}")
+            click.echo(f"  Last Processed: {entry.get('last_processed', 'unknown')}")
+            click.echo(f"  Hash: {entry.get('hash', 'unknown')}")
+            metadata = entry.get('metadata', {})
+            if metadata:
+                click.echo(f"  Metadata:")
+                for k, v in metadata.items():
+                    click.echo(f"    {k}: {v}")
+        return
+
+    # Query with filters
+    results = tm.query_files(status=status, batch_id=batch_id)
+
+    if not results:
+        click.echo(f"No files found matching filters.")
+        return
+
+    if json_output:
+        click.echo(json_module.dumps(results, indent=2, default=str))
+    else:
+        # Format as table
+        rows = []
+        for entry in results:
+            metadata = entry.get('metadata', {})
+            rows.append([
+                entry.get('file_key', 'unknown'),
+                entry.get('status', 'unknown'),
+                metadata.get('batch_id', '-'),
+                metadata.get('partition', '-'),
+            ])
+
+        headers = ["File", "Status", "Batch ID", "Partition"]
+        click.echo(tabulate(rows, headers=headers, tablefmt="simple"))
+        click.echo(f"\nTotal: {len(results)} files")
+
+
 @main.group()
 def cache():
     """Manage fairway cache."""

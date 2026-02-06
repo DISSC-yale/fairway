@@ -1,6 +1,7 @@
 """Partition-aware file batching for shuffle-free ingestion."""
 import os
 import re
+import hashlib
 
 
 class PartitionBatcher:
@@ -78,3 +79,32 @@ class PartitionBatcher:
             safe_val = val.replace("/", "_").replace("\\", "_").replace("..", "_")
             parts.append(f"{key}={safe_val}")
         return "/".join(parts)
+
+    @staticmethod
+    def generate_batch_id(table_name, partition_key, file_paths):
+        """Generate a deterministic batch ID.
+
+        Format: {table}_{partition_key_sanitized}_{hash[:8]}
+
+        The hash is computed from sorted file paths to ensure determinism
+        regardless of input order.
+
+        Args:
+            table_name: Name of the table being processed
+            partition_key: Partition key string (e.g., "state=CT/year=2023")
+            file_paths: List of file paths in this batch
+
+        Returns:
+            Deterministic batch ID string
+        """
+        # Sanitize partition key for use in ID (replace special chars)
+        sanitized_partition = partition_key.replace("/", "_").replace("=", "-")
+
+        # Sort files for determinism
+        sorted_files = sorted(file_paths)
+
+        # Create hash of sorted file paths
+        content = "\n".join(sorted_files)
+        file_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
+
+        return f"{table_name}_{sanitized_partition}_{file_hash}"
