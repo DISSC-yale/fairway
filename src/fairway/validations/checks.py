@@ -1,5 +1,3 @@
-import pandas as pd
-
 class Validator:
     @staticmethod
     def level1_check(df, config):
