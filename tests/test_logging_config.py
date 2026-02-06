@@ -324,3 +324,106 @@ class TestGetLogger:
 
         logger = get_logger("pipeline")
         assert logger.name == "fairway.pipeline"
+
+
+class TestCLILoggingIntegration:
+    """Tests for CLI logging integration."""
+
+    def test_cli_run_has_log_file_option(self):
+        """CLI run command should have --log-file option."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ['run', '--help'])
+
+        assert '--log-file' in result.output
+        assert result.exit_code == 0
+
+    def test_cli_run_has_log_level_option(self):
+        """CLI run command should have --log-level option."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ['run', '--help'])
+
+        assert '--log-level' in result.output
+        assert result.exit_code == 0
+
+    def test_cli_run_creates_log_file(self, tmp_path):
+        """CLI run should create JSONL log file when --log-file specified."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+
+        # Create minimal config
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config_file = config_dir / "fairway.yaml"
+        config_file.write_text("""
+dataset_name: test
+engine: duckdb
+storage:
+  root: data
+tables:
+  - name: test_table
+    root: data/raw
+    path: "*.csv"
+    format: csv
+""")
+
+        # Create data directory
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+
+        log_file = tmp_path / "logs" / "test.jsonl"
+
+        runner = CliRunner()
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            # Copy config to isolated filesystem
+            import shutil
+            shutil.copytree(config_dir, "config")
+            os.makedirs("data/raw", exist_ok=True)
+
+            result = runner.invoke(main, [
+                'run',
+                '--config', 'config/fairway.yaml',
+                '--log-file', str(log_file),
+                '--log-level', 'DEBUG'
+            ])
+
+        # Log file should be created (even if pipeline has no work)
+        assert log_file.exists(), f"Log file not created. CLI output: {result.output}"
+
+
+class TestPySparkLoggingLevels:
+    """Tests for PySpark engine logging levels."""
+
+    def test_max_records_warning_is_debug_level(self):
+        """maxRecordsPerFile high value message should be DEBUG, not WARNING."""
+        import logging
+        from io import StringIO
+
+        # Capture log output
+        log_capture = StringIO()
+        handler = logging.StreamHandler(log_capture)
+        handler.setLevel(logging.DEBUG)
+
+        logger = logging.getLogger("fairway.engines.pyspark")
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+
+        try:
+            # Import after setting up logging to capture the message
+            from fairway.engines.pyspark_engine import PySparkEngine
+
+            # Check the source code for the log level used
+            import inspect
+            source = inspect.getsource(PySparkEngine.ingest)
+
+            # The maxRecordsPerFile message should use logger.debug, not logger.warning
+            assert 'logger.warning("maxRecordsPerFile' not in source, \
+                "maxRecordsPerFile should use DEBUG level, not WARNING"
+
+        finally:
+            logger.removeHandler(handler)
