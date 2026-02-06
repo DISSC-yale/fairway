@@ -396,6 +396,115 @@ tables:
         assert log_file.exists(), f"Log file not created. CLI output: {result.output}"
 
 
+class TestCLILogsCommand:
+    """Tests for `fairway logs` CLI command."""
+
+    def test_cli_logs_command_exists(self):
+        """CLI should have a logs command."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ['logs', '--help'])
+
+        assert result.exit_code == 0
+        assert 'logs' in result.output.lower()
+
+    def test_cli_logs_reads_jsonl_file(self, tmp_path):
+        """logs command should read and display JSONL entries."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+        import json
+
+        # Create test log file
+        log_file = tmp_path / "test.jsonl"
+        entries = [
+            {"timestamp": "2026-02-06T10:00:00", "level": "INFO", "message": "Test message 1"},
+            {"timestamp": "2026-02-06T10:00:01", "level": "ERROR", "message": "Test error"},
+        ]
+        with open(log_file, 'w') as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + '\n')
+
+        runner = CliRunner()
+        result = runner.invoke(main, ['logs', '--file', str(log_file)])
+
+        assert result.exit_code == 0
+        assert 'Test message 1' in result.output
+        assert 'Test error' in result.output
+
+    def test_cli_logs_filter_by_level(self, tmp_path):
+        """logs command should filter by log level."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+        import json
+
+        log_file = tmp_path / "test.jsonl"
+        entries = [
+            {"timestamp": "2026-02-06T10:00:00", "level": "INFO", "message": "Info message"},
+            {"timestamp": "2026-02-06T10:00:01", "level": "ERROR", "message": "Error message"},
+            {"timestamp": "2026-02-06T10:00:02", "level": "DEBUG", "message": "Debug message"},
+        ]
+        with open(log_file, 'w') as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + '\n')
+
+        runner = CliRunner()
+        result = runner.invoke(main, ['logs', '--file', str(log_file), '--level', 'ERROR'])
+
+        assert result.exit_code == 0
+        assert 'Error message' in result.output
+        assert 'Info message' not in result.output
+        assert 'Debug message' not in result.output
+
+    def test_cli_logs_filter_by_batch_id(self, tmp_path):
+        """logs command should filter by batch_id."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+        import json
+
+        log_file = tmp_path / "test.jsonl"
+        entries = [
+            {"timestamp": "2026-02-06T10:00:00", "level": "INFO", "message": "Batch 1", "batch_id": "batch_001"},
+            {"timestamp": "2026-02-06T10:00:01", "level": "INFO", "message": "Batch 2", "batch_id": "batch_002"},
+            {"timestamp": "2026-02-06T10:00:02", "level": "INFO", "message": "No batch"},
+        ]
+        with open(log_file, 'w') as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + '\n')
+
+        runner = CliRunner()
+        result = runner.invoke(main, ['logs', '--file', str(log_file), '--batch', 'batch_001'])
+
+        assert result.exit_code == 0
+        assert 'Batch 1' in result.output
+        assert 'Batch 2' not in result.output
+
+    def test_cli_logs_last_n_lines(self, tmp_path):
+        """logs command should support --last N option."""
+        from click.testing import CliRunner
+        from fairway.cli import main
+        import json
+
+        log_file = tmp_path / "test.jsonl"
+        entries = [
+            {"timestamp": "2026-02-06T10:00:00", "level": "INFO", "message": f"Message {i}"}
+            for i in range(10)
+        ]
+        with open(log_file, 'w') as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + '\n')
+
+        runner = CliRunner()
+        result = runner.invoke(main, ['logs', '--file', str(log_file), '--last', '3'])
+
+        assert result.exit_code == 0
+        assert 'Message 7' in result.output
+        assert 'Message 8' in result.output
+        assert 'Message 9' in result.output
+        assert 'Message 0' not in result.output
+
+
 class TestPySparkLoggingLevels:
     """Tests for PySpark engine logging levels."""
 
