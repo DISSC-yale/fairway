@@ -412,7 +412,7 @@ class IngestionPipeline:
         write_mode = table.get('write_mode', 'overwrite')
         fixed_width_spec = table.get('fixed_width_spec')
         output_name = os.path.splitext(table['name'])[0]
-        intermediate_dir = self.config.temp_dir or self.config.processed_dir
+        intermediate_dir = self.config.processed_dir
         base_output = os.path.join(intermediate_dir, output_name)
 
         # 1. Resolve all input files from glob
@@ -619,7 +619,7 @@ class IngestionPipeline:
             print(f"Processing {table['name']}...")
 
             output_name = os.path.splitext(table['name'])[0]
-            intermediate_dir = self.config.temp_dir or self.config.processed_dir
+            intermediate_dir = self.config.processed_dir
             output_path = os.path.join(intermediate_dir, output_name)
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
