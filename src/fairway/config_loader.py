@@ -2,6 +2,9 @@ import yaml
 import os
 import glob
 import re
+import logging
+
+logger = logging.getLogger("fairway.config")
 
 
 class ConfigValidationError(Exception):
@@ -144,7 +147,7 @@ class Config:
 
                  # Check existence only if literal path (not a glob with wildcards, unless checking dir)
                  if '*' not in resolved_path and not os.path.exists(resolved_path):
-                      print(f"WARNING: Table path not found: {resolved_path}")
+                      logger.warning("Table path not found: %s", resolved_path)
                       continue
 
                  table_format = tbl.get('format', 'csv')
@@ -200,10 +203,10 @@ class Config:
                     rel_pattern = path_pattern.lstrip(os.sep)
                     search_path = os.path.join(table_root, rel_pattern)
 
-                print(f"DEBUG: ConfigLoader globbing: {search_path}")
+                logger.debug("ConfigLoader globbing: %s", search_path)
                 files = glob.glob(search_path, recursive=True)
                 if not files:
-                    print(f"WARNING: ConfigLoader found no files for pattern: {search_path}")
+                    logger.warning("ConfigLoader found no files for pattern: %s", search_path)
 
                 for f in files:
                     metadata = {}
@@ -365,7 +368,7 @@ class Config:
 
         # Print warnings
         for w in warnings:
-            print(f"WARNING: {w}")
+            logger.warning("%s", w)
 
         # Raise on errors
         if errors:

@@ -14,6 +14,9 @@ except ImportError as e:
 import random
 import os
 import re
+import logging
+
+logger = logging.getLogger("fairway.engines.pyspark")
 
 
 class PySparkEngine:
@@ -91,7 +94,7 @@ class PySparkEngine:
             )
 
         # PySpark supports generic load with format option
-        print(f"INFO: PySpark Engine reading from {input_path} (format={format})")
+        logger.info("PySpark Engine reading from %s (format=%s)", input_path, format)
 
         # Log discovered files for debugging OOM issues
         import glob as glob_module
@@ -99,11 +102,11 @@ class PySparkEngine:
             discovered_files = sorted(glob_module.glob(input_path, recursive=True))
             discovered_files = [f for f in discovered_files if os.path.isfile(f)]
             total_size_mb = sum(os.path.getsize(f) for f in discovered_files) / (1024 * 1024)
-            print(f"DEBUG: Discovered {len(discovered_files)} files, total size: {total_size_mb:.1f} MB")
+            logger.debug("Discovered %d files, total size: %.1f MB", len(discovered_files), total_size_mb)
             if discovered_files:
-                print(f"DEBUG: First 5 files: {[os.path.basename(f) for f in discovered_files[:5]]}")
+                logger.debug("First 5 files: %s", [os.path.basename(f) for f in discovered_files[:5]])
                 if len(discovered_files) > 5:
-                    print(f"DEBUG: Last file: {os.path.basename(discovered_files[-1])}")
+                    logger.debug("Last file: %s", os.path.basename(discovered_files[-1]))
 
         reader = self.spark.read.format(format)
 
@@ -134,9 +137,9 @@ class PySparkEngine:
                     for col_name, col_type in schema.items()
                 ])
                 reader = reader.schema(spark_schema)
-                print(f"INFO: Using provided schema ({len(schema)} columns) - skipping inferSchema")
+                logger.info("Using provided schema (%d columns) - skipping inferSchema", len(schema))
             elif 'inferSchema' not in kwargs:
-                 print(f"DEBUG: No schema provided, using inferSchema=true (adds memory overhead)")
+                 logger.debug("No schema provided, using inferSchema=true (adds memory overhead)")
                  reader = reader.option("inferSchema", "true")
                  
             if hive_partitioning:
@@ -159,11 +162,11 @@ class PySparkEngine:
             # Parse the naming pattern to find all named groups (in order)
             pattern_groups = re.findall(r'\?P<([^>]+)>', naming_pattern)
             if pattern_groups:
-                print(f"INFO: Extracting metadata from file paths using naming_pattern: {pattern_groups}")
+                logger.info("Extracting metadata from file paths using naming_pattern: %s", pattern_groups)
                 # Convert Python named groups to standard groups for Spark
                 # (?P<name>pattern) -> (pattern)
                 spark_pattern = re.sub(r'\?P<[^>]+>', '', naming_pattern)
-                print(f"DEBUG: Spark regex pattern: {spark_pattern}")
+                logger.debug("Spark regex pattern: %s", spark_pattern)
 
                 # Add the input file name as a column
                 df = df.withColumn("_input_file", F.input_file_name())
@@ -264,11 +267,11 @@ class PySparkEngine:
             computed_max_records = target_file_size_mb * estimated_rows_per_mb
 
         writer = writer.option("maxRecordsPerFile", computed_max_records)
-        print(f"INFO: maxRecordsPerFile set to {computed_max_records}")
+        logger.info("maxRecordsPerFile set to %d", computed_max_records)
 
         # Log memory-related recommendations for debugging OOM
         if computed_max_records > 500000:
-            print(f"WARNING: maxRecordsPerFile={computed_max_records} is high. If OOM occurs, try reducing target_file_size_mb or setting max_records_per_file explicitly.")
+            logger.warning("maxRecordsPerFile=%d is high. If OOM occurs, try reducing target_file_size_mb or setting max_records_per_file explicitly.", computed_max_records)
 
         # Set compression (snappy is default, most efficient for Spark)
         writer = writer.option("compression", compression)
@@ -286,7 +289,7 @@ class PySparkEngine:
         # Checking if 'delta' is in kwargs for output format?
         output_format = kwargs.get('output_format', 'parquet')
         
-        print(f"INFO: PySpark Engine writing to {output_path} (format={output_format}, mode={write_mode}, partitions={partition_cols})")
+        logger.info("PySpark Engine writing to %s (format=%s, mode=%s, partitions=%s)", output_path, output_format, write_mode, partition_cols)
         
         if partition_cols:
             writer = writer.partitionBy(*partition_cols)
@@ -334,8 +337,8 @@ class PySparkEngine:
         columns = spec['columns']
         line_length = spec['line_length']
 
-        print(f"INFO: PySpark reading fixed-width file from {input_path}")
-        print(f"INFO: Spec defines {len(columns)} columns, expected line length: {line_length}")
+        logger.info("PySpark reading fixed-width file from %s", input_path)
+        logger.info("Spec defines %d columns, expected line length: %d", len(columns), line_length)
 
         # Type mapping from spec types to Spark types
         TYPE_MAP = {
@@ -411,7 +414,7 @@ class PySparkEngine:
         writer = writer.option("maxRecordsPerFile", computed_max_records)
         writer = writer.option("compression", compression)
 
-        print(f"INFO: PySpark Engine writing to {output_path} (mode={write_mode}, partitions={partition_cols})")
+        logger.info("PySpark Engine writing to %s (mode=%s, partitions=%s)", output_path, write_mode, partition_cols)
 
         if partition_cols:
             writer = writer.partitionBy(*partition_cols)
@@ -447,7 +450,7 @@ class PySparkEngine:
         # For standard ingestion (1000s of files), defaults are usually fine, 
         # but we might want at least as many partitions as executors.
         num_slices = min(len(items), 10000)
-        print(f"DEBUG: Creating RDD with {num_slices} slices for {len(items)} items.")
+        logger.debug("Creating RDD with %d slices for %d items.", num_slices, len(items))
         rdd = self.spark.sparkContext.parallelize(items, numSlices=num_slices)
         
         # Apply the function and collect results
@@ -634,7 +637,7 @@ class PySparkEngine:
             if 'delimiter' not in kwargs and 'delim' not in kwargs:
                 kwargs['delimiter'] = '\t'
 
-        print(f"INFO: Inferring schema from {path} (format={format})")
+        logger.info("Inferring schema from %s (format=%s)", path, format)
 
         # Build glob pattern for file discovery
         if '*' not in path and os.path.isdir(path):
@@ -656,7 +659,7 @@ class PySparkEngine:
         file_schemas = {}  # {file_path: {col: type}}
         errors = []
 
-        print(f"INFO: Phase 1 - Discovering columns from {len(all_files)} files...")
+        logger.info("Phase 1 - Discovering columns from %d files...", len(all_files))
 
         # Build a reader with common options
         def get_reader():
@@ -693,12 +696,12 @@ class PySparkEngine:
                 continue
 
         if errors:
-            print(f"WARNING: Failed to read {len(errors)} files during column discovery")
+            logger.warning("Failed to read %d files during column discovery", len(errors))
 
         if not all_columns:
             raise ValueError(f"No columns found in any files matching: {glob_pattern}")
 
-        print(f"INFO: Phase 1 complete - Found {len(all_columns)} unique columns across {len(file_schemas)} files")
+        logger.info("Phase 1 complete - Found %d unique columns across %d files", len(all_columns), len(file_schemas))
 
         # ============================================================
         # PHASE 2: Type Inference with Coverage Guarantee
@@ -723,7 +726,7 @@ class PySparkEngine:
             sample = list(required_files)
 
         sample = sorted(sample)
-        print(f"INFO: Phase 2 - Using {len(sample)} files for type inference")
+        logger.info("Phase 2 - Using %d files for type inference", len(sample))
 
         # Merge types from sampled files
         column_types = {}
@@ -743,8 +746,8 @@ class PySparkEngine:
             if col in column_types:
                 schema_dict[col] = column_types[col]
             else:
-                print(f"WARNING: Column '{col}' has no type - defaulting to STRING")
+                logger.warning("Column '%s' has no type - defaulting to STRING", col)
                 schema_dict[col] = 'STRING'
 
-        print(f"INFO: Schema inference complete - {len(schema_dict)} columns")
+        logger.info("Schema inference complete - %d columns", len(schema_dict))
         return schema_dict

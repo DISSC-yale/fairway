@@ -5,6 +5,7 @@ import zipfile
 import tarfile
 import hashlib
 import importlib.util
+import logging
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
@@ -14,6 +15,9 @@ from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
 from .exporters.redivis_exporter import RedivisExporter
+from .logging_config import BatchLogger
+
+logger = logging.getLogger("fairway.pipeline")
 
 
 class ArchiveCache:
@@ -41,7 +45,7 @@ class ArchiveCache:
         # Check manifest for valid existing extraction
         if self.global_manifest.is_extraction_valid(archive_path):
             entry = self.global_manifest.get_extraction(archive_path)
-            print(f"  Using cached extraction for: {archive_path}")
+            logger.debug("Using cached extraction for: %s", archive_path)
             self._session_cache[abs_path] = entry['extracted_dir']
             return entry['extracted_dir']
 
@@ -49,7 +53,7 @@ class ArchiveCache:
         extraction_dir = self._get_extraction_dir(archive_path)
         os.makedirs(extraction_dir, exist_ok=True)
 
-        print(f"  Extracting archive: {archive_path} → {extraction_dir}")
+        logger.info("Extracting archive: %s → %s", archive_path, extraction_dir)
         self._extract(archive_path, extraction_dir)
 
         # Record in manifest
@@ -117,7 +121,7 @@ class ArchiveCache:
 
 class IngestionPipeline:
     def __init__(self, config_path, spark_master=None, engine_override=None):
-        print("DEBUG: Loading local fairway.pipeline")
+        logger.debug("Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
         self.engine = self._get_engine(spark_master, engine_override)
@@ -183,12 +187,12 @@ class IngestionPipeline:
             # Apply file filter to cached path if needed
             if include_pattern:
                 cached = os.path.join(cached, "**", include_pattern)
-            print(f"  Reusing cached preprocessing: {cached}")
+            logger.debug("Reusing cached preprocessing: %s", cached)
             return cached
 
-        print(f"Preprocessing {table['name']} with action='{action}', scope='{scope}', mode='{mode}'...")
+        logger.info("Preprocessing %s with action='%s', scope='%s', mode='%s'", table['name'], action, scope, mode)
         if include_pattern:
-            print(f"  File filter: {include_pattern}")
+            logger.debug("File filter: %s", include_pattern)
 
         # Temp Location Support
         temp_loc = self.config.temp_dir
@@ -201,7 +205,7 @@ class IngestionPipeline:
              batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
              # Ensure the batch root exists
              os.makedirs(batch_dir, exist_ok=True)
-             print(f"INFO: Using global temp location: {batch_dir}")
+             logger.info("Using global temp location: %s", batch_dir)
         
         # Resolve input files
         # If input_path is a glob, we get all files.
@@ -219,12 +223,12 @@ class IngestionPipeline:
         # Resolve glob against the FULL path (root + relative_glob)
         files = glob.glob(full_input_path) if '*' in full_input_path else [full_input_path]
         
-        print(f"DEBUG: Found {len(files)} candidates at {full_input_path}")
+        logger.debug("Found %d candidates at %s", len(files), full_input_path)
         
         if not files:
-             print(f"WARNING: No files found for preprocessing at {full_input_path} (CWD: {os.getcwd()})")
+             logger.warning("No files found for preprocessing at %s (CWD: %s)", full_input_path, os.getcwd())
              if root:
-                 print(f"  Root: {root}, Path: {input_path}")
+                 logger.warning("Root: %s, Path: %s", root, input_path)
              return input_path 
 
         # Define the work function
@@ -286,23 +290,23 @@ class IngestionPipeline:
         
         if mode == 'cluster':
              if not hasattr(self.engine, 'distribute_task'):
-                 print("WARNING: execution_mode='cluster' requested but engine doesn't support it. Falling back to 'driver' mode.")
+                 logger.warning("execution_mode='cluster' requested but engine doesn't support it. Falling back to 'driver' mode.")
                  mode = 'driver'
 
         if mode == 'cluster':
-             
+
              # Dispatch to cluster
              # Note: For custom scripts, ensure the script file is accessible on workers
-             print(f"INFO: Distributing preprocessing task for {len(files)} files to Spark cluster...")
+             logger.info("Distributing preprocessing task for %d files to Spark cluster...", len(files))
              results = self.engine.distribute_task(files, process_file)
-             print(f"INFO: Cluster task complete. Processed {len(results)} items.")
+             logger.info("Cluster task complete. Processed %d items.", len(results))
              processed_paths = results
         else:
              # Driver mode
-             print(f"INFO: Running preprocessing locally for {len(files)} files...")
+             logger.info("Running preprocessing locally for %d files...", len(files))
              for i, f in enumerate(files):
                  if i % 10 == 0:
-                     print(f"  Processed {i}/{len(files)}...")
+                     logger.debug("Processed %d/%d...", i, len(files))
                  processed_paths.append(process_file(f))
         
         # Return the new input path. 
@@ -355,7 +359,7 @@ class IngestionPipeline:
         files_pattern = table.get('files', '**/*')
         root = table.get('root')
 
-        print(f"Processing archives for {table['name']}...")
+        logger.info("Processing archives for %s...", table['name'])
 
         # Resolve archive pattern
         config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
@@ -369,7 +373,7 @@ class IngestionPipeline:
         if not archive_files:
             raise ValueError(f"No archives match pattern: {search_path}")
 
-        print(f"  Found {len(archive_files)} archive(s)")
+        logger.info("Found %d archive(s)", len(archive_files))
 
         # Extract each archive (cached) and collect file paths
         all_extracted_dirs = []
@@ -384,10 +388,10 @@ class IngestionPipeline:
             matched = glob.glob(pattern, recursive=True)
             all_matched_files.extend(matched)
 
-        print(f"  Files matching '{files_pattern}': {len(all_matched_files)}")
+        logger.info("Files matching '%s': %d", files_pattern, len(all_matched_files))
 
         if not all_matched_files:
-            print(f"  WARNING: No files match pattern '{files_pattern}' in extracted archives")
+            logger.warning("No files match pattern '%s' in extracted archives", files_pattern)
             # Return pattern for first dir (will be empty)
             return os.path.join(all_extracted_dirs[0], files_pattern)
 
@@ -398,12 +402,15 @@ class IngestionPipeline:
         return result_path
 
     def _run_partition_aware(self, table, input_path, table_manifest):
-        """Execute partition-aware batched ingestion.
+        """Execute partition-aware batched ingestion using coordinator pattern.
 
-        Groups files by partition values extracted from naming_pattern,
-        then calls the engine once per batch writing directly to the
-        correct Hive-style partition directory (no shuffle required).
+        Explicit Fetch → Group → Submit → Commit loop:
+        - FETCH:  Resolve files, filter via manifest
+        - GROUP:  PartitionBatcher.group_files()
+        - SUBMIT: engine.ingest() per batch (engine is "dumb" I/O)
+        - COMMIT: table_manifest.update_file() with batch_id + status
         """
+        table_name = table['name']
         naming_pattern = table['naming_pattern']
         partition_by = table.get('partition_by', [])
         table_format = table.get('format', 'csv')
@@ -411,106 +418,140 @@ class IngestionPipeline:
         read_options = table.get('read_options', {})
         write_mode = table.get('write_mode', 'overwrite')
         fixed_width_spec = table.get('fixed_width_spec')
-        output_name = os.path.splitext(table['name'])[0]
+        output_name = os.path.splitext(table_name)[0]
         intermediate_dir = self.config.processed_dir
         base_output = os.path.join(intermediate_dir, output_name)
 
-        # 1. Resolve all input files from glob
+        # ============================================================
+        # FETCH: Resolve all input files from glob
+        # ============================================================
         all_files = sorted(glob.glob(input_path, recursive=True))
         all_files = [f for f in all_files if os.path.isfile(f)]
 
         if not all_files:
-            print(f"  WARNING: No files found matching {input_path}")
+            logger.warning("No files found matching %s", input_path)
             return
 
-        # 2. Filter through manifest -> pending files only
+        # Filter through manifest -> pending files only
         pending = table_manifest.get_pending_files(all_files, table.get('root'))
         if not pending:
-            print(f"  Skipping {table['name']} - all {len(all_files)} files already processed")
+            logger.info("Skipping %s - all %d files already processed", table_name, len(all_files))
             return
 
-        # 3. Group into partition-aware batches
+        # ============================================================
+        # GROUP: Partition-aware batches
+        # ============================================================
         batches = PartitionBatcher.group_files(pending, naming_pattern, partition_by)
 
         # Handle unmatched files
         unmatched = batches.pop(None, [])
         if unmatched:
-            print(f"  WARNING: {len(unmatched)} files didn't match naming_pattern and will be skipped:")
+            logger.warning("%d files didn't match naming_pattern and will be skipped", len(unmatched))
             for f in unmatched[:5]:
-                print(f"    - {os.path.basename(f)}")
+                logger.warning("  - %s", os.path.basename(f))
             if len(unmatched) > 5:
-                print(f"    ... and {len(unmatched) - 5} more")
+                logger.warning("  ... and %d more", len(unmatched) - 5)
 
-        print(f"  Organized {len(pending) - len(unmatched)} files into {len(batches)} partition batches")
+        total_batches = len(batches)
+        total_files = len(pending) - len(unmatched)
+        logger.info("Organized %d files into %d partition batches", total_files, total_batches)
 
-        # 4. Execute each batch
-        for partition_values, batch_files in batches.items():
+        # ============================================================
+        # SUBMIT + COMMIT: Execute each batch with structured logging
+        # ============================================================
+        success_count = 0
+        failed_count = 0
+
+        for batch_num, (partition_values, batch_files) in enumerate(batches.items(), start=1):
             subpath = PartitionBatcher.get_output_subpath(partition_by, partition_values)
             batch_dir = os.path.join(base_output, subpath)
             os.makedirs(batch_dir, exist_ok=True)
             # DuckDB needs a file path (not dir) when partition_by=None
             batch_output = os.path.join(batch_dir, "part-0.parquet")
 
-            # Build metadata from partition values
-            metadata = dict(zip(partition_by, partition_values))
-            metadata.update(table.get('metadata', {}))
+            # Generate deterministic batch ID
+            batch_id = PartitionBatcher.generate_batch_id(table_name, subpath, batch_files)
 
-            print(f"  Batch [{subpath}]: {len(batch_files)} files -> {batch_output}")
+            # Use BatchLogger for structured context
+            with BatchLogger(logger, batch_id=batch_id, partition_key=subpath, file_count=len(batch_files)):
+                logger.info(
+                    "Processing Batch %d/%d: Partition [%s] - %d files",
+                    batch_num, total_batches, subpath, len(batch_files)
+                )
 
-            success = self.engine.ingest(
-                batch_files,
-                batch_output,
-                format=table_format,
-                partition_by=None,  # Already partitioned by batcher
-                balanced=False,
-                metadata=metadata,
-                naming_pattern=None,  # Already extracted by batcher
-                target_rows=self.config.target_rows,
-                target_file_size_mb=self.config.target_file_size_mb,
-                compression=self.config.compression,
-                max_records_per_file=self.config.max_records_per_file,
-                hive_partitioning=False,
-                schema=schema,
-                write_mode=write_mode,
-                output_format=self.config.output_format,
-                fixed_width_spec=fixed_width_spec,
-                **read_options
-            )
+                # Build metadata from partition values
+                metadata = dict(zip(partition_by, partition_values))
+                metadata.update(table.get('metadata', {}))
 
-            if success:
-                # Update manifest for each file in this batch
-                with table_manifest.batch():
-                    for f in batch_files:
-                        table_manifest.update_file(
-                            f, status="success",
-                            metadata={"partition": subpath},
-                            table_root=table.get('root')
-                        )
-                print(f"    Batch [{subpath}] complete")
-            else:
-                print(f"    ERROR: Batch [{subpath}] failed")
-                with table_manifest.batch():
-                    for f in batch_files:
-                        table_manifest.update_file(
-                            f, status="failed",
-                            metadata={"partition": subpath, "error": "ingestion_failed"},
-                            table_root=table.get('root')
-                        )
+                # SUBMIT: Engine ingestion
+                success = self.engine.ingest(
+                    batch_files,
+                    batch_output,
+                    format=table_format,
+                    partition_by=None,  # Already partitioned by batcher
+                    balanced=False,
+                    metadata=metadata,
+                    naming_pattern=None,  # Already extracted by batcher
+                    target_rows=self.config.target_rows,
+                    target_file_size_mb=self.config.target_file_size_mb,
+                    compression=self.config.compression,
+                    max_records_per_file=self.config.max_records_per_file,
+                    hive_partitioning=False,
+                    schema=schema,
+                    write_mode=write_mode,
+                    output_format=self.config.output_format,
+                    fixed_width_spec=fixed_width_spec,
+                    **read_options
+                )
 
-        print(f"  Partition-aware ingestion complete for {table['name']}")
+                # COMMIT: Update manifest with batch_id
+                if success:
+                    with table_manifest.batch():
+                        for f in batch_files:
+                            table_manifest.update_file(
+                                f, status="success",
+                                metadata={"partition": subpath},
+                                table_root=table.get('root'),
+                                batch_id=batch_id
+                            )
+                    success_count += 1
+                    logger.info("Batch %d/%d [%s] - SUCCESS", batch_num, total_batches, subpath)
+                else:
+                    with table_manifest.batch():
+                        for f in batch_files:
+                            table_manifest.update_file(
+                                f, status="failed",
+                                metadata={"partition": subpath, "error": "ingestion_failed"},
+                                table_root=table.get('root'),
+                                batch_id=batch_id
+                            )
+                    failed_count += 1
+                    logger.error(
+                        "Batch %d/%d [%s] - FAILED. Files: %s",
+                        batch_num, total_batches, subpath,
+                        [os.path.basename(f) for f in batch_files]
+                    )
+
+        # Summary
+        logger.info(
+            "Partition-aware ingestion complete for %s: %d/%d batches succeeded",
+            table_name, success_count, total_batches
+        )
+        if failed_count > 0:
+            logger.warning("%d batches failed for %s", failed_count, table_name)
 
     def dry_run(self):
         """Show matched files without processing - for config verification."""
-        print(f"Dataset: {self.config.dataset_name}")
-        print(f"Engine: {self.config.engine}")
-        print(f"Tables: {len(self.config.tables)}\n")
+        logger.info("Dataset: %s", self.config.dataset_name)
+        logger.info("Engine: %s", self.config.engine)
+        logger.info("Tables: %d", len(self.config.tables))
 
         for table in self.config.tables:
-            print(f"─────────────────────────────────────────────")
-            print(f"Table: {table['name']}")
-            print(f"  Format: {table.get('format', 'csv')}")
-            print(f"  Root: {table.get('root', '(not set)')}")
-            print(f"  Path: {table.get('path')}")
+            logger.info("─────────────────────────────────────────────")
+            logger.info("Table: %s", table['name'])
+            logger.info("  Format: %s", table.get('format', 'csv'))
+            logger.info("  Root: %s", table.get('root', '(not set)'))
+            logger.info("  Path: %s", table.get('path'))
 
             # Resolve files
             path = table.get('path')
@@ -534,27 +575,25 @@ class IngestionPipeline:
             else:
                 matched_files = []
 
-            print(f"  Matched files ({len(matched_files)}):")
+            logger.info("  Matched files (%d):", len(matched_files))
             for f in matched_files[:20]:
-                print(f"    - {f}")
+                logger.info("    - %s", f)
             if len(matched_files) > 20:
-                print(f"    ... and {len(matched_files) - 20} more")
+                logger.info("    ... and %d more", len(matched_files) - 20)
             if not matched_files:
-                print(f"    (no files matched)")
+                logger.info("    (no files matched)")
 
             # Show preprocessing config if any
             preprocess = table.get('preprocess', {})
             if preprocess:
-                print(f"  Preprocessing: {preprocess}")
-
-            print()
+                logger.info("  Preprocessing: %s", preprocess)
 
     def run(self):
-        print(f"Starting ingestion for dataset: {self.config.dataset_name}")
+        logger.info("Starting ingestion for dataset: %s", self.config.dataset_name)
 
         if not self.config.tables:
-             print("WARNING: No tables found to process! Check your config path patterns and ensuring data exists.")
-             print(f"  Configured tables: {self.config.data.get('tables', [])}")
+             logger.warning("No tables found to process! Check your config path patterns and ensuring data exists.")
+             logger.warning("Configured tables: %s", self.config.data.get('tables', []))
 
         
         # Optimize: Distributed Manifest Check for Cluster Mode
@@ -571,16 +610,16 @@ class IngestionPipeline:
                      cluster_batches[root].append(t['path'])
 
             for root, paths in cluster_batches.items():
-                print(f"Distributed Check: Calculating hashes for {len(paths)} items under root '{root}' via Spark...")
+                logger.info("Distributed Check: Calculating hashes for %d items under root '%s' via Spark...", len(paths), root)
                 try:
                     results = self.engine.calculate_hashes(paths, table_root=root)
                     for res in results:
                         if not res.get('error'):
                             self._hash_cache[res['path']] = res['hash']
                         else:
-                            print(f"WARNING: Hash calculation failed for {res['path']}: {res['error']}")
+                            logger.warning("Hash calculation failed for %s: %s", res['path'], res['error'])
                 except Exception as e:
-                    print(f"ERROR: Distributed hash check failed: {e}. Falling back to driver check.")
+                    logger.error("Distributed hash check failed: %s. Falling back to driver check.", e)
 
         for table in self.config.tables:
             # Get per-table manifest for this table
@@ -596,7 +635,7 @@ class IngestionPipeline:
             if table.get('batch_strategy') == 'partition_aware':
                 input_path = self._preprocess(table)
                 if input_path != original_path:
-                    print(f"  Preprocessing complete. Ingesting from: {input_path}")
+                    logger.info("Preprocessing complete. Ingesting from: %s", input_path)
                 self._run_partition_aware(table, input_path, table_manifest)
                 continue
 
@@ -608,15 +647,15 @@ class IngestionPipeline:
             computed_hash = self._hash_cache.get(original_path)
             if not table_manifest.should_process(original_path, table_root=table.get('root'), computed_hash=computed_hash):
                  # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
-                 print(f"Skipping {table['name']} (already processed and hash matches)")
+                 logger.info("Skipping %s (already processed and hash matches)", table['name'])
                  continue
 
             input_path = self._preprocess(table)
 
             if input_path != original_path:
-                print(f"  Preprocessing complete. Ingesting from: {input_path}")
+                logger.info("Preprocessing complete. Ingesting from: %s", input_path)
 
-            print(f"Processing {table['name']}...")
+            logger.info("Processing %s...", table['name'])
 
             output_name = os.path.splitext(table['name'])[0]
             intermediate_dir = self.config.processed_dir
@@ -652,7 +691,7 @@ class IngestionPipeline:
             fixed_width_spec = table.get('fixed_width_spec')
 
             # For partitioning, DuckDB creates a directory.
-            print(f"INFO: Starting ingestion for {table['name']} from {input_path} to {output_path}")
+            logger.info("Starting ingestion for %s from %s to %s", table['name'], input_path, output_path)
             success = self.engine.ingest(
                 input_path,
                 output_path,
@@ -684,7 +723,7 @@ class IngestionPipeline:
 
                 # 3. Enrichment
                 if self.config.enrichment.get('geocode'):
-                    print(f"Enriching {table['name']} with geospatial data...")
+                    logger.info("Enriching %s with geospatial data...", table['name'])
                     if is_spark:
                         df = Enricher.enrich_spark(df)
                     else:
@@ -699,7 +738,7 @@ class IngestionPipeline:
                     from .transformations.registry import load_transformer
                     TransformerClass = load_transformer(transform_script)
                     if TransformerClass:
-                        print(f"Applying custom transformations from {transform_script}...")
+                        logger.info("Applying custom transformations from %s...", transform_script)
                         df = TransformerClass(df).transform()
                         
                         if partition_by:
@@ -739,7 +778,7 @@ class IngestionPipeline:
                     l2 = Validator.level2_check(df, self.config.validations)
                 
                 if l1['passed'] and l2['passed']:
-                    print(f"Validations passed for {table['name']}")
+                    logger.info("Validations passed for %s", table['name'])
                     
                     # Move/Copy to final directory logic ... (Simplified from previous viewing)
                     # For brevity in this replacement, retaining key parts
@@ -785,7 +824,7 @@ class IngestionPipeline:
                     else:
                         shutil.copy2(validation_target_path, final_output_path)
                     
-                    print(f"Data finalized at {final_output_path}")
+                    logger.info("Data finalized at %s", final_output_path)
 
                     # 6. Summarization and Reporting
                     summary_path = os.path.join(self.config.curated_dir, f"{table['name']}_summary.csv")
@@ -811,7 +850,7 @@ class IngestionPipeline:
                     # 7. Redivis Export
                     if self.config.redivis:
                         try:
-                            print(f"Exporting {table['name']} to Redivis...")
+                            logger.info("Exporting %s to Redivis...", table['name'])
                             exporter = RedivisExporter(self.config.redivis)
 
                             # Combine stats and regex-extracted metadata
@@ -828,10 +867,10 @@ class IngestionPipeline:
                             # Sync dataset level metadata if available
                             exporter.update_dataset_metadata(description=f"Dataset: {self.config.dataset_name}")
                         except Exception as e:
-                            print(f"Redivis export failed for {table['name']}: {e}")
+                            logger.error("Redivis export failed for %s: %s", table['name'], e)
                 else:
                     errors = l1['errors'] + l2['errors']
-                    print(f"Validations failed for {table['name']}: {errors}")
+                    logger.error("Validations failed for %s: %s", table['name'], errors)
                     table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
                     # raise Exception(...) # Optional blocking
 

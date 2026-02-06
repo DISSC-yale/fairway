@@ -208,3 +208,58 @@ class TestGetOutputSubpath:
         )
         assert "foo/bar" not in result
         assert result == "name=foo_bar"
+
+
+class TestGenerateBatchId:
+    """Tests for deterministic batch ID generation."""
+
+    def test_generate_batch_id_basic(self):
+        """Generate batch ID from table, partition key, and files."""
+        files = ["/data/CT_2023_01.csv", "/data/CT_2023_02.csv"]
+        batch_id = PartitionBatcher.generate_batch_id("claims", "state=CT/year=2023", files)
+
+        assert batch_id.startswith("claims_")
+        assert "CT" in batch_id or "2023" in batch_id
+        # Should be deterministic
+        batch_id2 = PartitionBatcher.generate_batch_id("claims", "state=CT/year=2023", files)
+        assert batch_id == batch_id2
+
+    def test_generate_batch_id_deterministic(self):
+        """Same inputs should produce same batch ID."""
+        files = ["/data/file1.csv", "/data/file2.csv"]
+        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files)
+        id2 = PartitionBatcher.generate_batch_id("table1", "part=A", files)
+        assert id1 == id2
+
+    def test_generate_batch_id_different_for_different_files(self):
+        """Different files should produce different batch IDs."""
+        files1 = ["/data/file1.csv", "/data/file2.csv"]
+        files2 = ["/data/file3.csv", "/data/file4.csv"]
+        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files1)
+        id2 = PartitionBatcher.generate_batch_id("table1", "part=A", files2)
+        assert id1 != id2
+
+    def test_generate_batch_id_different_for_different_tables(self):
+        """Different tables should produce different batch IDs."""
+        files = ["/data/file1.csv"]
+        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files)
+        id2 = PartitionBatcher.generate_batch_id("table2", "part=A", files)
+        assert id1 != id2
+
+    def test_generate_batch_id_file_order_normalized(self):
+        """File order shouldn't affect batch ID (sorted internally)."""
+        files1 = ["/data/file2.csv", "/data/file1.csv"]
+        files2 = ["/data/file1.csv", "/data/file2.csv"]
+        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files1)
+        id2 = PartitionBatcher.generate_batch_id("table1", "part=A", files2)
+        assert id1 == id2
+
+    def test_generate_batch_id_format(self):
+        """Batch ID should follow expected format."""
+        files = ["/data/CT_2023_01.csv"]
+        batch_id = PartitionBatcher.generate_batch_id("claims", "state=CT/year=2023", files)
+        # Format: {table}_{partition_key_sanitized}_{hash[:8]}
+        parts = batch_id.split("_")
+        assert parts[0] == "claims"
+        # Hash portion should be alphanumeric
+        assert len(parts[-1]) == 8
