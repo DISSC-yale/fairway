@@ -6,6 +6,9 @@ except ImportError as e:
 
 import os
 import re
+import logging
+
+logger = logging.getLogger("fairway.engines.duckdb")
 
 
 def _validate_sql_identifier(name):
@@ -175,8 +178,8 @@ class DuckDBEngine:
         columns = spec['columns']
         line_length = spec['line_length']
 
-        print(f"INFO: DuckDB reading fixed-width file from {input_path}")
-        print(f"INFO: Spec defines {len(columns)} columns, expected line length: {line_length}")
+        logger.info("DuckDB reading fixed-width file from %s", input_path)
+        logger.info("Spec defines %d columns, expected line length: %d", len(columns), line_length)
 
         # Handle glob patterns
         if '*' not in input_path and os.path.isdir(input_path):
@@ -381,7 +384,7 @@ class DuckDBEngine:
         if format in ('tsv', 'tab'):
             format = 'csv'
 
-        print(f"INFO: Inferring schema from {path} (format={format})")
+        logger.info("Inferring schema from %s (format=%s)", path, format)
 
         # Build glob pattern for file discovery
         if '*' not in path and os.path.isdir(path):
@@ -404,7 +407,7 @@ class DuckDBEngine:
         column_sources = {}  # {column_name: [files_that_have_it]}
         errors = []
 
-        print(f"INFO: Phase 1 - Discovering columns from {len(all_files)} files...")
+        logger.info("Phase 1 - Discovering columns from %d files...", len(all_files))
         for f in all_files:
             try:
                 cols = self._get_column_names_only(f, format, read_func)
@@ -417,12 +420,12 @@ class DuckDBEngine:
                 continue
 
         if errors:
-            print(f"WARNING: Failed to read {len(errors)} files during column discovery")
+            logger.warning("Failed to read %d files during column discovery", len(errors))
 
         if not all_columns:
             raise ValueError(f"No columns found in any files matching: {glob_pattern}")
 
-        print(f"INFO: Phase 1 complete - Found {len(all_columns)} unique columns across all files")
+        logger.info("Phase 1 complete - Found %d unique columns across all files", len(all_columns))
 
         # ============================================================
         # PHASE 2: Type Inference with Coverage Guarantee
@@ -451,7 +454,7 @@ class DuckDBEngine:
 
         # Sort for deterministic processing order
         sample = sorted(sample)
-        print(f"INFO: Phase 2 - Sampling {len(sample)} files to infer types for {len(all_columns)} columns")
+        logger.info("Phase 2 - Sampling %d files to infer types for %d columns", len(sample), len(all_columns))
 
         # Step 2c: Infer types from sampled files using UNION ALL BY NAME
         if len(sample) == 1:
@@ -468,7 +471,7 @@ class DuckDBEngine:
             for col_name, col_type in zip(rel.columns, rel.types):
                 column_types[col_name] = self._map_duckdb_type(col_type)
         except Exception as e:
-            print(f"WARNING: Union query failed ({e}), falling back to per-file inference")
+            logger.warning("Union query failed (%s), falling back to per-file inference", e)
             # Fallback: infer types per-file and merge
             column_types = {}
             for f in sample:
@@ -492,8 +495,8 @@ class DuckDBEngine:
                 schema_dict[col] = column_types[col]
             else:
                 # Should rarely happen with coverage guarantee, but safety fallback
-                print(f"WARNING: Column '{col}' has no type - defaulting to STRING")
+                logger.warning("Column '%s' has no type - defaulting to STRING", col)
                 schema_dict[col] = 'STRING'
 
-        print(f"INFO: Schema inference complete - {len(schema_dict)} columns")
+        logger.info("Schema inference complete - %d columns", len(schema_dict))
         return schema_dict

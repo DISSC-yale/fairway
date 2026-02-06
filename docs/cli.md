@@ -33,11 +33,13 @@ Run the ingestion pipeline (Worker Mode).
 fairway run [OPTIONS]
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--config TEXT` | Path to config file (auto-discovered if not specified) |
-| `--spark-master TEXT` | Spark master URL (e.g., `spark://host:port` or `local[*]`) |
-| `--dry-run` | Show matched files without processing |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--config TEXT` | Auto-discover | Path to config file |
+| `--spark-master TEXT` | None | Spark master URL (e.g., `spark://host:port` or `local[*]`) |
+| `--dry-run` | False | Show matched files without processing |
+| `--log-file TEXT` | `logs/fairway.jsonl` | Path to JSONL log file (empty string to disable) |
+| `--log-level` | `INFO` | Log level: DEBUG, INFO, WARNING, ERROR |
 
 **Examples:**
 ```bash
@@ -49,6 +51,12 @@ fairway run --config config/production.yaml
 
 # Dry run to see what would be processed
 fairway run --dry-run
+
+# Run with debug logging
+fairway run --log-level DEBUG
+
+# Run with custom log file
+fairway run --log-file /path/to/pipeline.jsonl
 ```
 
 ### `fairway generate-schema`
@@ -186,12 +194,73 @@ Pull (mirror) the Apptainer container from the registry.
 fairway pull
 ```
 
+### `fairway logs`
+
+View and filter structured pipeline logs (JSONL format).
+
+```bash
+fairway logs [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-f, --file TEXT` | `logs/fairway.jsonl` | Path to JSONL log file |
+| `-l, --level` | None | Filter by log level: DEBUG, INFO, WARNING, ERROR |
+| `-b, --batch TEXT` | None | Filter by batch ID (supports partial match) |
+| `-n, --last INTEGER` | 0 | Show only last N entries |
+| `--json` | False | Output raw JSON instead of formatted text |
+| `--errors` | False | Shortcut for `--level ERROR` |
+
+**Examples:**
+```bash
+# Show all logs
+fairway logs
+
+# Show last 20 entries
+fairway logs --last 20
+
+# Show only errors
+fairway logs --errors
+fairway logs --level ERROR
+
+# Filter by batch ID (partial match)
+fairway logs --batch claims_CT_2023
+
+# Raw JSON output (pipe to jq for advanced queries)
+fairway logs --json | jq 'select(.level == "ERROR")'
+
+# Custom log file
+fairway logs --file /path/to/other.jsonl
+```
+
+**Output Format:**
+```
+2026-02-06T10:00:00 [INFO] Starting ingestion for dataset: sales
+2026-02-06T10:00:01 [INFO] [sales_2023_01_abc123] Processing batch 1/3
+2026-02-06T10:00:15 [ERROR] [sales_2023_01_abc123] Batch failed: OOM
+```
+
+### `fairway manifest`
+
+Inspect and query the file manifest (tracks processed files).
+
+```bash
+fairway manifest [SUBCOMMAND] [OPTIONS]
+```
+
+Subcommands:
+- `show` - Display manifest entries
+- `query` - Query files by status or batch
+- `reset` - Reset file status (for reprocessing)
+
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FAIRWAY_TEMP` | Temporary directory for large operations | System temp |
+| `FAIRWAY_TEMP` | Temporary directory for large operations (archive extraction, scratch) | System temp |
+| `REDIVIS_API_TOKEN` | API token for Redivis data export | None (required for export) |
 | `SPARK_LOCAL_IP` | Spark driver bind address | Auto-detect |
+| `PYSPARK_SUBMIT_ARGS` | Additional Spark submit arguments | Auto-configured |
 
 ## Exit Codes
 

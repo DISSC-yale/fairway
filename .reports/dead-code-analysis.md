@@ -1,135 +1,130 @@
 # Dead Code Analysis Report
 
 **Generated**: 2026-02-05
-**Tool**: vulture + manual verification
-**Project**: fairway
-**Status**: COMPLETED
+**Tool**: vulture 2.14 + manual analysis
+**Baseline Tests**: 168 passed, 1 failed (pre-existing)
+
+---
 
 ## Summary
 
-| Category | Count | Status |
+| Severity | Count | Action |
 |----------|-------|--------|
-| SAFE to remove | 5 | REMOVED |
-| CAUTION (tested but unused in main code) | 8 | Kept |
-| FALSE POSITIVES | 11 | Kept |
-| DANGER (don't remove) | 3 | Kept |
-
-## Changes Applied
-
-Lines removed: ~120 lines of dead code
-Tests: All passing (19 passed)
+| SAFE     | 5     | Remove |
+| CAUTION  | 2     | Review |
+| FALSE POSITIVE | 8 | Ignore |
 
 ---
 
-## SAFE - Can Remove (Dead Code)
+## SAFE: Unreachable / Unused Code (Remove)
 
-These are definitively unused and safe to delete:
+### 1. Duplicate `except` block (BUG)
+**File**: `src/fairway/engines/pyspark_engine.py:9-12`
+**Confidence**: 100%
+```python
+except ImportError as e:   # Line 9 - UNREACHABLE
+    SparkSession = None
+    F = None
+    _spark_import_error = e
+```
+**Reason**: Duplicate `except` block after the first one - syntactically valid but unreachable dead code.
 
-### 1. `config_loader.py:347` - `Config.get_table_by_name()`
-- **Confidence**: 100%
-- **Reason**: Defined but never called anywhere in codebase
-- **Action**: Delete method
+### 2. Unused import `random`
+**File**: `src/fairway/engines/pyspark_engine.py:14`
+**Confidence**: 100%
+```python
+import random  # Never used in file
+```
 
-### 2. `fixed_width.py:199` - `infer_types_from_data()`
-- **Confidence**: 100%
-- **Reason**: Defined but never called; appears to be incomplete implementation
-- **Action**: Delete function (70+ lines)
+### 3. Unused import `os`
+**File**: `src/fairway/summarize.py:2`
+**Confidence**: 100%
+```python
+import os  # Never used in file
+```
 
-### 3. `engines/duckdb_engine.py:240` - `DuckDBEngine.inspect()`
-- **Confidence**: 100%
-- **Reason**: Method defined but never called
-- **Action**: Delete method
+### 4. Unused import `pd` (pandas)
+**File**: `src/fairway/validations/checks.py:1`
+**Confidence**: 100%
+```python
+import pandas as pd  # Never used - uses native DataFrame methods
+```
 
-### 4. `engines/pyspark_engine.py:387` - `PySparkEngine.inspect()`
-- **Confidence**: 100%
-- **Reason**: Method defined but never called
-- **Action**: Delete method
-
-### 5. `engines/duckdb_engine.py:227` - unused variable `overwrite_option`
-- **Confidence**: 100%
-- **Reason**: Variable assigned but never used
-- **Action**: Remove assignment
-
----
-
-## CAUTION - Tested But Unused in Main Code
-
-These methods have tests but are not used in the main application. They may be:
-- Part of a public API for future use
-- Legacy code that should be removed along with tests
-
-### ManifestManager methods (all in `manifest.py`)
-
-1. **Line 166**: `update_manifest()` - Has tests, not used in main code
-2. **Line 46**: `batch()` context manager - Has tests, not used in main code
-3. **Line 190**: `check_files_bulk()` - Has tests, not used in main code
-4. **Line 219**: `record_schema_run()` - Has tests, not used in main code
-5. **Line 235**: `is_schema_stale()` (ManifestManager) - Has tests, not used in main code
-6. **Line 244**: `get_latest_schema_run()` - Has tests, not used in main code
-7. **Line 372**: `batch()` (TableManifest) - Has tests, not used in main code
-8. **Line 540**: `list_tables()` - Has tests, not used in main code
-
-**Note**: The main code uses the newer `ManifestStore` class with methods like `update_file()`, `should_process()`, etc. The `ManifestManager` class appears to be legacy.
+### 5. Unused import `json`
+**File**: `src/fairway/exporters/redivis_exporter.py:7`
+**Confidence**: 100%
+```python
+import json  # Never used in file
+```
 
 ---
 
-## FALSE POSITIVES - Do NOT Remove
+## CAUTION: Potentially Unused (Review First)
 
-### CLI Functions (vulture 60% confidence)
-These are Click command decorators - they ARE used via CLI:
-- `cli.py:70` - `init` command
-- `cli.py:166` - `generate_data` command
-- `cli.py:175` - `generate_schema` command
-- `cli.py:429` - `stop` command
-- `cli.py:467` - `eject` command
-- `cli.py:494` - `build` command
-- `cli.py:539` - `shell` command
-- `cli.py:629` - `cancel` command
-- `cli.py:659` - `submit` command
-- `cli.py:814` - `pull` command
-- `cli.py:843` - `clean` command
+### 1. Unused function parameter `lon_series`
+**File**: `src/fairway/enrichments/geospatial.py:66`
+**Confidence**: 100%
+```python
+def get_h3(lat_series: pd.Series, lon_series: pd.Series) -> pd.Series:
+    # lon_series is declared but never used in function body
+    return lat_series.apply(lambda x: hex(random.getrandbits(60))[2:].zfill(15))
+```
+**Action**: This is a mock function. The parameter is part of the API signature but unused in the mock implementation. Keep for API consistency.
 
-### Base Class Helper Methods (`transformations/base.py`)
-These are intentional helper methods for user subclasses:
-- `rename_columns()` - Base class API
-- `cast_types()` - Base class API
-- `clean_strings()` - Base class API
+### 2. Unused import `data`
+**File**: `src/fairway/templates.py:2`
+**Confidence**: 80%
+```python
+from . import data  # Import exists but not directly referenced
+```
+**Action**: This import may be intentional to ensure the subpackage is loaded. Common pattern for package resources. Keep for safety.
 
 ---
 
-## DANGER - Do NOT Remove
+## FALSE POSITIVES (Ignore)
 
-### 1. `data/example_transform.py:13` - `ExampleTransformer`
-- **Reason**: Template file copied during `fairway init`
-- **Action**: Keep - it's a user-facing example
+These are **NOT** dead code - vulture incorrectly flagged them:
 
-### 2. Geospatial unused variables
-- **Files**: `enrichments/geospatial.py` lines 6, 13, 53, 61, 66
-- **Reason**: Function signatures match expected API, variables from pandas_udf decorators
-- **Action**: These are mock implementations - fix the code style but don't delete
-
-### 3. `pipeline.py:494` - unused `ext` variable
-- **Reason**: Part of path decomposition, may be used in future
-- **Action**: Could prefix with `_` to silence linters
+| File | Line | Variable | Reason |
+|------|------|----------|--------|
+| `geospatial.py` | 6 | `address` | Function parameter (used in callers) |
+| `geospatial.py` | 13 | `lat`, `lon`, `resolution` | Function parameters (used in callers) |
+| `geospatial.py` | 53, 61 | `addr` | Lambda parameter (used in `.apply()`) |
+| `logging_config.py` | 102 | `exc_type`, `exc_val`, `exc_tb` | Standard `__exit__` protocol |
 
 ---
 
-## Completed Actions
+## Test Files (Informational Only)
 
-### Commit 1: Dead Code Cleanup
-1. **REMOVED** `Config.get_table_by_name()` from config_loader.py
-2. **REMOVED** `infer_types_from_data()` from fixed_width.py (~70 lines)
-3. **REMOVED** `DuckDBEngine.inspect()` from duckdb_engine.py
-4. **REMOVED** `PySparkEngine.inspect()` from pyspark_engine.py (~50 lines)
-5. **REMOVED** unused `overwrite_option` variable from duckdb_engine.py
+Test files with unused fixtures (pytest fixtures are called implicitly):
 
-### Commit 2: Legacy ManifestManager Removal
-6. **REMOVED** entire `ManifestManager` class from manifest.py (~310 lines)
-7. **REMOVED** unused import and instantiation from pipeline.py
-8. **REMOVED** 17 legacy test methods from test_manifest.py (~270 lines)
+| File | Variable | Status |
+|------|----------|--------|
+| `test_cli_manifest.py` | `setup_manifest` (multiple) | Pytest fixture - OK |
+| `test_logging_config.py` | `cls` | Class method parameter - OK |
+| `test_pyspark_salting.py` | `F` import | May be unused - low priority |
+| `test_schema_evolution.py` | `pyspark`, `delta` imports | May be unused - low priority |
 
-**Total lines removed: ~700 lines**
+---
 
-## Remaining Recommendations
+## Cleanup Plan
 
-1. **Fix code style** in geospatial.py - Use `_` prefix for intentionally unused vars
+### Phase 1: Safe Removals (No Behavioral Change)
+1. Remove duplicate `except` block in `pyspark_engine.py`
+2. Remove unused `import random` from `pyspark_engine.py`
+3. Remove unused `import os` from `summarize.py`
+4. Remove unused `import pandas as pd` from `validations/checks.py`
+5. Remove unused `import json` from `redivis_exporter.py`
+
+### Phase 2: Test Verification
+- Run full test suite after each change
+- Rollback if any new failures
+
+---
+
+## Pre-existing Test Failure (Unrelated)
+
+```
+FAILED tests/test_schema_evolution.py::test_strict_schema_validation_extra_col_fail
+```
+**Reason**: Test expects `ValueError[RULE-115]` when CSV has extra columns vs schema, but Spark only emits a warning instead of raising an exception. This is a behavioral issue, not dead code related.

@@ -83,17 +83,73 @@ class TableManifest:
         return entry.get("hash") != current_hash
 
     def update_file(self, file_path, status="success", metadata=None,
-                    table_root=None, computed_hash=None, fast_check=True):
-        """Update file entry after processing."""
+                    table_root=None, computed_hash=None, fast_check=True, batch_id=None):
+        """Update file entry after processing.
+
+        Args:
+            file_path: Path to the file
+            status: Processing status ('success' or 'failed')
+            metadata: Additional metadata dict
+            table_root: Root directory for relative path calculation
+            computed_hash: Pre-computed file hash (optional)
+            fast_check: Use fast mtime+size hash (default True)
+            batch_id: Optional batch ID to store in metadata
+        """
         key = self.get_file_key(file_path, table_root)
         current_hash = computed_hash or _get_file_hash_static(file_path, fast_check)
+
+        # Merge batch_id into metadata if provided
+        final_metadata = metadata.copy() if metadata else {}
+        if batch_id:
+            final_metadata["batch_id"] = batch_id
+
         self.data["files"][key] = {
             "hash": current_hash,
             "last_processed": datetime.now().isoformat(),
             "status": status,
-            "metadata": metadata or {}
+            "metadata": final_metadata
         }
         self._save()
+
+    def query_file(self, file_key):
+        """Query a single file entry by its key.
+
+        Args:
+            file_key: The file key (relative path or basename)
+
+        Returns:
+            File entry dict or None if not found
+        """
+        return self.data["files"].get(file_key)
+
+    def query_files(self, status=None, batch_id=None):
+        """Query files with optional filters.
+
+        Args:
+            status: Filter by status ('success', 'failed')
+            batch_id: Filter by batch_id in metadata
+
+        Returns:
+            List of file entries matching filters, each with 'file_key' added
+        """
+        results = []
+        for key, entry in self.data["files"].items():
+            # Apply status filter
+            if status is not None and entry.get("status") != status:
+                continue
+
+            # Apply batch_id filter
+            if batch_id is not None:
+                entry_batch_id = entry.get("metadata", {}).get("batch_id")
+                if entry_batch_id != batch_id:
+                    continue
+
+            # Include file_key in result for identification
+            result = entry.copy()
+            result["file_key"] = key
+            results.append(result)
+
+        return results
 
     def get_pending_files(self, file_paths, table_root=None, fast_check=True):
         """Filter file_paths to only those needing processing.

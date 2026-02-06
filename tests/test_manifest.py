@@ -219,6 +219,135 @@ class TestGlobalManifest:
         assert "customers" in entry["used_by_tables"]
 
 
+class TestTableManifestQuery:
+    """Tests for query methods on TableManifest."""
+
+    def test_query_file_returns_entry(self, tmp_path):
+        """query_file() should return file entry dict for existing file."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "data.csv"
+        f1.write_text("col1,col2\n1,2\n")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success", metadata={"rows": 100})
+
+        result = tm.query_file("data.csv")
+        assert result is not None
+        assert result["status"] == "success"
+        assert result["metadata"]["rows"] == 100
+
+    def test_query_file_returns_none_for_missing(self, tmp_path):
+        """query_file() should return None for non-existent file."""
+        manifest_dir = str(tmp_path / "manifest")
+        tm = TableManifest(manifest_dir, "sales")
+
+        result = tm.query_file("nonexistent.csv")
+        assert result is None
+
+    def test_query_files_with_status_filter(self, tmp_path):
+        """query_files(status=...) should filter by status."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f3 = tmp_path / "c.csv"
+        f1.write_text("a")
+        f2.write_text("b")
+        f3.write_text("c")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success")
+        tm.update_file(str(f2), status="failed")
+        tm.update_file(str(f3), status="success")
+
+        success_files = tm.query_files(status="success")
+        assert len(success_files) == 2
+
+        failed_files = tm.query_files(status="failed")
+        assert len(failed_files) == 1
+        assert failed_files[0]["file_key"] == "b.csv"
+
+    def test_query_files_with_batch_id_filter(self, tmp_path):
+        """query_files(batch_id=...) should filter by batch_id in metadata."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f3 = tmp_path / "c.csv"
+        f1.write_text("a")
+        f2.write_text("b")
+        f3.write_text("c")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success", batch_id="batch_001")
+        tm.update_file(str(f2), status="success", batch_id="batch_002")
+        tm.update_file(str(f3), status="success", batch_id="batch_001")
+
+        batch_001_files = tm.query_files(batch_id="batch_001")
+        assert len(batch_001_files) == 2
+
+        batch_002_files = tm.query_files(batch_id="batch_002")
+        assert len(batch_002_files) == 1
+
+    def test_query_files_all_returns_all(self, tmp_path):
+        """query_files() with no filters returns all entries."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f1.write_text("a")
+        f2.write_text("b")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success")
+        tm.update_file(str(f2), status="failed")
+
+        all_files = tm.query_files()
+        assert len(all_files) == 2
+
+    def test_query_files_combined_filters(self, tmp_path):
+        """query_files() with multiple filters ANDs them together."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f2 = tmp_path / "b.csv"
+        f3 = tmp_path / "c.csv"
+        f1.write_text("a")
+        f2.write_text("b")
+        f3.write_text("c")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success", batch_id="batch_001")
+        tm.update_file(str(f2), status="failed", batch_id="batch_001")
+        tm.update_file(str(f3), status="success", batch_id="batch_002")
+
+        # success AND batch_001
+        result = tm.query_files(status="success", batch_id="batch_001")
+        assert len(result) == 1
+        assert result[0]["file_key"] == "a.csv"
+
+    def test_update_file_with_batch_id(self, tmp_path):
+        """update_file() with batch_id stores it in metadata."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f1.write_text("a")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success", batch_id="batch_001")
+
+        entry = tm.query_file("a.csv")
+        assert entry["metadata"]["batch_id"] == "batch_001"
+
+    def test_update_file_batch_id_merged_with_metadata(self, tmp_path):
+        """batch_id should be merged with other metadata."""
+        manifest_dir = str(tmp_path / "manifest")
+        f1 = tmp_path / "a.csv"
+        f1.write_text("a")
+
+        tm = TableManifest(manifest_dir, "sales")
+        tm.update_file(str(f1), status="success", batch_id="batch_001", metadata={"partition": "state=CT"})
+
+        entry = tm.query_file("a.csv")
+        assert entry["metadata"]["batch_id"] == "batch_001"
+        assert entry["metadata"]["partition"] == "state=CT"
+
+
 class TestManifestStore:
     def test_manifest_store_creates_table_manifests(self, tmp_path):
         manifest_dir = str(tmp_path / "manifest")

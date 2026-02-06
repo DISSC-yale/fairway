@@ -4,7 +4,6 @@ except ImportError:
     redivis = None
 
 import os
-import json
 
 class RedivisExporter:
     def __init__(self, config):
