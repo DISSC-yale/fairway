@@ -1,8 +1,5 @@
-import importlib.resources
-from . import data
-
 """
-These are loaded from src/fairway/data/ to ensure they're available
+Templates are loaded from src/fairway/data/ to ensure they're available
 when fairway is installed via pip.
 
 Note on Templates Policy:
@@ -12,10 +9,7 @@ templates as strings in this file.
 """
 
 import sys
-if sys.version_info < (3, 9):
-    import importlib.resources as pkg_resources
-else:
-    import importlib.resources as pkg_resources
+import importlib.resources as pkg_resources
 
 def _read_data_file(filename):
     """Read a file from the fairway.data package."""

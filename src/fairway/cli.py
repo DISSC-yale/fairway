@@ -499,6 +499,88 @@ def run(config, spark_master, dry_run, log_file, log_level):
     pipeline.run()
     click.echo("Pipeline execution completed successfully.")
 
+
+@main.command()
+@click.option('--file', '-f', 'log_file', default='logs/fairway.jsonl', help='Path to JSONL log file.')
+@click.option('--level', '-l', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Filter by log level.')
+@click.option('--batch', '-b', 'batch_id', help='Filter by batch ID (supports partial match).')
+@click.option('--last', '-n', 'last_n', type=int, default=0, help='Show only last N entries.')
+@click.option('--json', 'output_json', is_flag=True, help='Output raw JSON instead of formatted text.')
+@click.option('--errors', is_flag=True, help='Shortcut for --level ERROR.')
+def logs(log_file, level, batch_id, last_n, output_json, errors):
+    """View and filter pipeline logs.
+
+    Examples:
+
+        fairway logs                     # Show all logs
+        fairway logs --last 20           # Show last 20 entries
+        fairway logs --level ERROR       # Show only errors
+        fairway logs --errors            # Shortcut for --level ERROR
+        fairway logs --batch batch_001   # Filter by batch ID
+        fairway logs --json              # Raw JSON output (pipe to jq)
+    """
+    import json as json_module
+
+    if errors:
+        level = 'ERROR'
+
+    if not os.path.exists(log_file):
+        raise click.ClickException(f"Log file not found: {log_file}")
+
+    # Read all entries
+    entries = []
+    with open(log_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json_module.loads(line)
+                entries.append(entry)
+            except json_module.JSONDecodeError:
+                continue  # Skip malformed lines
+
+    # Apply filters
+    if level:
+        entries = [e for e in entries if e.get('level', '').upper() == level.upper()]
+
+    if batch_id:
+        entries = [e for e in entries if batch_id in e.get('batch_id', '')]
+
+    # Apply --last N
+    if last_n > 0:
+        entries = entries[-last_n:]
+
+    # Output
+    if not entries:
+        click.echo("No matching log entries found.")
+        return
+
+    for entry in entries:
+        if output_json:
+            click.echo(json_module.dumps(entry))
+        else:
+            # Formatted output
+            ts = entry.get('timestamp', '')[:19]  # Truncate microseconds
+            lvl = entry.get('level', 'INFO')
+            msg = entry.get('message', '')
+            bid = entry.get('batch_id', '')
+
+            # Color by level
+            level_colors = {
+                'DEBUG': 'cyan',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+            }
+            color = level_colors.get(lvl, 'white')
+
+            if bid:
+                click.echo(f"{ts} [{click.style(lvl, fg=color)}] [{bid}] {msg}")
+            else:
+                click.echo(f"{ts} [{click.style(lvl, fg=color)}] {msg}")
+
+
 @main.command()
 def eject():
     """Eject container definitions (Apptainer.def, Dockerfile) to the current directory."""
