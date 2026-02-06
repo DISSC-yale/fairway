@@ -19,6 +19,13 @@ dynamic_allocation:
 
 # Spark configuration overrides
 spark_conf:
+  # Executor resources - must fit within the SLURM allocation above
+  # With 2 nodes x 32 cpus x 200G, at 4 cores/executor you get 8 executors/node
+  # 200G / 8 executors = 25G max per executor; use 20g + 4g overhead = 24g
+  # Increase if you see OOM errors when reading large parquet files
+  spark.executor.memory: "20g"
+  spark.executor.memoryOverhead: "4g"
+  spark.executor.cores: "4"
   # Disable whole-stage codegen for wide schemas (400+ columns)
   # Prevents JVM method size limit errors with voter files
   spark.sql.codegen.wholeStage: "false"
