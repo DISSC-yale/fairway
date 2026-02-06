@@ -39,9 +39,9 @@ echo "  - Uses random row sampling (default 10%)"
 echo "  - Merges schemas across all files (union_by_name)"
 echo ""
 
-# Run schema generation - CLI will use engine from config (defaults to DuckDB)
-# No --spark-master means DuckDB will be used
-fairway generate-schema --config config/fairway.yaml --internal-run
+# Run schema generation - force DuckDB regardless of config engine setting
+# Schema inference doesn't need a Spark cluster
+fairway generate-schema --config config/fairway.yaml --engine duckdb --internal-run
 
 echo ""
 echo "Schema generation complete. Check output for generated schema files."
