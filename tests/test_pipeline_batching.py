@@ -46,8 +46,8 @@ class TestPartitionAwarePipeline:
             'dataset_name': 'test_batching',
             'engine': 'duckdb',
             'storage': {
-                'intermediate_dir': str(intermediate),
-                'final_dir': str(final),
+                'processed': str(intermediate),
+                'curated': str(final),
             },
             'tables': [table_config],
         }
@@ -153,8 +153,8 @@ class TestPartitionAwarePipeline:
             'dataset_name': 'test_bulk',
             'engine': 'duckdb',
             'storage': {
-                'intermediate_dir': str(intermediate),
-                'final_dir': str(final),
+                'processed': str(intermediate),
+                'curated': str(final),
             },
             'tables': [{
                 'name': 'bulk_claims',

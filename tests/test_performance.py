@@ -22,7 +22,7 @@ class TestPerformanceConfig:
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
         from fairway.config_loader import Config
@@ -37,7 +37,7 @@ class TestPerformanceConfig:
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)},
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)},
             'performance': {'salting': True}
         }))
 
@@ -53,7 +53,7 @@ class TestPerformanceConfig:
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
         from fairway.config_loader import Config
@@ -68,7 +68,7 @@ class TestPerformanceConfig:
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)},
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)},
             'performance': {'target_file_size_mb': 256}
         }))
 
@@ -84,7 +84,7 @@ class TestPerformanceConfig:
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
         from fairway.config_loader import Config
@@ -99,7 +99,7 @@ class TestPerformanceConfig:
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
         from fairway.config_loader import Config
@@ -114,7 +114,7 @@ class TestPerformanceConfig:
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)},
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)},
             'performance': {'max_records_per_file': 2000000}
         }))
 
@@ -123,23 +123,23 @@ class TestPerformanceConfig:
 
         assert config.max_records_per_file == 2000000, "max_records_per_file should be configurable"
 
-    def test_scratch_dir_not_set_by_default(self, tmp_path):
-        """D.4: scratch_dir should be None by default."""
+    def test_temp_dir_not_set_by_default(self, tmp_path):
+        """temp_dir should be None by default."""
         config_file = tmp_path / "fairway.yaml"
         config_file.write_text(yaml.dump({
             'dataset_name': 'test',
             'engine': 'duckdb',
             'tables': [],
-            'storage': {'intermediate_dir': str(tmp_path), 'final_dir': str(tmp_path)}
+            'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
         from fairway.config_loader import Config
         config = Config(str(config_file))
 
-        assert config.scratch_dir is None, "scratch_dir should be None by default"
+        assert config.temp_dir is None, "temp_dir should be None by default"
 
-    def test_scratch_dir_configured(self, tmp_path):
-        """D.4: scratch_dir can be configured."""
+    def test_temp_dir_configured(self, tmp_path):
+        """temp_dir can be configured via storage.temp."""
         scratch = tmp_path / "scratch"
         scratch.mkdir()
 
@@ -149,19 +149,19 @@ class TestPerformanceConfig:
             'engine': 'duckdb',
             'tables': [],
             'storage': {
-                'intermediate_dir': str(tmp_path),
-                'final_dir': str(tmp_path),
-                'scratch_dir': str(scratch)
+                'processed': str(tmp_path),
+                'curated': str(tmp_path),
+                'temp': str(scratch)
             }
         }))
 
         from fairway.config_loader import Config
         config = Config(str(config_file))
 
-        assert config.scratch_dir == str(scratch), "scratch_dir should be configurable"
+        assert config.temp_dir == str(scratch), "temp_dir should be configurable"
 
-    def test_scratch_dir_expands_env_vars(self, tmp_path):
-        """D.4: scratch_dir should expand environment variables."""
+    def test_temp_dir_expands_env_vars(self, tmp_path):
+        """temp_dir should expand environment variables."""
         os.environ['TEST_SCRATCH_USER'] = 'testuser'
 
         config_file = tmp_path / "fairway.yaml"
@@ -170,17 +170,17 @@ class TestPerformanceConfig:
             'engine': 'duckdb',
             'tables': [],
             'storage': {
-                'intermediate_dir': str(tmp_path),
-                'final_dir': str(tmp_path),
-                'scratch_dir': '/scratch/$TEST_SCRATCH_USER/fairway'
+                'processed': str(tmp_path),
+                'curated': str(tmp_path),
+                'temp': '/scratch/$TEST_SCRATCH_USER/fairway'
             }
         }))
 
         from fairway.config_loader import Config
         config = Config(str(config_file))
 
-        assert config.scratch_dir == '/scratch/testuser/fairway', \
-            "scratch_dir should expand environment variables"
+        assert config.temp_dir == '/scratch/testuser/fairway', \
+            "temp_dir should expand environment variables"
 
         # Cleanup
         del os.environ['TEST_SCRATCH_USER']

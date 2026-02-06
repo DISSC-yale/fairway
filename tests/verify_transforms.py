@@ -13,8 +13,8 @@ def setup():
     os.makedirs(TEST_DIR)
     os.makedirs(os.path.join(TEST_DIR, "data/raw"), exist_ok=True)
     os.makedirs(os.path.join(TEST_DIR, "src/transformations"), exist_ok=True)
-    os.makedirs(os.path.join(TEST_DIR, "data/intermediate"), exist_ok=True)
-    os.makedirs(os.path.join(TEST_DIR, "data/final"), exist_ok=True)
+    os.makedirs(os.path.join(TEST_DIR, "data/processed"), exist_ok=True)
+    os.makedirs(os.path.join(TEST_DIR, "data/curated"), exist_ok=True)
 
     # 1. Create Data
     df_a = pd.DataFrame({"id": [1, 2], "val": ["a", "b"]})
@@ -54,9 +54,9 @@ dataset_name: "test_multi_transform"
 engine: "duckdb"
 
 storage:
-  raw_dir: "data/raw"
-  intermediate_dir: "data/intermediate"
-  final_dir: "data/final"
+  raw: "data/raw"
+  processed: "data/processed"
+  curated: "data/curated"
 
 sources:
   - name: "source_a"

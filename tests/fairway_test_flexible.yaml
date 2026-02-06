@@ -4,8 +4,8 @@ engine: "duckdb"
 
 storage:
   base_dir: "tests/output"
-  intermediate_dir: "tests/output/intermediate"
-  final_dir: "tests/output/final"
+  processed: "tests/output/intermediate"
+  curated: "tests/output/final"
 
 data:
   sources:

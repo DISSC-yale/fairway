@@ -9,30 +9,26 @@ dataset_name: "{name}"
 # Default is 'duckdb' if not specified.
 engine: "{engine_type}"
 
-# Storage Configuration
+# Storage Configuration (Medallion Layout)
+# Directories are derived from root: root/raw, root/processed, root/curated
+# Override any layer explicitly by uncommenting below.
 storage:
-  # Directory for raw input files
-  raw_dir: "data/raw"
+  # Output root directory (default: "data")
+  root: "data"
 
-  # Directory for intermediate processed files (e.g., converted to Parquet)
-  intermediate_dir: "data/intermediate"
-
-  # Directory for final output files
-  final_dir: "data/final"
+  # Override individual layers (uncomment to customize):
+  # raw: "/custom/path/raw"
+  # processed: "/fast/ssd/staging"
+  # curated: "/shared/nfs/final"
 
   # Output format for processed files
   # Options: 'parquet' (default), 'delta' (requires pyspark + delta-spark)
   format: "parquet"
 
-  # Optional: Fast scratch storage for intermediate writes (e.g., on HPC clusters)
-  # Useful when intermediate_dir is on slow/quota-limited storage.
+  # Optional: Temporary storage for intermediate writes (e.g., unzipping, scratch on HPC)
   # Supports environment variables like $USER.
-  # scratch_dir: "/scratch/$USER/fairway"
-
-# Global temporary location for large intermediate writes (e.g. unzipping, archive extraction)
-# Use a high-capacity path here if you encounter disk quota issues.
-# Priority: FAIRWAY_TEMP env var > temp_location config > storage.temp_location
-# temp_location: "/tmp/fairway_temp"
+  # Priority: FAIRWAY_TEMP env var > storage.temp
+  # temp: "/scratch/$USER/fairway"
 
 # ─────────────────────────────────────────────────────────────
 # Tables - define your data sources
