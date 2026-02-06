@@ -438,15 +438,24 @@ def start(nodes, cpus, mem, time, account, partition):
     time = time or spark_defaults.get('time', '24:00:00')
 
     from .engines.slurm_cluster import SlurmSparkManager
+
+    # Get dynamic allocation settings
+    dynamic_alloc = spark_defaults.get('dynamic_allocation', {})
+
+    # Get arbitrary spark_conf settings (e.g., spark.executor.memory)
+    spark_conf = spark_defaults.get('spark_conf', {})
+
     spark_cfg = {
         'slurm_nodes': nodes,
         'slurm_cpus_per_node': cpus,
         'slurm_mem_per_node': mem,
         'slurm_account': account,
         'slurm_time': time,
-        'slurm_partition': partition
+        'slurm_partition': partition,
+        'dynamic_allocation': dynamic_alloc,
+        'spark_conf': spark_conf,
     }
-    
+
     spark_manager = SlurmSparkManager(spark_cfg)
     spark_master = spark_manager.start_cluster()
     click.echo(f"Spark cluster started. Master URL: {spark_master}")
