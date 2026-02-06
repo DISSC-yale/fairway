@@ -67,8 +67,8 @@ class ArchiveCache:
         # Create short hash for directory name
         short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
 
-        # Use temp_location from config, or default to .fairway_cache
-        base_dir = self.config.temp_location or os.path.join(os.getcwd(), '.fairway_cache')
+        # Use temp_dir from config, or default to .fairway_cache
+        base_dir = self.config.temp_dir or os.path.join(os.getcwd(), '.fairway_cache')
         return os.path.join(base_dir, 'archives', f"{archive_name}_{short_hash}")
 
     def _safe_extract_path(self, dest_dir, member_path):
@@ -191,7 +191,7 @@ class IngestionPipeline:
             print(f"  File filter: {include_pattern}")
 
         # Temp Location Support
-        temp_loc = self.config.temp_location
+        temp_loc = self.config.temp_dir
         batch_dir = None
         if temp_loc:
              import hashlib
@@ -412,7 +412,7 @@ class IngestionPipeline:
         write_mode = table.get('write_mode', 'overwrite')
         fixed_width_spec = table.get('fixed_width_spec')
         output_name = os.path.splitext(table['name'])[0]
-        intermediate_dir = self.config.scratch_dir or self.config.storage['intermediate_dir']
+        intermediate_dir = self.config.temp_dir or self.config.processed_dir
         base_output = os.path.join(intermediate_dir, output_name)
 
         # 1. Resolve all input files from glob
@@ -619,8 +619,7 @@ class IngestionPipeline:
             print(f"Processing {table['name']}...")
 
             output_name = os.path.splitext(table['name'])[0]
-            # D.4: Use scratch_dir for intermediate files if configured
-            intermediate_dir = self.config.scratch_dir or self.config.storage['intermediate_dir']
+            intermediate_dir = self.config.temp_dir or self.config.processed_dir
             output_path = os.path.join(intermediate_dir, output_name)
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -708,7 +707,7 @@ class IngestionPipeline:
                         else:
                             processed_basename = f"{output_name}_processed.parquet"
                             
-                        processed_path = os.path.join(self.config.storage['intermediate_dir'], processed_basename)
+                        processed_path = os.path.join(self.config.processed_dir, processed_basename)
                         
                         if is_spark:
                              # Spark writes are actions.
@@ -750,7 +749,7 @@ class IngestionPipeline:
                     else:
                         final_basename = f"{output_name}.parquet"
 
-                    final_output_path = os.path.join(self.config.storage['final_dir'], final_basename)
+                    final_output_path = os.path.join(self.config.curated_dir, final_basename)
                     
                     # Logic for write_mode in finalization?
                     # If append, we shouldn't wipe the final directory if it exists.
@@ -789,8 +788,8 @@ class IngestionPipeline:
                     print(f"Data finalized at {final_output_path}")
 
                     # 6. Summarization and Reporting
-                    summary_path = os.path.join(self.config.storage['final_dir'], f"{table['name']}_summary.csv")
-                    report_path = os.path.join(self.config.storage['final_dir'], f"{table['name']}_report.md")
+                    summary_path = os.path.join(self.config.curated_dir, f"{table['name']}_summary.csv")
+                    report_path = os.path.join(self.config.curated_dir, f"{table['name']}_report.md")
                     
                     if is_spark:
                          summary_df = Summarizer.generate_summary_spark(df, summary_path)
