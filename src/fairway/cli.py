@@ -479,6 +479,7 @@ def run(config, spark_master, dry_run, log_file, log_level):
     This command executes the pipeline directly on the current machine.
     For HPC submission, use `fairway submit` instead.
     """
+    import yaml
     from .config_loader import Config
     from .pipeline import IngestionPipeline
     from .logging_config import setup_logging
@@ -497,14 +498,22 @@ def run(config, spark_master, dry_run, log_file, log_level):
 
     cfg = Config(config)
 
+    # Load spark_conf from spark.yaml for executor settings
+    spark_conf = None
+    spark_yaml_path = 'config/spark.yaml'
+    if os.path.exists(spark_yaml_path):
+        with open(spark_yaml_path, 'r') as f:
+            spark_defaults = yaml.safe_load(f) or {}
+            spark_conf = spark_defaults.get('spark_conf', {})
+
     if dry_run:
         click.echo(f"DRY RUN - showing matched files for config: {config}\n")
-        pipeline = IngestionPipeline(config, spark_master=spark_master)
+        pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
         pipeline.dry_run()
         return
 
     click.echo(f"Starting pipeline execution using config: {config}")
-    pipeline = IngestionPipeline(config, spark_master=spark_master)
+    pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
     pipeline.run()
     click.echo("Pipeline execution completed successfully.")
 

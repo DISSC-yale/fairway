@@ -120,22 +120,22 @@ class ArchiveCache:
 
 
 class IngestionPipeline:
-    def __init__(self, config_path, spark_master=None, engine_override=None):
+    def __init__(self, config_path, spark_master=None, engine_override=None, spark_conf=None):
         logger.debug("Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
-        self.engine = self._get_engine(spark_master, engine_override)
+        self.engine = self._get_engine(spark_master, engine_override, spark_conf)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
 
-    def _get_engine(self, spark_master=None, engine_override=None):
+    def _get_engine(self, spark_master=None, engine_override=None, spark_conf=None):
         # CLI override takes precedence over config
         engine_type = engine_override or (self.config.engine.lower() if self.config.engine else 'duckdb')
 
         if engine_type in ['pyspark', 'spark']:
             try:
                 from .engines.pyspark_engine import PySparkEngine
-                return PySparkEngine(spark_master)
+                return PySparkEngine(spark_master, spark_conf=spark_conf)
             except ImportError:
                 sys.exit("Error: PySpark is not installed. Please install using `pip install fairway[spark]`")
         elif engine_type == 'duckdb':
