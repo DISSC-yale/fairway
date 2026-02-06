@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
+from .batcher import PartitionBatcher
 from .engines.duckdb_engine import DuckDBEngine
 from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
@@ -66,8 +67,8 @@ class ArchiveCache:
         # Create short hash for directory name
         short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
 
-        # Use temp_location from config, or default to .fairway_cache
-        base_dir = self.config.temp_location or os.path.join(os.getcwd(), '.fairway_cache')
+        # Use temp_dir from config, or default to .fairway_cache
+        base_dir = self.config.temp_dir or os.path.join(os.getcwd(), '.fairway_cache')
         return os.path.join(base_dir, 'archives', f"{archive_name}_{short_hash}")
 
     def _safe_extract_path(self, dest_dir, member_path):
@@ -115,17 +116,18 @@ class ArchiveCache:
 
 
 class IngestionPipeline:
-    def __init__(self, config_path, spark_master=None):
+    def __init__(self, config_path, spark_master=None, engine_override=None):
         print("DEBUG: Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
-        self.engine = self._get_engine(spark_master)
+        self.engine = self._get_engine(spark_master, engine_override)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
 
-    def _get_engine(self, spark_master=None):
-        engine_type = self.config.engine.lower() if self.config.engine else 'duckdb'
-        
+    def _get_engine(self, spark_master=None, engine_override=None):
+        # CLI override takes precedence over config
+        engine_type = engine_override or (self.config.engine.lower() if self.config.engine else 'duckdb')
+
         if engine_type in ['pyspark', 'spark']:
             try:
                 from .engines.pyspark_engine import PySparkEngine
@@ -136,7 +138,7 @@ class IngestionPipeline:
             from .engines.duckdb_engine import DuckDBEngine
             return DuckDBEngine()
         else:
-            raise ValueError(f"Unknown engine: {self.config.engine}. Supported engines: 'duckdb', 'spark'") 
+            raise ValueError(f"Unknown engine: {engine_type}. Supported engines: 'duckdb', 'spark'") 
 
     def _preprocess(self, table):
         """
@@ -189,7 +191,7 @@ class IngestionPipeline:
             print(f"  File filter: {include_pattern}")
 
         # Temp Location Support
-        temp_loc = self.config.temp_location
+        temp_loc = self.config.temp_dir
         batch_dir = None
         if temp_loc:
              import hashlib
@@ -252,6 +254,9 @@ class IngestionPipeline:
              
              if action == 'unzip':
                  if zipfile.is_zipfile(file_path):
+                     # Skip if already extracted (check for any files in output_dir)
+                     if os.path.exists(output_dir) and os.listdir(output_dir):
+                         return output_dir
                      with zipfile.ZipFile(file_path, 'r') as zip_ref:
                          zip_ref.extractall(output_dir)
                      return output_dir
@@ -281,7 +286,10 @@ class IngestionPipeline:
         
         if mode == 'cluster':
              if not hasattr(self.engine, 'distribute_task'):
-                 raise ValueError("execution_mode='cluster' requires a distributed engine (PySpark).")
+                 print("WARNING: execution_mode='cluster' requested but engine doesn't support it. Falling back to 'driver' mode.")
+                 mode = 'driver'
+
+        if mode == 'cluster':
              
              # Dispatch to cluster
              # Note: For custom scripts, ensure the script file is accessible on workers
@@ -389,6 +397,108 @@ class IngestionPipeline:
         # If single archive, return glob pattern
         return result_path
 
+    def _run_partition_aware(self, table, input_path, table_manifest):
+        """Execute partition-aware batched ingestion.
+
+        Groups files by partition values extracted from naming_pattern,
+        then calls the engine once per batch writing directly to the
+        correct Hive-style partition directory (no shuffle required).
+        """
+        naming_pattern = table['naming_pattern']
+        partition_by = table.get('partition_by', [])
+        table_format = table.get('format', 'csv')
+        schema = table.get('schema')
+        read_options = table.get('read_options', {})
+        write_mode = table.get('write_mode', 'overwrite')
+        fixed_width_spec = table.get('fixed_width_spec')
+        output_name = os.path.splitext(table['name'])[0]
+        intermediate_dir = self.config.processed_dir
+        base_output = os.path.join(intermediate_dir, output_name)
+
+        # 1. Resolve all input files from glob
+        all_files = sorted(glob.glob(input_path, recursive=True))
+        all_files = [f for f in all_files if os.path.isfile(f)]
+
+        if not all_files:
+            print(f"  WARNING: No files found matching {input_path}")
+            return
+
+        # 2. Filter through manifest -> pending files only
+        pending = table_manifest.get_pending_files(all_files, table.get('root'))
+        if not pending:
+            print(f"  Skipping {table['name']} - all {len(all_files)} files already processed")
+            return
+
+        # 3. Group into partition-aware batches
+        batches = PartitionBatcher.group_files(pending, naming_pattern, partition_by)
+
+        # Handle unmatched files
+        unmatched = batches.pop(None, [])
+        if unmatched:
+            print(f"  WARNING: {len(unmatched)} files didn't match naming_pattern and will be skipped:")
+            for f in unmatched[:5]:
+                print(f"    - {os.path.basename(f)}")
+            if len(unmatched) > 5:
+                print(f"    ... and {len(unmatched) - 5} more")
+
+        print(f"  Organized {len(pending) - len(unmatched)} files into {len(batches)} partition batches")
+
+        # 4. Execute each batch
+        for partition_values, batch_files in batches.items():
+            subpath = PartitionBatcher.get_output_subpath(partition_by, partition_values)
+            batch_dir = os.path.join(base_output, subpath)
+            os.makedirs(batch_dir, exist_ok=True)
+            # DuckDB needs a file path (not dir) when partition_by=None
+            batch_output = os.path.join(batch_dir, "part-0.parquet")
+
+            # Build metadata from partition values
+            metadata = dict(zip(partition_by, partition_values))
+            metadata.update(table.get('metadata', {}))
+
+            print(f"  Batch [{subpath}]: {len(batch_files)} files -> {batch_output}")
+
+            success = self.engine.ingest(
+                batch_files,
+                batch_output,
+                format=table_format,
+                partition_by=None,  # Already partitioned by batcher
+                balanced=False,
+                metadata=metadata,
+                naming_pattern=None,  # Already extracted by batcher
+                target_rows=self.config.target_rows,
+                target_file_size_mb=self.config.target_file_size_mb,
+                compression=self.config.compression,
+                max_records_per_file=self.config.max_records_per_file,
+                hive_partitioning=False,
+                schema=schema,
+                write_mode=write_mode,
+                output_format=self.config.output_format,
+                fixed_width_spec=fixed_width_spec,
+                **read_options
+            )
+
+            if success:
+                # Update manifest for each file in this batch
+                with table_manifest.batch():
+                    for f in batch_files:
+                        table_manifest.update_file(
+                            f, status="success",
+                            metadata={"partition": subpath},
+                            table_root=table.get('root')
+                        )
+                print(f"    Batch [{subpath}] complete")
+            else:
+                print(f"    ERROR: Batch [{subpath}] failed")
+                with table_manifest.batch():
+                    for f in batch_files:
+                        table_manifest.update_file(
+                            f, status="failed",
+                            metadata={"partition": subpath, "error": "ingestion_failed"},
+                            table_root=table.get('root')
+                        )
+
+        print(f"  Partition-aware ingestion complete for {table['name']}")
+
     def dry_run(self):
         """Show matched files without processing - for config verification."""
         print(f"Dataset: {self.config.dataset_name}")
@@ -480,6 +590,17 @@ class IngestionPipeline:
             # Preprocess returns a modified path (e.g. to temp unzipped files)
             # Table dict is unmodified, we just change the variable we use for input
             original_path = table['path']
+
+            # Partition-aware batching: skip whole-table manifest check,
+            # do per-file checking instead in _run_partition_aware()
+            if table.get('batch_strategy') == 'partition_aware':
+                input_path = self._preprocess(table)
+                if input_path != original_path:
+                    print(f"  Preprocessing complete. Ingesting from: {input_path}")
+                self._run_partition_aware(table, input_path, table_manifest)
+                continue
+
+            # --- Bulk mode (default) ---
             # Check manifest BEFORE preprocessing to avoid expensive work (unzipping) if table hasn't changed
             # Using fsspec for URI-aware existance check would be better,
             # for now keeping it simple but URI-ready in engines
@@ -498,8 +619,7 @@ class IngestionPipeline:
             print(f"Processing {table['name']}...")
 
             output_name = os.path.splitext(table['name'])[0]
-            # D.4: Use scratch_dir for intermediate files if configured
-            intermediate_dir = self.config.scratch_dir or self.config.storage['intermediate_dir']
+            intermediate_dir = self.config.processed_dir
             output_path = os.path.join(intermediate_dir, output_name)
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -587,7 +707,7 @@ class IngestionPipeline:
                         else:
                             processed_basename = f"{output_name}_processed.parquet"
                             
-                        processed_path = os.path.join(self.config.storage['intermediate_dir'], processed_basename)
+                        processed_path = os.path.join(self.config.processed_dir, processed_basename)
                         
                         if is_spark:
                              # Spark writes are actions.
@@ -629,7 +749,7 @@ class IngestionPipeline:
                     else:
                         final_basename = f"{output_name}.parquet"
 
-                    final_output_path = os.path.join(self.config.storage['final_dir'], final_basename)
+                    final_output_path = os.path.join(self.config.curated_dir, final_basename)
                     
                     # Logic for write_mode in finalization?
                     # If append, we shouldn't wipe the final directory if it exists.
@@ -668,8 +788,8 @@ class IngestionPipeline:
                     print(f"Data finalized at {final_output_path}")
 
                     # 6. Summarization and Reporting
-                    summary_path = os.path.join(self.config.storage['final_dir'], f"{table['name']}_summary.csv")
-                    report_path = os.path.join(self.config.storage['final_dir'], f"{table['name']}_report.md")
+                    summary_path = os.path.join(self.config.curated_dir, f"{table['name']}_summary.csv")
+                    report_path = os.path.join(self.config.curated_dir, f"{table['name']}_report.md")
                     
                     if is_spark:
                          summary_df = Summarizer.generate_summary_spark(df, summary_path)

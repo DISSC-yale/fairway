@@ -27,7 +27,17 @@ class Config:
             raise ValueError(f"Invalid engine: '{self.engine}'. Must be one of {valid_engines}")
 
         self.storage = self.data.get('storage', {})
-        
+
+        # Medallion directory layout: raw / processed / curated
+        self.output_root = self.storage.get('root', 'data')
+        self.raw_dir = self.storage.get('raw', os.path.join(self.output_root, 'raw'))
+        self.processed_dir = self.storage.get('processed', os.path.join(self.output_root, 'processed'))
+        self.curated_dir = self.storage.get('curated', os.path.join(self.output_root, 'curated'))
+
+        # Unified temp directory: FAIRWAY_TEMP env > storage.temp — expand env vars
+        temp_raw = os.environ.get('FAIRWAY_TEMP') or self.storage.get('temp')
+        self.temp_dir = os.path.expandvars(temp_raw) if temp_raw else None
+
         # Support both root-level 'tables' and 'data: tables' structures
         raw_tables = self.data.get('tables')
         if not raw_tables:
@@ -38,14 +48,9 @@ class Config:
         self.validations = self.data.get('validations', {})
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
-        # Temporary location for global file writes
-        # Priority: Env Var > Root Config > Storage Config
-        self.temp_location = os.environ.get('FAIRWAY_TEMP') or \
-                             self.data.get('temp_location') or \
-                             self.storage.get('temp_location')
         self.redivis = self.data.get('redivis', {})
         self.output_format = self.storage.get('format', 'parquet').lower()
-        
+
         # Performance/Optimizations
         performance = self.data.get('performance', {})
         self.target_rows = performance.get('target_rows') or self.data.get('target_rows', 500000)
@@ -54,10 +59,6 @@ class Config:
         self.compression = performance.get('compression', 'snappy')  # D.2: Default compression
         # Direct control over max records per file (overrides target_file_size_mb heuristic)
         self.max_records_per_file = performance.get('max_records_per_file')
-
-        # Scratch directory for intermediate files (D.4)
-        scratch_dir_raw = self.storage.get('scratch_dir')
-        self.scratch_dir = os.path.expandvars(scratch_dir_raw) if scratch_dir_raw else None
 
 
 
@@ -180,7 +181,8 @@ class Config:
                     'root': tbl.get('root'),
                     'archives': archives_pattern,
                     'files': files_pattern,
-                    'fixed_width_spec': fixed_width_spec
+                    'fixed_width_spec': fixed_width_spec,
+                    'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                 })
 
             else:
@@ -247,7 +249,8 @@ class Config:
                         'write_mode': tbl.get('write_mode', 'overwrite'),
                         'archives': archives_pattern,
                         'files': files_pattern,
-                        'fixed_width_spec': fixed_width_spec
+                        'fixed_width_spec': fixed_width_spec,
+                        'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                     })
         return expanded
 
@@ -323,6 +326,30 @@ class Config:
                 root_path = os.path.join(config_dir, root) if not os.path.isabs(root) else root
                 if not os.path.isdir(root_path):
                     errors.append(f"{prefix}: Root directory does not exist: {root}")
+
+            # batch_strategy validation
+            batch_strategy = table.get('batch_strategy', 'bulk')
+            valid_strategies = {'bulk', 'partition_aware'}
+            if batch_strategy not in valid_strategies:
+                errors.append(f"{prefix}: Invalid batch_strategy '{batch_strategy}'. Must be one of {valid_strategies}")
+
+            if batch_strategy == 'partition_aware':
+                naming_pattern = table.get('naming_pattern')
+                partition_by = table.get('partition_by', [])
+
+                if not naming_pattern:
+                    errors.append(f"{prefix}: batch_strategy 'partition_aware' requires 'naming_pattern'")
+                if not partition_by:
+                    errors.append(f"{prefix}: batch_strategy 'partition_aware' requires 'partition_by'")
+
+                # Verify all partition_by keys appear as named groups in naming_pattern
+                if naming_pattern and partition_by:
+                    regex_groups = set(re.findall(r'\?P<([^>]+)>', naming_pattern))
+                    for key in partition_by:
+                        if key not in regex_groups:
+                            errors.append(
+                                f"{prefix}: partition_by key '{key}' not found as named group in naming_pattern"
+                            )
 
             # Glob pattern must match at least one file
             if path and '*' in path:

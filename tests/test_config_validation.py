@@ -93,3 +93,103 @@ def test_invalid_table_format():
         import shutil
         if os.path.exists('data_invalid'):
             shutil.rmtree('data_invalid')
+
+
+class TestBatchStrategyValidation:
+    """Validation tests for the batch_strategy config key."""
+
+    def _write_config(self, tmp_path, tables):
+        config_path = str(tmp_path / "config.yaml")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        # Create dummy files so path validation passes
+        (data_dir / "CT_2023_01.csv").write_text("a,b\n1,2")
+        (data_dir / "NY_2023_01.csv").write_text("a,b\n3,4")
+
+        config = {
+            'dataset_name': 'test',
+            'engine': 'duckdb',
+            'tables': tables
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f)
+        return config_path
+
+    def test_valid_partition_aware_config(self, tmp_path):
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "*.csv"),
+            'format': 'csv',
+            'naming_pattern': r'(?P<state>[A-Z]{2})_(?P<year>\d{4})',
+            'partition_by': ['state', 'year'],
+            'batch_strategy': 'partition_aware',
+        }])
+        config = Config(config_path)
+        assert config.tables[0]['batch_strategy'] == 'partition_aware'
+
+    def test_default_batch_strategy_is_bulk(self, tmp_path):
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "*.csv"),
+            'format': 'csv',
+        }])
+        config = Config(config_path)
+        assert config.tables[0]['batch_strategy'] == 'bulk'
+
+    def test_explicit_bulk_strategy(self, tmp_path):
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "*.csv"),
+            'format': 'csv',
+            'batch_strategy': 'bulk',
+        }])
+        config = Config(config_path)
+        assert config.tables[0]['batch_strategy'] == 'bulk'
+
+    def test_partition_aware_without_naming_pattern_fails(self, tmp_path):
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "*.csv"),
+            'format': 'csv',
+            'partition_by': ['state', 'year'],
+            'batch_strategy': 'partition_aware',
+        }])
+        with pytest.raises(ConfigValidationError, match="naming_pattern"):
+            Config(config_path)
+
+    def test_partition_aware_without_partition_by_fails(self, tmp_path):
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "*.csv"),
+            'format': 'csv',
+            'naming_pattern': r'(?P<state>[A-Z]{2})_(?P<year>\d{4})',
+            'batch_strategy': 'partition_aware',
+        }])
+        with pytest.raises(ConfigValidationError, match="partition_by"):
+            Config(config_path)
+
+    def test_partition_aware_missing_regex_groups_fails(self, tmp_path):
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "*.csv"),
+            'format': 'csv',
+            'naming_pattern': r'(?P<state>[A-Z]{2})_\d{4}',  # no year group
+            'partition_by': ['state', 'year'],
+            'batch_strategy': 'partition_aware',
+        }])
+        with pytest.raises(ConfigValidationError, match="year"):
+            Config(config_path)
+
+    def test_invalid_batch_strategy_value_fails(self, tmp_path):
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "*.csv"),
+            'format': 'csv',
+            'batch_strategy': 'invalid_strategy',
+        }])
+        with pytest.raises(ConfigValidationError, match="batch_strategy"):
+            Config(config_path)

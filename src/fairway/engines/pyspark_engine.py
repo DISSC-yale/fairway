@@ -92,8 +92,21 @@ class PySparkEngine:
 
         # PySpark supports generic load with format option
         print(f"INFO: PySpark Engine reading from {input_path} (format={format})")
+
+        # Log discovered files for debugging OOM issues
+        import glob as glob_module
+        if '*' in input_path:
+            discovered_files = sorted(glob_module.glob(input_path, recursive=True))
+            discovered_files = [f for f in discovered_files if os.path.isfile(f)]
+            total_size_mb = sum(os.path.getsize(f) for f in discovered_files) / (1024 * 1024)
+            print(f"DEBUG: Discovered {len(discovered_files)} files, total size: {total_size_mb:.1f} MB")
+            if discovered_files:
+                print(f"DEBUG: First 5 files: {[os.path.basename(f) for f in discovered_files[:5]]}")
+                if len(discovered_files) > 5:
+                    print(f"DEBUG: Last file: {os.path.basename(discovered_files[-1])}")
+
         reader = self.spark.read.format(format)
-        
+
         # Apply Generic Read Options (passthrough)
         # e.g. header='false', delim='|', quote='"'
         if kwargs:
@@ -105,7 +118,25 @@ class PySparkEngine:
             # Default behavior if not overridden options
             if 'header' not in kwargs:
                  reader = reader.option("header", "true")
-            if 'inferSchema' not in kwargs:
+            # Use provided schema instead of inferring when available (reduces memory overhead)
+            if schema:
+                from pyspark.sql.types import StructType, StructField, StringType, IntegerType, LongType, DoubleType, FloatType, BooleanType, TimestampType, DateType
+                TYPE_MAP = {
+                    'STRING': StringType(), 'VARCHAR': StringType(),
+                    'INTEGER': IntegerType(), 'INT': IntegerType(),
+                    'BIGINT': LongType(), 'LONG': LongType(),
+                    'DOUBLE': DoubleType(), 'FLOAT': FloatType(),
+                    'BOOLEAN': BooleanType(),
+                    'TIMESTAMP': TimestampType(), 'DATE': DateType(),
+                }
+                spark_schema = StructType([
+                    StructField(col_name, TYPE_MAP.get(col_type.upper(), StringType()), True)
+                    for col_name, col_type in schema.items()
+                ])
+                reader = reader.schema(spark_schema)
+                print(f"INFO: Using provided schema ({len(schema)} columns) - skipping inferSchema")
+            elif 'inferSchema' not in kwargs:
+                 print(f"DEBUG: No schema provided, using inferSchema=true (adds memory overhead)")
                  reader = reader.option("inferSchema", "true")
                  
             if hive_partitioning:
@@ -234,6 +265,10 @@ class PySparkEngine:
 
         writer = writer.option("maxRecordsPerFile", computed_max_records)
         print(f"INFO: maxRecordsPerFile set to {computed_max_records}")
+
+        # Log memory-related recommendations for debugging OOM
+        if computed_max_records > 500000:
+            print(f"WARNING: maxRecordsPerFile={computed_max_records} is high. If OOM occurs, try reducing target_file_size_mb or setting max_records_per_file explicitly.")
 
         # Set compression (snappy is default, most efficient for Spark)
         writer = writer.option("compression", compression)

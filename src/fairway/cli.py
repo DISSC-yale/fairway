@@ -64,13 +64,11 @@ def _get_apptainer_binds(cfg):
     bind_paths = set()
     
     # 1. Check storage directories
-    if cfg.storage:
-        for key in ['raw_dir', 'intermediate_dir', 'final_dir']:
-            path = cfg.storage.get(key)
-            if path:
-                abs_path = os.path.abspath(path)
-                if os.path.exists(abs_path):
-                    bind_paths.add(abs_path)
+    for path in [cfg.raw_dir, cfg.processed_dir, cfg.curated_dir]:
+        if path:
+            abs_path = os.path.abspath(path)
+            if os.path.exists(abs_path):
+                bind_paths.add(abs_path)
     
     # 2. Check table paths
     if cfg.tables:
@@ -104,8 +102,8 @@ def init(name, engine):
     directories = [
         'config',
         'data/raw',
-        'data/intermediate',
-        'data/final',
+        'data/processed',
+        'data/curated',
         'src/transformations',
         'docs',
         'scripts',
@@ -272,10 +270,10 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
                 click.echo(f"Spark master: {spark_master}")
             else:
                 click.echo("No spark_master provided, using local[*]")
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]")
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]", engine_override='pyspark')
         else:
             # Use DuckDB (default) - portable, no cluster needed
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=None)
+            pipeline = SchemaDiscoveryPipeline(config, spark_master=None, engine_override='duckdb')
 
         pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
         return
