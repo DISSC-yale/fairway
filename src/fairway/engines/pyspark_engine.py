@@ -263,9 +263,9 @@ class PySparkEngine:
         writer = writer.option("maxRecordsPerFile", computed_max_records)
         logger.info("maxRecordsPerFile set to %d", computed_max_records)
 
-        # Log memory-related recommendations for debugging OOM
+        # Log memory-related recommendations for debugging OOM (DEBUG level to reduce noise)
         if computed_max_records > 500000:
-            logger.warning("maxRecordsPerFile=%d is high. If OOM occurs, try reducing target_file_size_mb or setting max_records_per_file explicitly.", computed_max_records)
+            logger.debug("maxRecordsPerFile=%d is high. If OOM occurs, try reducing target_file_size_mb or setting max_records_per_file explicitly.", computed_max_records)
 
         # Set compression (snappy is default, most efficient for Spark)
         writer = writer.option("compression", compression)

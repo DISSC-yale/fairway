@@ -462,7 +462,9 @@ def stop():
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
 @click.option('--dry-run', is_flag=True, help='Show matched files without processing.')
-def run(config, spark_master, dry_run):
+@click.option('--log-file', default='logs/fairway.jsonl', help='Path to JSONL log file. Set to empty string to disable.')
+@click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Log level.')
+def run(config, spark_master, dry_run, log_file, log_level):
     """Run the ingestion pipeline.
 
     This command executes the pipeline directly on the current machine.
@@ -470,6 +472,14 @@ def run(config, spark_master, dry_run):
     """
     from .config_loader import Config
     from .pipeline import IngestionPipeline
+    from .logging_config import setup_logging
+
+    # Initialize logging FIRST
+    setup_logging(
+        log_file=log_file if log_file else None,
+        level=log_level.upper(),
+        console=True
+    )
 
     # Auto-discover config
     if config is None:
