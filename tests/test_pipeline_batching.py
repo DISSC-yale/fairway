@@ -116,22 +116,34 @@ class TestPartitionAwarePipeline:
             assert manifest.should_process(str(f)) is False, \
                 f"File {f.name} should be marked as processed in manifest"
 
-    def test_rerun_skips_already_processed(self, tmp_path, capsys):
+    def test_rerun_skips_already_processed(self, tmp_path, caplog):
         """Second run should skip all files (manifest says already done)."""
+        import logging
+
+        # Enable propagation so caplog can capture
+        fairway_logger = logging.getLogger("fairway")
+        original_propagate = fairway_logger.propagate
+        fairway_logger.propagate = True
+        caplog.set_level(logging.INFO)
+
         data_dir = tmp_path / "data"
         self._create_csv_files(data_dir)
         config_path = self._create_config(tmp_path, data_dir)
 
-        from fairway.pipeline import IngestionPipeline
-        pipeline = IngestionPipeline(config_path)
-        pipeline.run()
+        try:
+            from fairway.pipeline import IngestionPipeline
+            pipeline = IngestionPipeline(config_path)
+            pipeline.run()
 
-        # Run again
-        pipeline2 = IngestionPipeline(config_path)
-        pipeline2.run()
+            # Run again
+            caplog.clear()
+            pipeline2 = IngestionPipeline(config_path)
+            pipeline2.run()
 
-        output = capsys.readouterr().out
-        assert "already processed" in output.lower() or "skipping" in output.lower()
+            log_output = caplog.text.lower()
+            assert "already processed" in log_output or "skipping" in log_output
+        finally:
+            fairway_logger.propagate = original_propagate
 
     def test_bulk_strategy_uses_existing_path(self, tmp_path):
         """With batch_strategy=bulk, existing pipeline behavior preserved."""
@@ -175,8 +187,16 @@ class TestPartitionAwarePipeline:
         results = list(intermediate.rglob("*.parquet"))
         assert len(results) > 0
 
-    def test_unmatched_files_logged_as_warning(self, tmp_path, capsys):
+    def test_unmatched_files_logged_as_warning(self, tmp_path, caplog):
         """Files not matching naming_pattern are warned about."""
+        import logging
+
+        # Enable propagation so caplog can capture
+        fairway_logger = logging.getLogger("fairway")
+        original_propagate = fairway_logger.propagate
+        fairway_logger.propagate = True
+        caplog.set_level(logging.WARNING)
+
         data_dir = tmp_path / "data"
         self._create_csv_files(data_dir)
         # Add a file that won't match the naming pattern
@@ -184,9 +204,12 @@ class TestPartitionAwarePipeline:
 
         config_path = self._create_config(tmp_path, data_dir)
 
-        from fairway.pipeline import IngestionPipeline
-        pipeline = IngestionPipeline(config_path)
-        pipeline.run()
+        try:
+            from fairway.pipeline import IngestionPipeline
+            pipeline = IngestionPipeline(config_path)
+            pipeline.run()
 
-        output = capsys.readouterr().out
-        assert "warning" in output.lower() or "didn't match" in output.lower() or "unmatched" in output.lower()
+            log_output = caplog.text.lower()
+            assert "didn't match" in log_output or "match" in log_output or "naming_pattern" in log_output
+        finally:
+            fairway_logger.propagate = original_propagate
