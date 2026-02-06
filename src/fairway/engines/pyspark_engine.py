@@ -14,7 +14,7 @@ logger = logging.getLogger("fairway.engines.pyspark")
 
 
 class PySparkEngine:
-    def __init__(self, spark_master=None):
+    def __init__(self, spark_master=None, spark_conf=None):
         if SparkSession is None:
             additional_info = f" Original error: {_spark_import_error}" if '_spark_import_error' in globals() else ""
             raise ImportError(f"PySpark is not installed or failed to load. Please install fairway[spark] or fairway[all].{additional_info}")
@@ -38,7 +38,7 @@ class PySparkEngine:
             "--add-opens=java.base/javax.security.auth=ALL-UNNAMED"
         ]
         jvm_options = " ".join(jvm_options_list)
-        
+
         # Ensure these options are passed to the driver via env if not already set (relying on builder config is sometimes insufficient)
         import os
         if 'PYSPARK_SUBMIT_ARGS' not in os.environ:
@@ -46,6 +46,12 @@ class PySparkEngine:
 
         builder = builder.config("spark.driver.extraJavaOptions", jvm_options) \
                          .config("spark.executor.extraJavaOptions", jvm_options)
+
+        # Apply spark_conf settings from config/spark.yaml (e.g., executor memory)
+        if spark_conf:
+            for key, value in spark_conf.items():
+                logger.info("Applying spark config: %s = %s", key, value)
+                builder = builder.config(key, value)
 
         # Delta Lake Configuration (Option B)
         try:

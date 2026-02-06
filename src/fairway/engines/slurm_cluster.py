@@ -20,14 +20,34 @@ class SlurmSparkManager:
             if os.path.exists(stale):
                 os.remove(stale)
         
-        # Determine resource requirements from config or defaults
-        nodes = self.config.get('slurm_nodes', 2)
-        cpus = self.config.get('slurm_cpus_per_node', 32)
-        mem = self.config.get('slurm_mem_per_node', '200G')
-        account = self.config.get('slurm_account', 'borzekowski')
-        time_limit = self.config.get('slurm_time', '24:00:00')
-        partition = self.config.get('slurm_partition', 'day')
-        
+        # Determine resource requirements from config (from spark.yaml)
+        nodes = self.config.get('slurm_nodes')
+        cpus = self.config.get('slurm_cpus_per_node')
+        mem = self.config.get('slurm_mem_per_node')
+        account = self.config.get('slurm_account')
+        time_limit = self.config.get('slurm_time')
+        partition = self.config.get('slurm_partition')
+
+        # Build dynamic allocation settings from config/spark.yaml
+        dynamic_alloc = self.config.get('dynamic_allocation', {})
+        da_lines = []
+        if dynamic_alloc.get('enabled') is not None:
+            da_lines.append(f'echo "spark.dynamicAllocation.enabled {dynamic_alloc["enabled"]}" >> $DEFAULTS_FILE')
+        if dynamic_alloc.get('min_executors') is not None:
+            da_lines.append(f'echo "spark.dynamicAllocation.minExecutors {dynamic_alloc["min_executors"]}" >> $DEFAULTS_FILE')
+        if dynamic_alloc.get('max_executors') is not None:
+            da_lines.append(f'echo "spark.dynamicAllocation.maxExecutors {dynamic_alloc["max_executors"]}" >> $DEFAULTS_FILE')
+        if dynamic_alloc.get('initial_executors') is not None:
+            da_lines.append(f'echo "spark.dynamicAllocation.initialExecutors {dynamic_alloc["initial_executors"]}" >> $DEFAULTS_FILE')
+        dynamic_alloc_script = "\n".join(da_lines)
+
+        # Build spark_conf settings from config/spark.yaml
+        spark_conf = self.config.get('spark_conf', {})
+        spark_conf_lines = "\n".join(
+            f'echo "{key} {value}" >> $DEFAULTS_FILE'
+            for key, value in spark_conf.items()
+        )
+
         sbatch_script = f"""#!/bin/bash
 #SBATCH --job-name=fairway-spark
 #SBATCH --output=logs/slurm/spark_cluster_%j.log
@@ -55,12 +75,12 @@ cat "${{SPARK_START_LOG}}"
 export SPARK_CONF_DIR="${{HOME}}/.spark-local/${{SLURM_JOB_ID}}/spark/conf"
 DEFAULTS_FILE="${{SPARK_CONF_DIR}}/spark-defaults.conf"
 
-# Append tuning parameters AFTER spark-start (it overwrites the file with cat >)
-echo "spark.dynamicAllocation.enabled True" >> $DEFAULTS_FILE
-echo "spark.dynamicAllocation.minExecutors 5" >> $DEFAULTS_FILE
-echo "spark.dynamicAllocation.maxExecutors 150" >> $DEFAULTS_FILE
-echo "spark.dynamicAllocation.initialExecutors 15" >> $DEFAULTS_FILE
+# Append dynamic allocation settings from config/spark.yaml
+{dynamic_alloc_script}
 echo "spark.port.maxRetries 40" >> $DEFAULTS_FILE
+
+# Append spark_conf settings from config/spark.yaml
+{spark_conf_lines}
 
 echo "DEBUG: SPARK_CONF_DIR=$SPARK_CONF_DIR"
 echo "DEBUG: spark-defaults.conf contents:"
