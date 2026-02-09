@@ -21,11 +21,6 @@ From: python:3.10-slim-bookworm
         procps \
         && rm -rf /var/lib/apt/lists/*
     
-    # Install Nextflow
-    curl -s https://get.nextflow.io | bash
-    mv nextflow /usr/local/bin/
-    chmod +x /usr/local/bin/nextflow
-    
     # Install Spark
     SPARK_VERSION=4.1.1
     HADOOP_VERSION=3
@@ -44,8 +39,11 @@ From: python:3.10-slim-bookworm
 
     # Install fairway directly (which pulls in all dependencies from pyproject.toml)
     # We use the [all] extra to ensure we get pyspark, duckdb, etc.
-    echo "Installing fairway[all]..."
-    /opt/venv/bin/pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
+    # Override FAIRWAY_GIT_REF at build time to install a specific branch/tag:
+    #   apptainer build --build-arg FAIRWAY_GIT_REF=fix-apptainer fairway.sif Apptainer.def
+    FAIRWAY_GIT_REF="${FAIRWAY_GIT_REF:-main}"
+    echo "Installing fairway[all] from ref: ${FAIRWAY_GIT_REF}..."
+    /opt/venv/bin/pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git@${FAIRWAY_GIT_REF}#egg=fairway[all]"
 
 %environment
     export LC_ALL=C
@@ -70,6 +68,21 @@ From: python:3.10-slim-bookworm
 %runscript
     # The PATH update in %environment ensures this runs from the venv
     exec fairway "$@"
+
+%test
+    # Validate the build - these commands must succeed
+    set -e
+    echo "Testing fairway installation..."
+    /opt/venv/bin/fairway --version
+
+    echo "Testing Spark installation..."
+    /opt/spark/bin/spark-submit --version
+
+    echo "Testing Python environment..."
+    /opt/venv/bin/python -c "import pyspark; print(f'PySpark {pyspark.__version__}')"
+    /opt/venv/bin/python -c "import fairway; print('Fairway module OK')"
+
+    echo "All tests passed!"
 
 %help
     Fairway - A portable data ingestion framework for research data.
