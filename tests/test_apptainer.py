@@ -303,6 +303,37 @@ class TestGetApptainerBinds:
         assert str(tmp_path / "nonexistent") not in binds
 
 
+class TestDevMode:
+    """Tests for --dev mode bind mounting."""
+
+    def test_get_dev_bind_path_with_local_src(self, tmp_path, monkeypatch):
+        """_get_dev_bind_path returns correct bind when src/fairway exists."""
+        from fairway.cli import _get_dev_bind_path
+
+        # Create fake src/fairway structure
+        src_dir = tmp_path / "src" / "fairway"
+        src_dir.mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        bind_path = _get_dev_bind_path()
+
+        assert bind_path is not None
+        assert str(src_dir) in bind_path
+        assert "/opt/venv/lib/python3.10/site-packages/fairway" in bind_path
+
+    def test_get_dev_bind_path_no_local_src(self, tmp_path, monkeypatch):
+        """_get_dev_bind_path falls back to module location when no src/fairway."""
+        from fairway.cli import _get_dev_bind_path
+
+        monkeypatch.chdir(tmp_path)
+        # No src/fairway directory
+
+        bind_path = _get_dev_bind_path()
+
+        # Should still return something (the module's own location)
+        assert bind_path is not None
+
+
 class TestSparkStartScript:
     """Tests for fairway-spark-start.sh content."""
 
