@@ -671,11 +671,27 @@ def build(force):
         )
 
 
+def _get_dev_bind_path():
+    """Get bind path for dev mode - mounts local src over container's installed package."""
+    # Find local fairway source
+    local_src = os.path.join(os.getcwd(), 'src', 'fairway')
+    if not os.path.isdir(local_src):
+        # Try relative to this file (for when running from fairway repo)
+        local_src = os.path.dirname(os.path.abspath(__file__))
+
+    if os.path.isdir(local_src):
+        # Container's installed package location
+        container_pkg = "/opt/venv/lib/python3.10/site-packages/fairway"
+        return f"{local_src}:{container_pkg}"
+    return None
+
+
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--image', default=None, help='Path to Apptainer image (default: checks local fairway.sif then pulls from registry).')
 @click.option('--bind', multiple=True, help='Additional bind paths.')
-def shell(config, image, bind):
+@click.option('--dev', is_flag=True, help='Dev mode: bind-mount local src/fairway over container package for rapid iteration.')
+def shell(config, image, bind, dev):
     """Enter an interactive shell inside the fairway container."""
     from .config_loader import Config
 
@@ -690,11 +706,20 @@ def shell(config, image, bind):
             click.echo("No config file found. Proceeding without auto-binding project paths.")
 
     bind_paths = set(bind)
-    
+
     if config:
         cfg = Config(config)
         auto_binds = _get_apptainer_binds(cfg)
         bind_paths.update(auto_binds)
+
+    # Dev mode: bind-mount local source over container's installed package
+    dev_bind = None
+    if dev:
+        dev_bind = _get_dev_bind_path()
+        if dev_bind:
+            click.echo(f"Dev mode: mounting local source -> {dev_bind}")
+        else:
+            click.echo("Warning: --dev specified but src/fairway not found in current directory", err=True)
 
     # Determine image
     if image:
@@ -703,19 +728,21 @@ def shell(config, image, bind):
         container_image = "fairway.sif"
     else:
         # Default to latest from registry
-        # We need to import this constant or hardcode it
-        # For now, let's look at the implementation plan
         container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
 
     cmd = ["apptainer", "shell"]
-    
+
+    # Add dev bind first (so it takes precedence)
+    if dev_bind:
+        cmd.extend(["--bind", dev_bind])
+
     if bind_paths:
         bind_str = ','.join(sorted(list(bind_paths)))
         cmd.extend(["--bind", bind_str])
         click.echo(f"Binding paths: {bind_str}")
-    
+
     cmd.append(container_image)
-    
+
     click.echo(f"Launching shell in container: {container_image}")
     try:
         subprocess.run(cmd)

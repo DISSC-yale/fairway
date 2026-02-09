@@ -37,7 +37,7 @@ RUN python3 -m venv /opt/venv
 # Upgrade pip and install fairway from GitHub
 RUN /opt/venv/bin/pip install --upgrade pip setuptools wheel \
     && echo "Installing fairway[all] from ref: ${FAIRWAY_GIT_REF}..." \
-    && /opt/venv/bin/pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git@${FAIRWAY_GIT_REF}#egg=fairway[all]"
+    && /opt/venv/bin/pip install --no-cache-dir "fairway[all] @ git+https://github.com/DISSC-yale/fairway.git@${FAIRWAY_GIT_REF}"
 
 # Set PATH to use venv binaries and Spark
 ENV PATH="/opt/venv/bin:$PATH:/opt/spark/bin"
