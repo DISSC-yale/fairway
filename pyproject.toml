@@ -73,5 +73,6 @@ markers = [
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-fairway = ["data/*"]
+fairway = ["data/*", "data/scripts/*"]
 "fairway.data" = ["*"]
+"fairway.data.scripts" = ["*"]
