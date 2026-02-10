@@ -1,5 +1,5 @@
 # Fairway Project Makefile
-.PHONY: help run submit shell build clean schema schema-hpc summary
+.PHONY: help run ingest summary submit summary-hpc shell build clean schema schema-hpc
 .PHONY: shell-dev run-dev build-from-branch
 
 .DEFAULT_GOAL := help
@@ -15,14 +15,20 @@ help: ## Show this help
 # Standard Commands
 # ============================================================================
 
-run: ## Run pipeline locally
+run: ## Run full pipeline locally (ingest + summary)
 	fairway run
 
-summary: ## Generate summary stats and reports for ingested data
+ingest: ## Run ingestion only (skip summary generation)
+	fairway run --skip-summary
+
+summary: ## Generate summary stats locally (requires JAVA_HOME)
 	fairway summarize
 
-submit: ## Submit pipeline to Slurm (with Spark cluster)
+submit: ## Submit full pipeline to Slurm (with Spark cluster)
 	fairway submit --with-spark
+
+summary-hpc: ## Submit summary generation to Slurm (loads Java/Spark)
+	fairway summarize --slurm
 
 shell: ## Open shell in container
 	fairway shell
