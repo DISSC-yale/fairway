@@ -741,6 +741,20 @@ class IngestionPipeline:
             if input_path != original_path:
                 logger.info("Preprocessing complete. Ingesting from: %s", input_path)
 
+            # Discover individual files for manifest tracking (reusing schema_pipeline pattern)
+            if '*' in str(input_path):
+                discovered_files = sorted(glob.glob(str(input_path), recursive=True))
+                discovered_files = [f for f in discovered_files if os.path.isfile(f)]
+            else:
+                discovered_files = [input_path] if os.path.exists(input_path) else []
+
+            # Calculate hashes for tracking
+            file_hashes = {
+                f: _get_file_hash_static(f, fast_check=True)
+                for f in discovered_files
+            }
+            logger.debug("Discovered %d files for ingestion", len(discovered_files))
+
             logger.info("Processing %s...", table['name'])
 
             output_name = os.path.splitext(table['name'])[0]
@@ -912,7 +926,20 @@ class IngestionPipeline:
                     
                     logger.info("Data finalized at %s", final_output_path)
 
-                    # Mark as success in manifest (summarize() will enrich with row_count later)
+                    # Record each individual file in manifest (like schema_pipeline does)
+                    with table_manifest.batch():
+                        for file_path in discovered_files:
+                            table_manifest.update_file(
+                                file_path,
+                                status="success",
+                                metadata={
+                                    "config_path": getattr(self.config, 'config_path', 'unknown'),
+                                    "table_name": table['name'],
+                                },
+                                table_root=table.get('root'),
+                                computed_hash=file_hashes.get(file_path)
+                            )
+                    # Also record table-level entry for backward compatibility
                     table_manifest.update_file(
                         original_path,
                         status="success",
@@ -922,6 +949,16 @@ class IngestionPipeline:
                 else:
                     errors = l1['errors'] + l2['errors']
                     logger.error("Validations failed for %s: %s", table['name'], errors)
+                    # Record each file as failed
+                    with table_manifest.batch():
+                        for file_path in discovered_files:
+                            table_manifest.update_file(
+                                file_path,
+                                status="failed",
+                                metadata={"errors": errors},
+                                table_root=table.get('root'),
+                                computed_hash=file_hashes.get(file_path)
+                            )
                     table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
                     # raise Exception(...) # Optional blocking
 
