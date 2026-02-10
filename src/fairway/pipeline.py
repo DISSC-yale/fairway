@@ -594,7 +594,87 @@ class IngestionPipeline:
             if preprocess:
                 logger.info("  Preprocessing: %s", preprocess)
 
-    def run(self):
+    def summarize(self):
+        """Generate summary stats, markdown reports, and export to Redivis.
+
+        Runs independently after ingestion. Reads finalized parquet from curated_dir.
+        """
+        logger.info("Starting summarization for dataset: %s", self.config.dataset_name)
+
+        for table in self.config.tables:
+            table_name = table['name']
+            output_name = os.path.splitext(table_name)[0]
+            partition_by = table.get('partition_by') or self.config.partition_by
+
+            # Determine finalized path
+            if partition_by:
+                final_basename = output_name
+            else:
+                final_basename = f"{output_name}.parquet"
+            final_path = os.path.join(self.config.curated_dir, final_basename)
+
+            if not os.path.exists(final_path):
+                logger.warning("Skipping summary for %s — no finalized data at %s", table_name, final_path)
+                continue
+
+            logger.info("Generating summary for %s...", table_name)
+
+            # Read finalized output (not the in-memory df from ingestion)
+            df = self.engine.read_result(final_path)
+            is_spark = self.config.engine == 'pyspark'
+            if not is_spark and hasattr(df, 'df'):
+                df = df.df()
+
+            summary_path = os.path.join(self.config.curated_dir, f"{table_name}_summary.csv")
+            report_path = os.path.join(self.config.curated_dir, f"{table_name}_report.md")
+
+            if is_spark:
+                summary_df, row_count = Summarizer.generate_summary_spark(df, summary_path)
+                # row_count extracted from describe() — no extra df.count() needed
+            else:
+                summary_df = Summarizer.generate_summary_table(df, summary_path)
+                row_count = len(df)
+
+            stats = {
+                "row_count": row_count,
+                "config_path": getattr(self.config, 'config_path', 'unknown'),
+                "status": "success"
+            }
+            Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
+
+            # Update manifest with row_count
+            table_manifest = self.manifest_store.get_table_manifest(table_name)
+            original_path = table['path']
+            table_manifest.update_file(original_path, status="success", metadata=stats, table_root=table.get('root'))
+
+            logger.info("Summary complete for %s: %s rows, report at %s", table_name, f"{row_count:,}", report_path)
+
+            # Redivis export (depends on stats)
+            if self.config.redivis:
+                try:
+                    logger.info("Exporting %s to Redivis...", table_name)
+                    exporter = RedivisExporter(self.config.redivis)
+
+                    # Combine stats and regex-extracted metadata
+                    rich_metadata = stats.copy()
+                    rich_metadata.update(table.get('metadata', {}))
+                    rich_metadata['input_path'] = original_path
+
+                    # Use final_path for Redivis export
+                    exporter.upload_table(
+                        table_name=table_name,
+                        file_path=final_path,
+                        metadata=rich_metadata,
+                        schema=table.get('schema')
+                    )
+                    # Sync dataset level metadata if available
+                    exporter.update_dataset_metadata(description=f"Dataset: {self.config.dataset_name}")
+                except Exception as e:
+                    logger.error("Redivis export failed for %s: %s", table_name, e)
+
+        logger.info("Summarization complete for dataset: %s", self.config.dataset_name)
+
+    def run(self, skip_summary=False):
         logger.info("Starting ingestion for dataset: %s", self.config.dataset_name)
 
         if not self.config.tables:
@@ -832,51 +912,19 @@ class IngestionPipeline:
                     
                     logger.info("Data finalized at %s", final_output_path)
 
-                    # 6. Summarization and Reporting
-                    summary_path = os.path.join(self.config.curated_dir, f"{table['name']}_summary.csv")
-                    report_path = os.path.join(self.config.curated_dir, f"{table['name']}_report.md")
-                    
-                    if is_spark:
-                         summary_df = Summarizer.generate_summary_spark(df, summary_path)
-                         # Count for stats
-                         row_count = df.count()
-                    else:
-                         summary_df = Summarizer.generate_summary_table(df, summary_path)
-                         row_count = len(df)
-                    
-                    stats = {
-                        "row_count": row_count,
-                        "config_path": getattr(self.config, 'config_path', 'unknown'),
-                        "status": "success"
-                    }
-                    Summarizer.generate_markdown_report(self.config.dataset_name, summary_df, stats, report_path)
-
-                    table_manifest.update_file(original_path, status="success", metadata=stats, table_root=table.get('root'))
-                    
-                    # 7. Redivis Export
-                    if self.config.redivis:
-                        try:
-                            logger.info("Exporting %s to Redivis...", table['name'])
-                            exporter = RedivisExporter(self.config.redivis)
-
-                            # Combine stats and regex-extracted metadata
-                            rich_metadata = stats.copy()
-                            rich_metadata.update(table.get('metadata', {}))
-                            rich_metadata['input_path'] = original_path
-
-                            exporter.upload_table(
-                                table_name=table['name'],
-                                file_path=output_path,
-                                metadata=rich_metadata,
-                                schema=table.get('schema')
-                            )
-                            # Sync dataset level metadata if available
-                            exporter.update_dataset_metadata(description=f"Dataset: {self.config.dataset_name}")
-                        except Exception as e:
-                            logger.error("Redivis export failed for %s: %s", table['name'], e)
+                    # Mark as success in manifest (summarize() will enrich with row_count later)
+                    table_manifest.update_file(
+                        original_path,
+                        status="success",
+                        metadata={"config_path": getattr(self.config, 'config_path', 'unknown')},
+                        table_root=table.get('root')
+                    )
                 else:
                     errors = l1['errors'] + l2['errors']
                     logger.error("Validations failed for %s: %s", table['name'], errors)
                     table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
                     # raise Exception(...) # Optional blocking
 
+        # Run summarization unless skipped
+        if not skip_summary:
+            self.summarize()
