@@ -524,9 +524,15 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
+@click.option('--slurm', is_flag=True, help='Submit as a Slurm job (loads Spark/Java modules).')
+@click.option('--account', default=None, help='Slurm account.')
+@click.option('--partition', default='day', help='Slurm partition.')
+@click.option('--time', 'slurm_time', default='04:00:00', help='Slurm time limit (HH:MM:SS).')
+@click.option('--mem', default='32G', help='Slurm memory.')
+@click.option('--cpus', default=4, type=int, help='Slurm CPUs per task.')
 @click.option('--log-file', default='logs/fairway.jsonl', help='Path to JSONL log file. Set to empty string to disable.')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Log level.')
-def summarize(config, spark_master, log_file, log_level):
+def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, cpus, log_file, log_level):
     """Generate summary stats and reports for already-ingested data.
 
     This command generates summary statistics, markdown reports, and exports
@@ -534,10 +540,100 @@ def summarize(config, spark_master, log_file, log_level):
 
     Use this after running `fairway run --skip-summary` to generate summaries
     in a separate step.
+
+    Examples:
+
+        # Run locally (requires JAVA_HOME to be set)
+        fairway summarize
+
+        # Submit as Slurm job (loads Spark/Java modules automatically)
+        fairway summarize --slurm
+
+        # Submit with custom resources
+        fairway summarize --slurm --mem 64G --time 08:00:00
     """
     import yaml
-    from .pipeline import IngestionPipeline
+    import tempfile
     from .logging_config import setup_logging
+
+    # Auto-discover config first (needed for both paths)
+    if config is None:
+        config = discover_config()
+        click.echo(f"Auto-discovered config: {config}")
+
+    # ---------------------------------------------------------
+    # SLURM SUBMISSION
+    # ---------------------------------------------------------
+    if slurm:
+        # Load spark.yaml for account default
+        spark_yaml_path = 'config/spark.yaml'
+        if os.path.exists(spark_yaml_path):
+            with open(spark_yaml_path, 'r') as f:
+                spark_defaults = yaml.safe_load(f) or {}
+                account = account or spark_defaults.get('account', 'borzekowski')
+
+        # Validate parameters
+        slurm_time = _validate_slurm_time(slurm_time)
+        mem = _validate_slurm_mem(mem)
+        partition = _validate_slurm_param(partition, 'partition', r'^[a-zA-Z0-9_-]+$')
+        account = _validate_slurm_param(account, 'account', r'^[a-zA-Z0-9_-]+$')
+        config = _validate_slurm_param(config, 'config', r'^[a-zA-Z0-9_./-]+$', max_length=256)
+        if cpus < 1 or cpus > 256:
+            raise click.ClickException(f"Invalid cpus: {cpus} (must be 1-256)")
+
+        job_script = f'''#!/bin/bash
+#SBATCH --job-name=fairway_summary
+#SBATCH --output=logs/slurm/summary_%j.log
+#SBATCH --time={slurm_time}
+#SBATCH --mem={mem}
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --partition={partition}
+#SBATCH --account={account}
+
+set -e
+
+# Ensure log directory exists
+mkdir -p logs/slurm
+
+# Load Spark module (includes Java)
+echo "Loading Spark module..."
+module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+
+# Run summarization
+echo "Running summarization for config: {config}"
+fairway summarize --config {config}
+
+echo "Summary generation completed successfully."
+'''
+
+        # Ensure logs directory exists
+        os.makedirs('logs/slurm', exist_ok=True)
+
+        # Write to temp file and submit
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(job_script)
+            script_path = f.name
+
+        try:
+            click.echo(f"Submitting summary job (config: {config})...")
+            result = subprocess.run(['sbatch', script_path], capture_output=True, text=True)
+            if result.returncode == 0:
+                click.echo(result.stdout.strip())
+                click.echo("Job submitted. Check status with 'fairway status'.")
+            else:
+                click.echo(f"Error submitting job: {result.stderr}", err=True)
+                sys.exit(1)
+        except FileNotFoundError:
+            click.echo("Error: 'sbatch' command not found. Are you on a system with Slurm?", err=True)
+            sys.exit(1)
+        finally:
+            os.unlink(script_path)
+        return
+
+    # ---------------------------------------------------------
+    # LOCAL EXECUTION
+    # ---------------------------------------------------------
+    from .pipeline import IngestionPipeline
 
     # Initialize logging
     setup_logging(
@@ -545,11 +641,6 @@ def summarize(config, spark_master, log_file, log_level):
         level=log_level.upper(),
         console=True
     )
-
-    # Auto-discover config
-    if config is None:
-        config = discover_config()
-        click.echo(f"Auto-discovered config: {config}")
 
     # Load spark_conf from spark.yaml for executor settings
     spark_conf = None
