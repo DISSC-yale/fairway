@@ -471,9 +471,10 @@ def stop():
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
 @click.option('--dry-run', is_flag=True, help='Show matched files without processing.')
+@click.option('--skip-summary', is_flag=True, default=False, help='Skip summary generation after ingestion. Run `fairway summarize` separately.')
 @click.option('--log-file', default='logs/fairway.jsonl', help='Path to JSONL log file. Set to empty string to disable.')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Log level.')
-def run(config, spark_master, dry_run, log_file, log_level):
+def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     """Run the ingestion pipeline.
 
     This command executes the pipeline directly on the current machine.
@@ -513,9 +514,55 @@ def run(config, spark_master, dry_run, log_file, log_level):
         return
 
     click.echo(f"Starting pipeline execution using config: {config}")
+    if skip_summary:
+        click.echo("Summary generation will be skipped. Run `fairway summarize` separately.")
     pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
-    pipeline.run()
+    pipeline.run(skip_summary=skip_summary)
     click.echo("Pipeline execution completed successfully.")
+
+
+@main.command()
+@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
+@click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
+@click.option('--log-file', default='logs/fairway.jsonl', help='Path to JSONL log file. Set to empty string to disable.')
+@click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Log level.')
+def summarize(config, spark_master, log_file, log_level):
+    """Generate summary stats and reports for already-ingested data.
+
+    This command generates summary statistics, markdown reports, and exports
+    to Redivis for data that has already been ingested to curated_dir.
+
+    Use this after running `fairway run --skip-summary` to generate summaries
+    in a separate step.
+    """
+    import yaml
+    from .pipeline import IngestionPipeline
+    from .logging_config import setup_logging
+
+    # Initialize logging
+    setup_logging(
+        log_file=log_file if log_file else None,
+        level=log_level.upper(),
+        console=True
+    )
+
+    # Auto-discover config
+    if config is None:
+        config = discover_config()
+        click.echo(f"Auto-discovered config: {config}")
+
+    # Load spark_conf from spark.yaml for executor settings
+    spark_conf = None
+    spark_yaml_path = 'config/spark.yaml'
+    if os.path.exists(spark_yaml_path):
+        with open(spark_yaml_path, 'r') as f:
+            spark_defaults = yaml.safe_load(f) or {}
+            spark_conf = spark_defaults.get('spark_conf', {})
+
+    click.echo(f"Generating summaries for config: {config}")
+    pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
+    pipeline.summarize()
+    click.echo("Summary generation completed successfully.")
 
 
 @main.command()

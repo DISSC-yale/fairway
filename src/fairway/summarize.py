@@ -37,13 +37,26 @@ class Summarizer:
     def generate_summary_spark(df, output_path):
         """
         Generates summary statistics using native PySpark (no toPandas).
+
+        Returns:
+            tuple: (summary_df, row_count) where summary_df is a pandas DataFrame
+                   and row_count is extracted from describe() output (no extra scan).
         """
         from pyspark.sql import functions as F
 
         desc_df = df.describe()
 
-        # Transpose using stack(): unpivot all columns except 'summary'
+        # Extract row count from describe() output — first row is "count"
+        # This avoids a separate df.count() which would trigger another full scan
         cols = [c for c in desc_df.columns if c != "summary"]
+        if cols:
+            count_row = desc_df.filter(F.col("summary") == "count")
+            first_col = cols[0]
+            row_count = int(count_row.select(first_col).first()[0])
+        else:
+            row_count = 0
+
+        # Transpose using stack(): unpivot all columns except 'summary'
         stack_expr = ", ".join([f"'{c}', `{c}`" for c in cols])
         transposed = desc_df.selectExpr(
             "summary",
@@ -65,7 +78,7 @@ class Summarizer:
             shutil.rmtree(output_path + "_temp")
 
         # Read back the small summary file for the markdown report
-        return pd.read_csv(output_path)
+        return pd.read_csv(output_path), row_count
 
     @staticmethod
     def generate_markdown_report(dataset_name, summary_df, stats, output_path):

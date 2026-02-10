@@ -20,27 +20,32 @@ class TestScalabilityRefactor(unittest.TestCase):
         mock_df = MagicMock()
         mock_df.count.return_value = 100
         mock_df.columns = ["id", "address", 'amount']
-        
+
+        # Mock limit() chain for level1 validation optimization
+        mock_limited = MagicMock()
+        mock_limited.count.return_value = 10  # Returns at least min_rows
+        mock_df.limit.return_value = mock_limited
+
         # Mock Engine
         engine = MagicMock()
         engine.read_result.return_value = mock_df
-        
+
         # Test Validator Dispatch Logic (Manually invoking what pipeline would do)
         print("1. Testing Validation Logic...")
         config = {
             "level1": {"min_rows": 10},
             "level2": {"check_nulls": ["id"]}
         }
-        
+
         # Mock pyspark functions that require context
         with patch('pyspark.sql.functions.col') as mock_col, \
              patch('pyspark.sql.functions.pandas_udf') as mock_pandas_udf, \
              patch('pyspark.sql.types.DoubleType'), \
              patch('pyspark.sql.types.StringType'):
-             
+
             # Make col return a mock that creates an expression
             mock_col.return_value = MagicMock()
-            
+
             # Make pandas_udf return a decorator that returns the function unchanged (or wrapped)
             def udf_decorator(returnType=None):
                 def wrapper(func):
@@ -52,7 +57,7 @@ class TestScalabilityRefactor(unittest.TestCase):
             mock_filtered = MagicMock()
             mock_filtered.count.return_value = 0
             mock_df.filter.return_value = mock_filtered
-            
+
             l1 = Validator.level1_check_spark(mock_df, config)
             self.assertTrue(l1['passed'])
             
