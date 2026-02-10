@@ -155,7 +155,7 @@ class TestApptainerDefContent:
         from fairway.templates import APPTAINER_DEF
 
         assert "%test" in APPTAINER_DEF
-        assert "fairway --version" in APPTAINER_DEF
+        assert "fairway --help" in APPTAINER_DEF
 
     def test_apptainer_def_git_ref_param(self):
         """Apptainer.def should support FAIRWAY_GIT_REF."""

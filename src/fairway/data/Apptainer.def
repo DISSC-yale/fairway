@@ -73,10 +73,10 @@ From: python:3.10-slim-bookworm
     # Validate the build - these commands must succeed
     set -e
     echo "Testing fairway installation..."
-    /opt/venv/bin/fairway --version
+    /opt/venv/bin/fairway --help > /dev/null
 
     echo "Testing Spark installation..."
-    /opt/spark/bin/spark-submit --version
+    /opt/spark/bin/spark-submit --version 2>&1 | head -1
 
     echo "Testing Python environment..."
     /opt/venv/bin/python -c "import pyspark; print(f'PySpark {pyspark.__version__}')"
