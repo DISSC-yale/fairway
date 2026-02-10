@@ -1,5 +1,5 @@
 # Fairway Project Makefile
-.PHONY: help run submit shell build clean schema schema-hpc
+.PHONY: help run submit shell build clean schema schema-hpc summary
 
 .DEFAULT_GOAL := help
 
@@ -8,6 +8,9 @@ help: ## Show this help
 
 run: ## Run pipeline locally
 	fairway run
+
+summary: ## Generate summary stats and reports for ingested data
+	fairway summarize
 
 submit: ## Submit pipeline to Slurm (with Spark cluster)
 	fairway submit --with-spark
