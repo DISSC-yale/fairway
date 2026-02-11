@@ -937,19 +937,21 @@ def cancel(job_id, kill_all):
 @click.option('--mem', default='16G', help='Memory per node.')
 @click.option('--cpus', default=4, type=int, help='CPUs per task.')
 @click.option('--with-spark', is_flag=True, help='Start Spark cluster before running pipeline.')
+@click.option('--with-summary', is_flag=True, help='Include summary generation (default: skip summary, run separately with `fairway summarize`).')
 @click.option('--dry-run', is_flag=True, help='Print job script without submitting.')
-def submit(config, account, partition, time, mem, cpus, with_spark, dry_run):
+def submit(config, account, partition, time, mem, cpus, with_spark, with_summary, dry_run):
     """Submit pipeline as a Slurm job.
 
-    The job will run `fairway run` with optional Spark cluster provisioning.
+    The job will run `fairway run --skip-summary` by default (ingestion only).
+    Use --with-summary to include summary generation in the same job.
 
     Examples:
 
-        # Submit with auto-discovered config
-        fairway submit
-
-        # Submit with Spark cluster
+        # Submit ingestion only (default)
         fairway submit --with-spark
+
+        # Submit with summary generation included
+        fairway submit --with-spark --with-summary
 
         # Submit with custom resources
         fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
@@ -1036,7 +1038,7 @@ fi
 
 # Run pipeline
 echo "Running pipeline..."
-fairway run --config {config} $SPARK_ARGS
+fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
 
 echo "Pipeline completed successfully."
 '''
@@ -1057,7 +1059,7 @@ mkdir -p logs/slurm
 
 # Run pipeline (no Spark cluster)
 echo "Running pipeline..."
-fairway run --config {config}
+fairway run --config {config}{'' if with_summary else ' --skip-summary'}
 
 echo "Pipeline completed successfully."
 '''
