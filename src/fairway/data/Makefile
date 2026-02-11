@@ -24,7 +24,7 @@ ingest: ## Run ingestion only (skip summary generation)
 summary: ## Generate summary stats locally (requires JAVA_HOME)
 	fairway summarize
 
-submit: ## Submit full pipeline to Slurm (with Spark cluster)
+submit: ## Submit ingestion to Slurm (with Spark cluster, no summary)
 	fairway submit --with-spark
 
 summary-hpc: ## Submit summary generation to Slurm (loads Java/Spark)
