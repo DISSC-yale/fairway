@@ -1,16 +1,25 @@
 # Fairway Project Makefile
-.PHONY: help run submit shell build clean schema schema-hpc
+.PHONY: help run ingest summary submit summary-hpc shell build clean schema schema-hpc
 
 .DEFAULT_GOAL := help
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-run: ## Run pipeline locally
+run: ## Run full pipeline locally (ingest + summary)
 	fairway run
 
-submit: ## Submit pipeline to Slurm (with Spark cluster)
+ingest: ## Run ingestion only (skip summary generation)
+	fairway run --skip-summary
+
+summary: ## Generate summary stats locally (requires JAVA_HOME)
+	fairway summarize
+
+submit: ## Submit ingestion to Slurm (with Spark cluster, no summary)
 	fairway submit --with-spark
+
+summary-hpc: ## Submit summary generation to Slurm (loads Java/Spark)
+	fairway summarize --slurm
 
 shell: ## Open shell in container
 	fairway shell
