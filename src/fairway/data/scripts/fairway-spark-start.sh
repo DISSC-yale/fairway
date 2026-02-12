@@ -156,6 +156,9 @@ cat > "${SPARK_CONF_DIR}/spark-defaults.conf" <<EOF
 spark.authenticate                 true
 spark.authenticate.secret          ${SPARK_SECRET}
 
+# Disable REST submission server (incompatible with authentication in Spark 4.x)
+spark.master.rest.enabled          false
+
 # UI Settings
 spark.ui.killEnabled               false
 spark.ui.enabled                   true
