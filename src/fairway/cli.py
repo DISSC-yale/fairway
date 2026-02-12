@@ -519,8 +519,13 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     if skip_summary:
         click.echo("Summary generation will be skipped. Run `fairway summarize` separately.")
     pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
-    pipeline.run(skip_summary=skip_summary)
-    click.echo("Pipeline execution completed successfully.")
+    try:
+        pipeline.run(skip_summary=skip_summary)
+        click.echo("Pipeline execution completed successfully.")
+    finally:
+        # Explicitly stop the engine to release Spark resources
+        if hasattr(pipeline, 'engine') and hasattr(pipeline.engine, 'stop'):
+            pipeline.engine.stop()
 
 
 @main.command()
