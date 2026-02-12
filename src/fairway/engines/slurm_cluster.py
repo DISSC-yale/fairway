@@ -6,12 +6,23 @@ import click
 class SlurmSparkManager:
     """Manages Spark clusters on Slurm with support for Apptainer containers."""
 
-    def __init__(self, config):
+    def __init__(self, config, driver_job_id=None):
         self.config = config
-        self.master_url_file = os.path.expanduser("~/spark_master_url.txt")
-        self.job_id_file = os.path.expanduser("~/cluster_job_id.txt")
-        self.conf_dir_file = os.path.expanduser("~/spark_conf_dir.txt")
-        self.cores_file = os.path.expanduser("~/totalexecutorcores.txt")
+        self.driver_job_id = driver_job_id
+
+        if driver_job_id:
+            # Use job-specific directory to prevent race conditions between concurrent jobs
+            state_dir = os.path.expanduser(f"~/.fairway-spark/{driver_job_id}")
+            self.master_url_file = os.path.join(state_dir, "master_url.txt")
+            self.job_id_file = os.path.join(state_dir, "cluster_job_id.txt")
+            self.conf_dir_file = os.path.join(state_dir, "conf_dir.txt")
+            self.cores_file = os.path.join(state_dir, "total_cores.txt")
+        else:
+            # Legacy flat paths for backwards compatibility
+            self.master_url_file = os.path.expanduser("~/spark_master_url.txt")
+            self.job_id_file = os.path.expanduser("~/cluster_job_id.txt")
+            self.conf_dir_file = os.path.expanduser("~/spark_conf_dir.txt")
+            self.cores_file = os.path.expanduser("~/totalexecutorcores.txt")
 
     def _detect_apptainer_mode(self):
         """Detect if we should use Apptainer mode.
@@ -69,7 +80,12 @@ class SlurmSparkManager:
         """
         click.echo("Provisioning Spark cluster on Slurm...")
 
-        # Remove stale files from any previous cluster
+        # Create job-specific state directory if using driver_job_id
+        if self.driver_job_id:
+            state_dir = os.path.dirname(self.master_url_file)
+            os.makedirs(state_dir, exist_ok=True)
+
+        # Remove stale files from any previous cluster (in this job's directory)
         for stale in [self.master_url_file, self.job_id_file, self.conf_dir_file, self.cores_file]:
             if os.path.exists(stale):
                 os.remove(stale)
@@ -218,6 +234,9 @@ if [ -z "$SPARK_MASTER_URL" ]; then
 fi
 
 echo "Detected Spark Master: $SPARK_MASTER_URL"
+
+# Write state files (directory created by driver or here)
+mkdir -p "$(dirname '{self.master_url_file}')"
 echo "${{SPARK_MASTER_URL}}" > {self.master_url_file}
 echo "${{SLURM_JOB_ID}}" > {self.job_id_file}
 echo "${{SPARK_CONF_DIR}}" > {self.conf_dir_file}
@@ -283,6 +302,9 @@ if [ -z "$SPARK_MASTER_URL" ]; then
 fi
 
 echo "Detected Spark Master: $SPARK_MASTER_URL"
+
+# Write state files (directory created by driver or here)
+mkdir -p "$(dirname '{self.master_url_file}')"
 echo "${{SPARK_MASTER_URL}}" > {self.master_url_file}
 echo "${{SLURM_JOB_ID}}" > {self.job_id_file}
 echo "${{SPARK_CONF_DIR}}" > {self.conf_dir_file}

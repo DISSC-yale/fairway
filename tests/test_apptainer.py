@@ -427,6 +427,62 @@ class TestSparkStartScript:
         ), "start-master.sh should be wrapped in apptainer exec when USE_CONTAINER=yes"
 
 
+class TestSlurmSparkManagerJobIsolation:
+    """Tests for job-specific file paths to prevent race conditions."""
+
+    def test_state_files_are_job_specific(self, tmp_path, monkeypatch):
+        """State files should be scoped to driver job ID to prevent conflicts."""
+        from fairway.engines.slurm_cluster import SlurmSparkManager
+
+        monkeypatch.chdir(tmp_path)
+
+        # When driver_job_id is provided, files should be in job-specific directory
+        manager = SlurmSparkManager({}, driver_job_id='12345')
+
+        # All state files should be under ~/.fairway-spark/12345/
+        assert '12345' in manager.master_url_file
+        assert '12345' in manager.job_id_file
+        assert '12345' in manager.conf_dir_file
+        assert '12345' in manager.cores_file
+
+        # Should use subdirectory, not flat files
+        assert '.fairway-spark' in manager.master_url_file or 'fairway-spark' in manager.master_url_file
+
+    def test_state_files_default_to_legacy_paths(self, tmp_path, monkeypatch):
+        """Without driver_job_id, should use legacy paths for backwards compatibility."""
+        from fairway.engines.slurm_cluster import SlurmSparkManager
+
+        monkeypatch.chdir(tmp_path)
+
+        # Without driver_job_id, use legacy flat paths
+        manager = SlurmSparkManager({})
+
+        assert manager.master_url_file.endswith('spark_master_url.txt')
+        assert manager.job_id_file.endswith('cluster_job_id.txt')
+
+    def test_generated_script_uses_job_specific_paths(self, tmp_path, monkeypatch):
+        """Generated sbatch scripts should use driver job ID for state files."""
+        from fairway.engines.slurm_cluster import SlurmSparkManager
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "fairway.sif").write_text("fake sif")
+        (tmp_path / "scripts").mkdir()
+
+        manager = SlurmSparkManager({}, driver_job_id='99999')
+        script = manager._generate_apptainer_script(
+            nodes=2, cpus=4, mem='16G', account='test',
+            time_limit='1:00:00', partition='day',
+            sif_path=str(tmp_path / "fairway.sif"),
+            bind_paths='/vast',
+            dynamic_alloc_script='',
+            spark_conf_lines=''
+        )
+
+        # Script should write to job-specific paths
+        assert '99999' in script
+        assert '.fairway-spark' in script or 'fairway-spark' in script
+
+
 class TestSlurmSparkManagerScriptGeneration:
     """Tests for sbatch script generation in SlurmSparkManager."""
 
