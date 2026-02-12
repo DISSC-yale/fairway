@@ -73,6 +73,5 @@ markers = [
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-fairway = ["data/*", "data/scripts/*"]
-"fairway.data" = ["*"]
-"fairway.data.scripts" = ["*"]
+"fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]
+"fairway.data.scripts" = ["*.sh", "*.py"]
