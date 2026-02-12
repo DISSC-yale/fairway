@@ -7,7 +7,6 @@ except ImportError as e:
     _spark_import_error = e
 
 import os
-import re
 import logging
 
 logger = logging.getLogger("fairway.engines.pyspark")
@@ -292,17 +291,7 @@ class PySparkEngine:
         # Set compression (snappy is default, most efficient for Spark)
         writer = writer.option("compression", compression)
 
-        # --- OPTION B: Table Formats (Delta Lake) ---
-        target_format = self.config_output_format if hasattr(self, 'config_output_format') else 'parquet'
-        # Check if caller passed explicit setting or if we infer from extension? 
-        # Actually PySparkEngine doesn't know global state easily perfectly here without breaking sig.
-        # But `ingest` usually writes to parquet. 
-        # Let's see if we can detect Delta intent via kwargs or standardizing?
-        # Implementation Plan says: Support `format='delta'`.
-        # NOTE: `format` arg in ingest is INPUT format. We need OUTPUT format control.
-        # Let's assume output format defaults parquet but checks for Delta arg or config.
-        
-        # Checking if 'delta' is in kwargs for output format?
+        # Output format: defaults to parquet, supports delta via kwargs
         output_format = kwargs.get('output_format', 'parquet')
         
         logger.info("PySpark Engine writing to %s (format=%s, mode=%s, partitions=%s)", output_path, output_format, write_mode, partition_cols)

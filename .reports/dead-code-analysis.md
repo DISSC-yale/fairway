@@ -1,130 +1,122 @@
 # Dead Code Analysis Report
 
-**Generated**: 2026-02-05
-**Tool**: vulture 2.14 + manual analysis
-**Baseline Tests**: 168 passed, 1 failed (pre-existing)
+**Generated:** 2026-02-12
+**Project:** fairway
+**Tools Used:** vulture, ruff
 
 ---
 
 ## Summary
 
-| Severity | Count | Action |
+| Category | Count | Status |
 |----------|-------|--------|
-| SAFE     | 5     | Remove |
-| CAUTION  | 2     | Review |
-| FALSE POSITIVE | 8 | Ignore |
+| Unused Imports | 8 | **CLEANED** |
+| Unused Variables | 3 | **CLEANED** |
+| Remaining Issues | 6 | CAUTION - signature params/context managers |
+| Unused Dependencies | 1 | CAUTION - mkdocs-material |
 
 ---
 
-## SAFE: Unreachable / Unused Code (Remove)
+## Cleanup Completed
 
-### 1. Duplicate `except` block (BUG)
-**File**: `src/fairway/engines/pyspark_engine.py:9-12`
-**Confidence**: 100%
-```python
-except ImportError as e:   # Line 9 - UNREACHABLE
-    SparkSession = None
-    F = None
-    _spark_import_error = e
-```
-**Reason**: Duplicate `except` block after the first one - syntactically valid but unreachable dead code.
+### Removed Unused Imports (8 total)
+- `cli.py`: `.templates.APPTAINER_DEF`, `.templates.DOCKERFILE_TEMPLATE`, `.config_loader.Config`
+- `pyspark_engine.py`: `re`
+- `pipeline.py`: `DuckDBEngine`, `PySparkEngine`, `hashlib`, `shutil`
 
-### 2. Unused import `random`
-**File**: `src/fairway/engines/pyspark_engine.py:14`
-**Confidence**: 100%
-```python
-import random  # Never used in file
-```
+### Removed Unused Variables (3 total)
+- `cli.py:502`: `cfg = Config(config)` - removed
+- `pipeline.py:769`: `ext = ...` - removed with stale comments
+- `pyspark_engine.py:295`: `target_format = ...` - removed with stale comments
 
-### 3. Unused import `os`
-**File**: `src/fairway/summarize.py:2`
-**Confidence**: 100%
-```python
-import os  # Never used in file
-```
-
-### 4. Unused import `pd` (pandas)
-**File**: `src/fairway/validations/checks.py:1`
-**Confidence**: 100%
-```python
-import pandas as pd  # Never used - uses native DataFrame methods
-```
-
-### 5. Unused import `json`
-**File**: `src/fairway/exporters/redivis_exporter.py:7`
-**Confidence**: 100%
-```python
-import json  # Never used in file
-```
+### Tests Verified
+All 40 core tests pass after cleanup.
 
 ---
 
-## CAUTION: Potentially Unused (Review First)
+## Findings by Severity
 
-### 1. Unused function parameter `lon_series`
-**File**: `src/fairway/enrichments/geospatial.py:66`
-**Confidence**: 100%
-```python
-def get_h3(lat_series: pd.Series, lon_series: pd.Series) -> pd.Series:
-    # lon_series is declared but never used in function body
-    return lat_series.apply(lambda x: hex(random.getrandbits(60))[2:].zfill(15))
-```
-**Action**: This is a mock function. The parameter is part of the API signature but unused in the mock implementation. Keep for API consistency.
+### SAFE - Auto-fixable with ruff --fix
 
-### 2. Unused import `data`
-**File**: `src/fairway/templates.py:2`
-**Confidence**: 80%
-```python
-from . import data  # Import exists but not directly referenced
-```
-**Action**: This import may be intentional to ensure the subpackage is loaded. Common pattern for package resources. Keep for safety.
+These are unused imports that can be safely removed:
 
----
+| File | Line | Issue |
+|------|------|-------|
+| `cli.py` | 119 | `.templates.APPTAINER_DEF` imported but unused |
+| `cli.py` | 119 | `.templates.DOCKERFILE_TEMPLATE` imported but unused |
+| `pyspark_engine.py` | 10 | `re` imported but unused |
+| `pipeline.py` | 12 | `.engines.duckdb_engine.DuckDBEngine` imported but unused |
+| `pipeline.py` | 13 | `.engines.pyspark_engine.PySparkEngine` imported but unused |
+| `pipeline.py` | 207 | `hashlib` imported but unused |
+| `pipeline.py` | 246 | `shutil` imported but unused |
 
-## FALSE POSITIVES (Ignore)
+### CAUTION - Unused Variables (Review Required)
 
-These are **NOT** dead code - vulture incorrectly flagged them:
+These variables are assigned but never used:
 
-| File | Line | Variable | Reason |
-|------|------|----------|--------|
-| `geospatial.py` | 6 | `address` | Function parameter (used in callers) |
-| `geospatial.py` | 13 | `lat`, `lon`, `resolution` | Function parameters (used in callers) |
-| `geospatial.py` | 53, 61 | `addr` | Lambda parameter (used in `.apply()`) |
-| `logging_config.py` | 102 | `exc_type`, `exc_val`, `exc_tb` | Standard `__exit__` protocol |
+| File | Line | Variable | Confidence | Recommendation |
+|------|------|----------|------------|----------------|
+| `cli.py` | 502 | `cfg` | 100% | SAFE - Remove assignment |
+| `pyspark_engine.py` | 296 | `target_format` | 100% | CAUTION - May be intentional placeholder |
+| `pipeline.py` | 773 | `ext` | 100% | SAFE - Remove assignment |
+| `enrichments/geospatial.py` | 6 | `address` | 100% | CAUTION - Signature parameter |
+| `enrichments/geospatial.py` | 13 | `lat, lon, resolution` | 100% | CAUTION - Signature parameters |
+| `enrichments/geospatial.py` | 53 | `addr` | 100% | SAFE - Remove assignment |
+| `enrichments/geospatial.py` | 61 | `addr` | 100% | SAFE - Remove assignment |
+| `enrichments/geospatial.py` | 66 | `lon_series` | 100% | SAFE - Remove assignment |
+| `logging_config.py` | 101 | `exc_tb, exc_type, exc_val` | 100% | CAUTION - Context manager protocol |
 
----
+### DANGER - Do Not Remove
 
-## Test Files (Informational Only)
+These items should NOT be removed without careful consideration:
 
-Test files with unused fixtures (pytest fixtures are called implicitly):
-
-| File | Variable | Status |
-|------|----------|--------|
-| `test_cli_manifest.py` | `setup_manifest` (multiple) | Pytest fixture - OK |
-| `test_logging_config.py` | `cls` | Class method parameter - OK |
-| `test_pyspark_salting.py` | `F` import | May be unused - low priority |
-| `test_schema_evolution.py` | `pyspark`, `delta` imports | May be unused - low priority |
+| Item | Reason |
+|------|--------|
+| `mkdocs-material` in dependencies | Used for documentation build, not runtime |
+| Engine imports in `pipeline.py` | May be used dynamically or for type hints |
 
 ---
 
-## Cleanup Plan
+## Dependencies Analysis
 
-### Phase 1: Safe Removals (No Behavioral Change)
-1. Remove duplicate `except` block in `pyspark_engine.py`
-2. Remove unused `import random` from `pyspark_engine.py`
-3. Remove unused `import os` from `summarize.py`
-4. Remove unused `import pandas as pd` from `validations/checks.py`
-5. Remove unused `import json` from `redivis_exporter.py`
+### Core Dependencies (pyproject.toml)
+- `click` - CLI framework - **USED**
+- `pyyaml` - Config loading - **USED**
+- `fsspec` - File system abstraction - **USED**
+- `mkdocs-material` - Documentation - **BUILD ONLY** (could move to dev deps)
+- `pandas` - Data processing - **USED**
+- `tabulate` - Table formatting - **USED**
 
-### Phase 2: Test Verification
-- Run full test suite after each change
-- Rollback if any new failures
+### Recommendation
+Move `mkdocs-material` to `[project.optional-dependencies.docs]` since it's not needed at runtime.
 
 ---
 
-## Pre-existing Test Failure (Unrelated)
+## Proposed Safe Fixes
 
+### Phase 1: Unused Imports (Auto-fix)
+```bash
+ruff check src/fairway --select F401 --fix
 ```
-FAILED tests/test_schema_evolution.py::test_strict_schema_validation_extra_col_fail
+
+### Phase 2: Unused Variables (Manual Review)
+1. Remove `cfg` assignment in `cli.py:502`
+2. Remove `ext` assignment in `pipeline.py:773`
+3. Prefix unused signature parameters with `_` (e.g., `_address`, `_lat`)
+
+### Phase 3: Dependency Cleanup
+Move `mkdocs-material` to optional docs dependencies.
+
+---
+
+## Test Verification Required
+
+Before applying any changes:
+```bash
+pytest tests/ -v
 ```
-**Reason**: Test expects `ValueError[RULE-115]` when CSV has extra columns vs schema, but Spark only emits a warning instead of raising an exception. This is a behavioral issue, not dead code related.
+
+After each change:
+```bash
+pytest tests/ -v
+```

@@ -116,7 +116,7 @@ def init(name, engine):
 
     # Create config.yaml
     engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
-    from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+    from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
     config_content = CONFIG_TEMPLATE.format(name=name, engine_type=engine_type)
     
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
@@ -483,7 +483,6 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     For HPC submission, use `fairway submit` instead.
     """
     import yaml
-    from .config_loader import Config
     from .pipeline import IngestionPipeline
     from .logging_config import setup_logging
 
@@ -498,8 +497,6 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     if config is None:
         config = discover_config()
         click.echo(f"Auto-discovered config: {config}")
-
-    cfg = Config(config)
 
     # Load spark_conf from spark.yaml for executor settings
     spark_conf = None
@@ -1037,15 +1034,45 @@ set -e
 # Ensure log directory exists
 mkdir -p logs/slurm
 
-# Load Spark module (includes Java)
-echo "Loading Spark module..."
-module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+# =============================================================================
+# Apptainer Mode Detection
+# =============================================================================
+# Detect if we should use Apptainer mode based on:
+# 1. FAIRWAY_SIF environment variable
+# 2. Local fairway.sif file
+USE_APPTAINER="no"
+FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
+FAIRWAY_BINDS="${{FAIRWAY_BINDS:-/vast}}"
+
+if [ -f "$FAIRWAY_SIF" ]; then
+    USE_APPTAINER="yes"
+    echo "Apptainer mode detected: $FAIRWAY_SIF"
+else
+    echo "Bare-metal mode (no container found at $FAIRWAY_SIF)"
+fi
+
+# =============================================================================
+# Environment Setup
+# =============================================================================
+if [ "$USE_APPTAINER" = "yes" ]; then
+    echo "Using Apptainer container for Spark cluster and driver"
+    # Export for SlurmSparkManager to detect
+    export FAIRWAY_SIF
+    export FAIRWAY_BINDS
+else
+    # Load Spark module only in bare-metal mode (container has its own Spark)
+    echo "Loading Spark module..."
+    module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+fi
 
 # Use job-specific state directory to prevent race conditions with concurrent jobs
 STATE_DIR="$HOME/.fairway-spark/$SLURM_JOB_ID"
 mkdir -p "$STATE_DIR"
 
 # Cleanup function to stop Spark cluster on exit
+# NOTE: fairway spark stop runs on HOST (not in container) because it:
+#   1. Reads state files from host filesystem
+#   2. Runs scancel (Slurm command) to cancel the cluster job
 cleanup() {{
     echo "Stopping Spark cluster..."
     fairway spark stop --driver-job-id $SLURM_JOB_ID || true
@@ -1076,9 +1103,28 @@ if [ -f "$CONF_DIR_FILE" ]; then
     echo "Spark Conf Dir: $SPARK_CONF_DIR"
 fi
 
-# Run pipeline
+# =============================================================================
+# Run Pipeline
+# =============================================================================
 echo "Running pipeline..."
-fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
+if [ "$USE_APPTAINER" = "yes" ]; then
+    # Build bind paths for Apptainer
+    BIND_PATHS="${{FAIRWAY_BINDS}}"
+    BIND_PATHS="${{BIND_PATHS}},${{HOME}}/.spark-local"
+    BIND_PATHS="${{BIND_PATHS}},${{PWD}}"
+    BIND_PATHS="${{BIND_PATHS}},/tmp"
+    if [ -n "$SPARK_CONF_DIR" ]; then
+        BIND_PATHS="${{BIND_PATHS}},${{SPARK_CONF_DIR}}"
+    fi
+    echo "Running inside Apptainer with binds: $BIND_PATHS"
+    apptainer exec \
+        --bind "$BIND_PATHS" \
+        --env SPARK_CONF_DIR="${{SPARK_CONF_DIR}}" \
+        "$FAIRWAY_SIF" \
+        fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
+else
+    fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
+fi
 
 echo "Pipeline completed successfully."
 '''
