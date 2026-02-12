@@ -72,6 +72,22 @@ class PySparkEngine:
 
         self.spark = builder.getOrCreate()
 
+    def stop(self):
+        """Stop the SparkSession and release resources."""
+        if self.spark:
+            try:
+                logger.info("Stopping SparkSession...")
+                self.spark.stop()
+                logger.info("SparkSession stopped.")
+            except Exception as e:
+                logger.warning("Error stopping SparkSession: %s", e)
+            finally:
+                self.spark = None
+
+    def __del__(self):
+        """Cleanup on garbage collection."""
+        self.stop()
+
     def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=False, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', target_file_size_mb=128, compression='snappy', max_records_per_file=None, **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
