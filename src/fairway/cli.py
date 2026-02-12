@@ -418,7 +418,8 @@ def spark():
 @click.option('--slurm-time', 'time', default=None, help='Time limit.')
 @click.option('--account', default=None, help='Slurm account.')
 @click.option('--partition', default=None, help='Slurm partition.')
-def start(nodes, cpus, mem, time, account, partition):
+@click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
+def start(nodes, cpus, mem, time, account, partition, driver_job_id):
     """Start a Spark cluster on Slurm."""
     import yaml
     
@@ -456,15 +457,16 @@ def start(nodes, cpus, mem, time, account, partition):
         'spark_conf': spark_conf,
     }
 
-    spark_manager = SlurmSparkManager(spark_cfg)
+    spark_manager = SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id)
     spark_master = spark_manager.start_cluster()
     click.echo(f"Spark cluster started. Master URL: {spark_master}")
 
 @spark.command()
-def stop():
+@click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
+def stop(driver_job_id):
     """Stop the running Spark cluster."""
     from .engines.slurm_cluster import SlurmSparkManager
-    spark_manager = SlurmSparkManager({})
+    spark_manager = SlurmSparkManager({}, driver_job_id=driver_job_id)
     spark_manager.stop_cluster()
 
 @main.command()
@@ -1034,20 +1036,26 @@ mkdir -p logs/slurm
 echo "Loading Spark module..."
 module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
 
+# Use job-specific state directory to prevent race conditions with concurrent jobs
+STATE_DIR="$HOME/.fairway-spark/$SLURM_JOB_ID"
+mkdir -p "$STATE_DIR"
+
 # Cleanup function to stop Spark cluster on exit
 cleanup() {{
     echo "Stopping Spark cluster..."
-    fairway spark stop || true
+    fairway spark stop --driver-job-id $SLURM_JOB_ID || true
+    # Clean up state directory
+    rm -rf "$STATE_DIR"
 }}
 trap cleanup EXIT
 
-# Start Spark cluster
+# Start Spark cluster with job isolation
 echo "Starting Spark cluster..."
-fairway spark start
+fairway spark start --driver-job-id $SLURM_JOB_ID
 
-# Wait for master URL and conf dir
-MASTER_URL_FILE=~/spark_master_url.txt
-CONF_DIR_FILE=~/spark_conf_dir.txt
+# Wait for master URL and conf dir (job-specific paths)
+MASTER_URL_FILE="$STATE_DIR/master_url.txt"
+CONF_DIR_FILE="$STATE_DIR/conf_dir.txt"
 SPARK_ARGS=""
 if [ -f "$MASTER_URL_FILE" ]; then
     SPARK_MASTER=$(cat "$MASTER_URL_FILE")
