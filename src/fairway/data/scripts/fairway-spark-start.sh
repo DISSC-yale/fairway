@@ -41,29 +41,7 @@ if [[ -z "${SLURM_JOB_ID}" || -z "${SLURM_CPUS_PER_TASK}" || -z "${SLURM_MEM_PER
 fi
 
 # -----------------------------------------------------------------------------
-# Validate Spark Installation
-# -----------------------------------------------------------------------------
-if [[ -z "${SPARK_HOME}" ]]; then
-    # Try common container location
-    if [[ -d "/opt/spark" ]]; then
-        export SPARK_HOME=/opt/spark
-    else
-        echo "ERROR: SPARK_HOME not set and /opt/spark not found."
-        echo "Either set SPARK_HOME or run inside the fairway container."
-        exit 1
-    fi
-fi
-
-if [[ ! -x "${SPARK_HOME}/sbin/start-master.sh" ]]; then
-    echo "ERROR: Spark installation invalid. ${SPARK_HOME}/sbin/start-master.sh not found."
-    exit 1
-fi
-
-echo "Using SPARK_HOME: ${SPARK_HOME}"
-echo "Spark version: $(${SPARK_HOME}/bin/spark-submit --version 2>&1 | head -1)"
-
-# -----------------------------------------------------------------------------
-# Determine Container Mode
+# Determine Container Mode (must happen BEFORE SPARK_HOME validation)
 # -----------------------------------------------------------------------------
 USE_CONTAINER="no"
 if [[ -n "${FAIRWAY_SIF}" ]]; then
@@ -80,6 +58,42 @@ fi
 
 # Default bind paths for Apptainer
 FAIRWAY_BINDS="${FAIRWAY_BINDS:-/vast}"
+
+# -----------------------------------------------------------------------------
+# Validate Spark Installation
+# -----------------------------------------------------------------------------
+if [[ "${USE_CONTAINER}" == "yes" ]]; then
+    # In container mode, Spark is inside the container at /opt/spark
+    # We set SPARK_HOME here so commands reference the container path
+    export SPARK_HOME=/opt/spark
+    echo "Using SPARK_HOME: ${SPARK_HOME} (container path)"
+    # Validate inside container
+    if ! apptainer exec --bind "${FAIRWAY_BINDS}" "${FAIRWAY_SIF}" test -x "${SPARK_HOME}/sbin/start-master.sh"; then
+        echo "ERROR: Spark installation invalid inside container. ${SPARK_HOME}/sbin/start-master.sh not found."
+        exit 1
+    fi
+    echo "Spark version: $(apptainer exec --bind "${FAIRWAY_BINDS}" "${FAIRWAY_SIF}" ${SPARK_HOME}/bin/spark-submit --version 2>&1 | head -1)"
+else
+    # Bare-metal mode: SPARK_HOME must be set by module or environment
+    if [[ -z "${SPARK_HOME}" ]]; then
+        # Try common container location (in case running inside container directly)
+        if [[ -d "/opt/spark" ]]; then
+            export SPARK_HOME=/opt/spark
+        else
+            echo "ERROR: SPARK_HOME not set and /opt/spark not found."
+            echo "Either set SPARK_HOME or run inside the fairway container."
+            exit 1
+        fi
+    fi
+
+    if [[ ! -x "${SPARK_HOME}/sbin/start-master.sh" ]]; then
+        echo "ERROR: Spark installation invalid. ${SPARK_HOME}/sbin/start-master.sh not found."
+        exit 1
+    fi
+
+    echo "Using SPARK_HOME: ${SPARK_HOME}"
+    echo "Spark version: $(${SPARK_HOME}/bin/spark-submit --version 2>&1 | head -1)"
+fi
 
 # -----------------------------------------------------------------------------
 # Resource Configuration
