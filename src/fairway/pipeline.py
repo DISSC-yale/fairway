@@ -9,8 +9,6 @@ import logging
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
-from .engines.duckdb_engine import DuckDBEngine
-from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
@@ -204,7 +202,6 @@ class IngestionPipeline:
         temp_loc = self.config.temp_dir
         batch_dir = None
         if temp_loc:
-             import hashlib
              # Generate a deterministic batch directory based on the table name
              # This allows reusing preprocessed files across runs (schema gen -> ingestion) and is human readable.
              safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
@@ -243,7 +240,6 @@ class IngestionPipeline:
              # MUST be self-contained for Spark serialization if mode='cluster'
              import os
              import zipfile
-             import shutil
              
              # Determine output location (temp dir usually)
              # We use a temp dir in the configured storage or system temp
@@ -769,12 +765,7 @@ class IngestionPipeline:
                 output_basename = output_name
             else:
                 # Use configured output format extension (parquet or delta? Delta is usually a directory, so no extension or .delta?)
-                # Standard convention for Delta tables is just the directory name, but if we need an extension for clarity:
-                ext = self.config.output_format if self.config.output_format != 'delta' else 'delta' 
-                # Actually delta tables usually don't have extensions in path, they are directories.
-                # But to avoid collision with file names...
-                # Current logic: output_basename = f"{output_name}.parquet"
-                
+                # Delta tables are directories without extensions, others use format extension
                 if self.config.output_format == 'delta':
                      output_basename = output_name
                 else:

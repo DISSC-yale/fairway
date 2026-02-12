@@ -104,32 +104,31 @@ fi
 # The 'fairway spark start' command reads config/spark.yaml for cluster sizing
 # and submits a separate Slurm job to provision the Spark cluster.
 # SlurmSparkManager auto-detects Apptainer mode based on FAIRWAY_SIF/fairway.sif.
+#
+# IMPORTANT: fairway spark start/stop run on HOST (not in container) because they:
+#   1. Run sbatch/scancel (Slurm commands only available on host)
+#   2. Read/write state files on host filesystem
+#   3. The sbatch job they create handles containerization internally
+
+# Use job-specific state directory to prevent race conditions with concurrent jobs
+STATE_DIR="$HOME/.fairway-spark/$SLURM_JOB_ID"
+mkdir -p "$STATE_DIR"
 
 # Define cleanup function to ensure cluster is stopped when driver exits
 cleanup() {
     echo "Stopping Spark Cluster..."
-    if [ "$USE_APPTAINER" = "yes" ]; then
-        # Run fairway spark stop inside container
-        apptainer exec --bind "${FAIRWAY_BINDS},${HOME}/.spark-local,${PWD}" "$FAIRWAY_SIF" \
-            fairway spark stop || true
-    else
-        fairway spark stop || true
-    fi
+    fairway spark stop --driver-job-id $SLURM_JOB_ID || true
+    # Clean up state directory
+    rm -rf "$STATE_DIR"
 }
 trap cleanup EXIT
 
 echo "Starting Spark Cluster (using config/spark.yaml)..."
-if [ "$USE_APPTAINER" = "yes" ]; then
-    # fairway spark start inside container - SlurmSparkManager will auto-detect Apptainer mode
-    apptainer exec --bind "${FAIRWAY_BINDS},${HOME}/.spark-local,${PWD}" "$FAIRWAY_SIF" \
-        fairway spark start
-else
-    fairway spark start
-fi
+fairway spark start --driver-job-id $SLURM_JOB_ID
 
-# Wait for Master URL (written by fairway spark start)
-MASTER_URL_FILE=~/spark_master_url.txt
-CONF_DIR_FILE=~/spark_conf_dir.txt
+# Wait for Master URL and conf dir (job-specific paths)
+MASTER_URL_FILE="$STATE_DIR/master_url.txt"
+CONF_DIR_FILE="$STATE_DIR/conf_dir.txt"
 SPARK_ARGS=""
 
 if [ -f "$MASTER_URL_FILE" ]; then
