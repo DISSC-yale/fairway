@@ -176,6 +176,8 @@ set -e
 mkdir -p logs/slurm
 
 # Apptainer container configuration
+# These are exported so fairway-spark-start.sh can detect container mode
+# and wrap Spark components (master, workers) in apptainer exec
 export FAIRWAY_SIF="{sif_path}"
 export FAIRWAY_BINDS="{bind_paths}"
 
@@ -183,11 +185,11 @@ echo "Starting Spark cluster in Apptainer mode"
 echo "  Container: $FAIRWAY_SIF"
 echo "  Bind paths: $FAIRWAY_BINDS"
 
-# Run fairway-spark-start.sh inside the container
-# The script detects FAIRWAY_SIF and configures workers to also use containers
+# Run fairway-spark-start.sh on the HOST (not inside container)
+# This is critical: the script uses srun which is only available on the host.
+# The script itself handles containerization of Spark components (master, workers).
 SPARK_START_LOG="spark_start_${{SLURM_JOB_ID}}.log"
-apptainer exec --bind ${{FAIRWAY_BINDS}},${{HOME}}/.spark-local,${{PWD}} ${{FAIRWAY_SIF}} \\
-    bash {spark_start_script} > "${{SPARK_START_LOG}}" 2>&1
+bash {spark_start_script} > "${{SPARK_START_LOG}}" 2>&1
 
 # Display log for debugging
 cat "${{SPARK_START_LOG}}"

@@ -178,7 +178,19 @@ EOF
 # Start Spark Master
 # -----------------------------------------------------------------------------
 echo "Starting Spark Master..."
-START_OUTPUT=$(${SPARK_HOME}/sbin/start-master.sh 2>&1)
+
+# In container mode, Spark is installed inside the container, so we must
+# run start-master.sh inside apptainer. In bare-metal mode, run directly.
+if [[ "${USE_CONTAINER}" == "yes" ]]; then
+    echo "Starting master inside container..."
+    START_OUTPUT=$(apptainer exec \
+        --bind "${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH}" \
+        "${FAIRWAY_SIF}" \
+        ${SPARK_HOME}/sbin/start-master.sh 2>&1)
+else
+    START_OUTPUT=$(${SPARK_HOME}/sbin/start-master.sh 2>&1)
+fi
+
 if [[ $? -ne 0 ]]; then
     echo "ERROR: Spark master failed to start."
     echo "${START_OUTPUT}"
