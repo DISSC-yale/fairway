@@ -364,3 +364,132 @@ class TestSparkStartScript:
 
         assert "srun" in SPARK_START_TEMPLATE
         assert "sparkworker.sh" in SPARK_START_TEMPLATE
+
+    def test_srun_commands_not_inside_apptainer_exec(self):
+        """srun commands must run on host, NOT inside apptainer exec.
+
+        This is critical: srun is a Slurm binary only available on the host.
+        The script runs on the host and should call srun directly.
+        """
+        from fairway.templates import SPARK_START_TEMPLATE
+        import re
+
+        # srun should appear in the script (for mkdir, cp, worker launch)
+        assert "srun" in SPARK_START_TEMPLATE
+
+        # srun should NOT be inside an apptainer exec command
+        # Pattern: apptainer exec ... srun (on same logical command)
+        # This would be wrong - srun must run on host
+        lines = SPARK_START_TEMPLATE.split('\n')
+        for i, line in enumerate(lines):
+            # Skip comments
+            if line.strip().startswith('#'):
+                continue
+            # If line has srun, it should not be after 'apptainer exec' on same command
+            if 'srun' in line:
+                # Check this line and continuation lines above
+                assert 'apptainer exec' not in line, \
+                    f"srun should not be inside apptainer exec (line {i+1}): {line}"
+
+    def test_spark_master_containerized_in_container_mode(self):
+        """start-master.sh should run inside apptainer when USE_CONTAINER=yes.
+
+        The Spark master needs to run inside the container where Spark is installed.
+        """
+        from fairway.templates import SPARK_START_TEMPLATE
+
+        # Should have conditional logic for container mode around start-master
+        assert 'USE_CONTAINER' in SPARK_START_TEMPLATE
+
+        # In container mode, start-master.sh should be wrapped in apptainer exec
+        # Look for pattern like: apptainer exec ... start-master.sh
+        assert 'apptainer exec' in SPARK_START_TEMPLATE
+
+        # The script should have logic to run start-master inside container
+        # when USE_CONTAINER is yes
+        import re
+        # Find section that starts master - should have container conditional
+        master_section = re.search(
+            r'Starting Spark Master.*?start-master\.sh',
+            SPARK_START_TEMPLATE,
+            re.DOTALL
+        )
+        assert master_section is not None, "Should have Spark Master startup section"
+
+        # After "Starting Spark Master", there should be USE_CONTAINER check
+        # before start-master.sh is called
+        master_text = master_section.group(0)
+        # The actual containerization happens - check full template for pattern
+        assert re.search(
+            r'if.*USE_CONTAINER.*yes.*then.*apptainer exec.*start-master',
+            SPARK_START_TEMPLATE,
+            re.DOTALL | re.IGNORECASE
+        ), "start-master.sh should be wrapped in apptainer exec when USE_CONTAINER=yes"
+
+
+class TestSlurmSparkManagerScriptGeneration:
+    """Tests for sbatch script generation in SlurmSparkManager."""
+
+    def test_apptainer_script_does_not_wrap_spark_start_in_container(self, tmp_path, monkeypatch):
+        """The generated sbatch script should NOT wrap fairway-spark-start.sh in apptainer exec.
+
+        fairway-spark-start.sh must run on the HOST so it can call srun.
+        The script itself handles containerization of Spark components.
+        """
+        from fairway.engines.slurm_cluster import SlurmSparkManager
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "fairway.sif").write_text("fake sif")
+        (tmp_path / "scripts").mkdir()
+
+        config = {
+            'slurm_nodes': 2,
+            'slurm_cpus_per_node': 4,
+            'slurm_mem_per_node': '16G',
+            'slurm_account': 'test',
+            'slurm_time': '1:00:00',
+            'slurm_partition': 'day',
+        }
+
+        manager = SlurmSparkManager(config)
+        script = manager._generate_apptainer_script(
+            nodes=2, cpus=4, mem='16G', account='test',
+            time_limit='1:00:00', partition='day',
+            sif_path=str(tmp_path / "fairway.sif"),
+            bind_paths='/vast',
+            dynamic_alloc_script='',
+            spark_conf_lines=''
+        )
+
+        # The script should call fairway-spark-start.sh
+        assert 'fairway-spark-start.sh' in script
+
+        # CRITICAL: fairway-spark-start.sh should NOT be wrapped in apptainer exec
+        # It needs to run on the host to have access to srun
+        import re
+
+        # Find the line(s) that invoke fairway-spark-start.sh
+        # Check that they use 'bash' directly, not 'apptainer exec'
+        lines = script.split('\n')
+        spark_start_invocation = None
+        for i, line in enumerate(lines):
+            if 'fairway-spark-start.sh' in line and not line.strip().startswith('#'):
+                # Found the invocation line - check preceding lines for continuation
+                # Build the full command (handle line continuations with \)
+                full_command = line
+                j = i - 1
+                while j >= 0 and lines[j].rstrip().endswith('\\'):
+                    full_command = lines[j] + '\n' + full_command
+                    j -= 1
+                spark_start_invocation = full_command
+                break
+
+        assert spark_start_invocation is not None, "Should find fairway-spark-start.sh invocation"
+
+        # The invocation should NOT contain 'apptainer exec'
+        assert 'apptainer exec' not in spark_start_invocation, \
+            f"fairway-spark-start.sh should NOT be wrapped in apptainer exec. Found: {spark_start_invocation}"
+
+        # The script should call: bash fairway-spark-start.sh (or similar)
+        assert 'bash' in spark_start_invocation, \
+            f"Should invoke with bash, found: {spark_start_invocation}"
