@@ -65,4 +65,4 @@ run-dev: ## Run pipeline with local src/ mounted (no rebuild needed)
 
 build-from-branch: ## Build container from specific branch (usage: make build-from-branch BRANCH=fix-apptainer)
 	@echo "Building container from branch: $(BRANCH)"
-	FAIRWAY_GIT_REF=$(BRANCH) apptainer build --force $(FAIRWAY_SIF) Apptainer.def
+	apptainer build --force --build-arg FAIRWAY_GIT_REF=$(BRANCH) $(FAIRWAY_SIF) Apptainer.def
