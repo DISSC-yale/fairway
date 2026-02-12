@@ -365,6 +365,17 @@ class TestSparkStartScript:
         assert "srun" in SPARK_START_TEMPLATE
         assert "sparkworker.sh" in SPARK_START_TEMPLATE
 
+    def test_script_disables_rest_server_for_spark4_compatibility(self):
+        """Script disables REST submission server for Spark 4.x compatibility.
+
+        Spark 4.x added a restriction: RestSubmissionServer doesn't support
+        authentication via spark.authenticate.secret. We disable it.
+        """
+        from fairway.templates import SPARK_START_TEMPLATE
+
+        assert "spark.master.rest.enabled" in SPARK_START_TEMPLATE
+        assert "false" in SPARK_START_TEMPLATE
+
     def test_srun_commands_not_inside_apptainer_exec(self):
         """srun commands must run on host, NOT inside apptainer exec.
 
