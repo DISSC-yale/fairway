@@ -9,6 +9,8 @@ From: python:3.10-slim-bookworm
 %files
     # No external files needed currently
 
+%arguments
+    FAIRWAY_GIT_REF=main
 
 %post
     # Fail fast on any error
@@ -39,9 +41,8 @@ From: python:3.10-slim-bookworm
 
     # Install fairway directly (which pulls in all dependencies from pyproject.toml)
     # We use the [all] extra to ensure we get pyspark, duckdb, etc.
-    # Override FAIRWAY_GIT_REF at build time to install a specific branch/tag:
-    #   apptainer build --build-arg FAIRWAY_GIT_REF=fix-apptainer fairway.sif Apptainer.def
-    FAIRWAY_GIT_REF="${FAIRWAY_GIT_REF:-main}"
+    # Override FAIRWAY_GIT_REF at build time:
+    #   make build-from-branch BRANCH=fix-apptainer
     echo "Installing fairway[all] from ref: ${FAIRWAY_GIT_REF}..."
     /opt/venv/bin/pip install --no-cache-dir "fairway[all] @ git+https://github.com/DISSC-yale/fairway.git@${FAIRWAY_GIT_REF}"
 
