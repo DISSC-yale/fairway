@@ -770,13 +770,14 @@ def eject():
 
 @main.command()
 @click.option('--force', is_flag=True, help='Force rebuild (overwrite existing image).')
-def build(force):
+@click.option('--branch', default='main', help='Git branch/tag to install fairway from (default: main).')
+def build(force, branch):
     """Build the container image (Apptainer preferred, falls back to Docker)."""
-    
+
     # Check for Apptainer.def
     if os.path.exists('Apptainer.def'):
-        click.echo("Found Apptainer.def. Building Apptainer image...")
-        
+        click.echo(f"Found Apptainer.def. Building Apptainer image from branch: {branch}")
+
         if os.path.exists("fairway.sif"):
             if force:
                 click.echo("Overwriting existing fairway.sif...")
@@ -785,7 +786,7 @@ def build(force):
                 if not click.confirm("fairway.sif already exists. Overwrite?"):
                     return
 
-        cmd = ["apptainer", "build", "fairway.sif", "Apptainer.def"]
+        cmd = ["apptainer", "build", "--build-arg", f"FAIRWAY_GIT_REF={branch}", "fairway.sif", "Apptainer.def"]
         try:
             subprocess.run(cmd, check=True)
             click.echo("\nBuild complete: fairway.sif")
