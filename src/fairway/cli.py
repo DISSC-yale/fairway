@@ -1110,15 +1110,17 @@ fi
 echo "Running pipeline..."
 if [ "$USE_APPTAINER" = "yes" ]; then
     # Build bind paths for Apptainer
+    # Use --no-home to prevent classpath pollution from user's home directory
     BIND_PATHS="${{FAIRWAY_BINDS}}"
     BIND_PATHS="${{BIND_PATHS}},${{HOME}}/.spark-local"
+    BIND_PATHS="${{BIND_PATHS}},${{HOME}}/.fairway-spark"
     BIND_PATHS="${{BIND_PATHS}},${{PWD}}"
     BIND_PATHS="${{BIND_PATHS}},/tmp"
     if [ -n "$SPARK_CONF_DIR" ]; then
         BIND_PATHS="${{BIND_PATHS}},${{SPARK_CONF_DIR}}"
     fi
     echo "Running inside Apptainer with binds: $BIND_PATHS"
-    apptainer exec \
+    apptainer exec --no-home \
         --bind "$BIND_PATHS" \
         --env SPARK_CONF_DIR="${{SPARK_CONF_DIR}}" \
         "$FAIRWAY_SIF" \

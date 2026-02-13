@@ -156,8 +156,10 @@ if [ "$USE_APPTAINER" = "yes" ]; then
 
     # Build comprehensive bind paths
     # Include: data directories, spark config, project directory, home spark dirs
+    # Use --no-home to prevent classpath pollution from user's home directory
     BIND_PATHS="${FAIRWAY_BINDS}"
     BIND_PATHS="${BIND_PATHS},${HOME}/.spark-local"
+    BIND_PATHS="${BIND_PATHS},${HOME}/.fairway-spark"
     BIND_PATHS="${BIND_PATHS},${PWD}"
 
     # Add SPARK_CONF_DIR if set and different from above
@@ -171,8 +173,9 @@ if [ "$USE_APPTAINER" = "yes" ]; then
     echo "Bind paths: $BIND_PATHS"
 
     # Run pipeline inside container
+    # Use --no-home to prevent classpath pollution (e.g., corrupted ~/.ivy2)
     # Pass through SPARK_CONF_DIR so PySpark finds auth settings
-    apptainer exec \
+    apptainer exec --no-home \
         --bind "$BIND_PATHS" \
         --env SPARK_CONF_DIR="${SPARK_CONF_DIR}" \
         "$FAIRWAY_SIF" \

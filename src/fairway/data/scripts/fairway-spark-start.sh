@@ -67,12 +67,17 @@ if [[ "${USE_CONTAINER}" == "yes" ]]; then
     # We set SPARK_HOME here so commands reference the container path
     export SPARK_HOME=/opt/spark
     echo "Using SPARK_HOME: ${SPARK_HOME} (container path)"
+
+    # Use --no-home to prevent classpath pollution from user's home directory
+    # This avoids ClassFormatError caused by corrupted files in ~/.ivy2 or similar
+    APPTAINER_BASE_OPTS="--no-home --bind ${FAIRWAY_BINDS},${PWD},/tmp"
+
     # Validate inside container
-    if ! apptainer exec --bind "${FAIRWAY_BINDS}" "${FAIRWAY_SIF}" test -x "${SPARK_HOME}/sbin/start-master.sh"; then
+    if ! apptainer exec ${APPTAINER_BASE_OPTS} "${FAIRWAY_SIF}" test -x "${SPARK_HOME}/sbin/start-master.sh"; then
         echo "ERROR: Spark installation invalid inside container. ${SPARK_HOME}/sbin/start-master.sh not found."
         exit 1
     fi
-    echo "Spark version: $(apptainer exec --bind "${FAIRWAY_BINDS}" "${FAIRWAY_SIF}" ${SPARK_HOME}/bin/spark-submit --version 2>&1 | head -1)"
+    echo "Spark version: $(apptainer exec ${APPTAINER_BASE_OPTS} "${FAIRWAY_SIF}" ${SPARK_HOME}/bin/spark-submit --version 2>&1 | head -1)"
 else
     # Bare-metal mode: SPARK_HOME must be set by module or environment
     if [[ -z "${SPARK_HOME}" ]]; then
@@ -200,8 +205,12 @@ echo "Starting Spark Master..."
 # run start-master.sh inside apptainer. In bare-metal mode, run directly.
 if [[ "${USE_CONTAINER}" == "yes" ]]; then
     echo "Starting master inside container..."
-    START_OUTPUT=$(apptainer exec \
-        --bind "${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH}" \
+    # Use --no-home to prevent classpath pollution
+    START_OUTPUT=$(apptainer exec --no-home \
+        --bind "${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH},${PWD},/tmp" \
+        --env SPARK_CONF_DIR="${SPARK_CONF_DIR}" \
+        --env SPARK_LOG_DIR="${SPARK_LOG_DIR}" \
+        --env SPARK_PID_DIR="${SPARK_PID_DIR}" \
         "${FAIRWAY_SIF}" \
         ${SPARK_HOME}/sbin/start-master.sh 2>&1)
 else
@@ -255,6 +264,7 @@ echo "export SPARK_MASTER_WEBUI=${SPARK_MASTER_WEBUI}" >> "${SPARK_CONF_DIR}/spa
 
 if [[ "${USE_CONTAINER}" == "yes" ]]; then
     # Container mode: workers run inside Apptainer
+    # Use --no-home to prevent classpath pollution from user's home directory
     cat > "${SPARK_CONF_DIR}/sparkworker.sh" <<EOF
 #!/bin/bash
 ulimit -u 16384 -n 16384
@@ -263,8 +273,11 @@ export SPARK_WORKER_CORES=\${SPARK_WORKER_CORES:-${SPARK_WORKER_CORES}}
 export SPARK_WORKER_MEMORY=\${SPARK_WORKER_MEMORY:-${SPARK_WORKER_MEMORY}g}
 logf="${SPARK_LOG_DIR}/spark-worker-\$(hostname).out"
 
-# Run worker inside Apptainer container
-exec apptainer exec --bind ${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH} ${FAIRWAY_SIF} \
+# Run worker inside Apptainer container (--no-home prevents classpath pollution)
+exec apptainer exec --no-home \
+    --bind ${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH},/tmp \
+    --env SPARK_CONF_DIR=${SPARK_CONF_DIR} \
+    ${FAIRWAY_SIF} \
     spark-class org.apache.spark.deploy.worker.Worker "${SPARK_MASTER_URL}" &> "\${logf}"
 EOF
 else
