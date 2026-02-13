@@ -13,9 +13,8 @@ From: python:3.10-slim-bookworm
     FAIRWAY_GIT_REF=main
 
 %post
-    # Fail fast on any error (including pipe failures)
+    # Fail fast on any error
     set -e
-    set -o pipefail
 
     apt-get update && apt-get install -y --no-install-recommends \
         git \
