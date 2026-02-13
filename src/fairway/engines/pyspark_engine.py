@@ -62,8 +62,23 @@ class PySparkEngine:
 
         if spark_master:
             builder = builder.master(spark_master)
-            # Auth settings (spark.authenticate + secret) are picked up automatically
-            # from SPARK_CONF_DIR/spark-defaults.conf, which is set by driver.sh
+            # Load auth settings from SPARK_CONF_DIR/spark-defaults.conf
+            spark_conf_dir = os.environ.get('SPARK_CONF_DIR')
+            logger.info("SPARK_CONF_DIR: %s", spark_conf_dir)
+            if spark_conf_dir:
+                defaults_path = os.path.join(spark_conf_dir, 'spark-defaults.conf')
+                if os.path.exists(defaults_path):
+                    logger.info("Reading spark-defaults.conf from: %s", defaults_path)
+                    with open(defaults_path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            parts = line.split(None, 1)
+                            if len(parts) == 2 and parts[0].startswith('spark.'):
+                                builder = builder.config(parts[0], parts[1])
+                else:
+                    logger.warning("spark-defaults.conf not found: %s", defaults_path)
         else:
             # Local mode: bind to localhost to avoid network issues on macOS
             builder = builder.config("spark.driver.host", "127.0.0.1") \
@@ -73,7 +88,7 @@ class PySparkEngine:
 
     def stop(self):
         """Stop the SparkSession and release resources."""
-        if self.spark:
+        if getattr(self, 'spark', None):
             try:
                 logger.info("Stopping SparkSession...")
                 self.spark.stop()
