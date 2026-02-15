@@ -77,6 +77,11 @@ class PySparkEngine:
                             parts = line.split(None, 1)
                             if len(parts) == 2 and parts[0].startswith('spark.'):
                                 builder = builder.config(parts[0], parts[1])
+                                # Log config (mask secrets)
+                                if 'secret' in parts[0].lower():
+                                    logger.info("Applied config: %s = <masked, len=%d>", parts[0], len(parts[1]))
+                                else:
+                                    logger.info("Applied config: %s = %s", parts[0], parts[1])
                 else:
                     logger.warning("spark-defaults.conf not found: %s", defaults_path)
         else:
