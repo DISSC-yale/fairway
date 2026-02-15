@@ -265,18 +265,22 @@ echo "export SPARK_MASTER_WEBUI=${SPARK_MASTER_WEBUI}" >> "${SPARK_CONF_DIR}/spa
 if [[ "${USE_CONTAINER}" == "yes" ]]; then
     # Container mode: workers run inside Apptainer
     # Use --no-home to prevent classpath pollution from user's home directory
+    # Note: spark-class doesn't read spark-defaults.conf, so we pass auth via SPARK_WORKER_OPTS
     cat > "${SPARK_CONF_DIR}/sparkworker.sh" <<EOF
 #!/bin/bash
 ulimit -u 16384 -n 16384
 export SPARK_CONF_DIR=${SPARK_CONF_DIR}
 export SPARK_WORKER_CORES=\${SPARK_WORKER_CORES:-${SPARK_WORKER_CORES}}
 export SPARK_WORKER_MEMORY=\${SPARK_WORKER_MEMORY:-${SPARK_WORKER_MEMORY}g}
+# Pass auth settings via Java opts since spark-class doesn't read spark-defaults.conf
+export SPARK_WORKER_OPTS="-Dspark.authenticate=true -Dspark.authenticate.secret=${SPARK_SECRET}"
 logf="${SPARK_LOG_DIR}/spark-worker-\$(hostname).out"
 
 # Run worker inside Apptainer container (--no-home prevents classpath pollution)
 exec apptainer exec --no-home \
     --bind ${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH},/tmp \
     --env SPARK_CONF_DIR=${SPARK_CONF_DIR} \
+    --env SPARK_WORKER_OPTS="\${SPARK_WORKER_OPTS}" \
     ${FAIRWAY_SIF} \
     spark-class org.apache.spark.deploy.worker.Worker "${SPARK_MASTER_URL}" &> "\${logf}"
 EOF
@@ -288,6 +292,8 @@ ulimit -u 16384 -n 16384
 export SPARK_CONF_DIR=${SPARK_CONF_DIR}
 export SPARK_WORKER_CORES=\${SPARK_WORKER_CORES:-${SPARK_WORKER_CORES}}
 export SPARK_WORKER_MEMORY=\${SPARK_WORKER_MEMORY:-${SPARK_WORKER_MEMORY}g}
+# Pass auth settings via Java opts since spark-class doesn't read spark-defaults.conf
+export SPARK_WORKER_OPTS="-Dspark.authenticate=true -Dspark.authenticate.secret=${SPARK_SECRET}"
 logf="${SPARK_LOG_DIR}/spark-worker-\$(hostname).out"
 exec spark-class org.apache.spark.deploy.worker.Worker "${SPARK_MASTER_URL}" &> "\${logf}"
 EOF
