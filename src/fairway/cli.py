@@ -116,7 +116,7 @@ def init(name, engine):
 
     # Create config.yaml
     engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
-    from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE, MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+    from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
     config_content = CONFIG_TEMPLATE.format(name=name, engine_type=engine_type)
     
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
@@ -213,15 +213,13 @@ def generate_data(size, partitioned, format):
 @click.option('--spark-master', hidden=True, help='Spark master URL (for internal run).')
 def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, account, time, cpus, mem, internal_run, spark_master):
     """Generate schema from data.
-    
+
     Modes:
     1. Pipeline Mode: Provide --config. Uses full pipeline (preprocessing/unzipping) to find data.
     2. Legacy Mode: Provide FILE_PATH. Scans that specific file/dir.
     """
     import yaml
-    import os
-    import sys
-    
+
     # ---------------------------------------------------------
     # SLURM SUBMISSION (Wrapper)
     # ---------------------------------------------------------
@@ -418,7 +416,8 @@ def spark():
 @click.option('--slurm-time', 'time', default=None, help='Time limit.')
 @click.option('--account', default=None, help='Slurm account.')
 @click.option('--partition', default=None, help='Slurm partition.')
-def start(nodes, cpus, mem, time, account, partition):
+@click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
+def start(nodes, cpus, mem, time, account, partition, driver_job_id):
     """Start a Spark cluster on Slurm."""
     import yaml
     
@@ -456,15 +455,16 @@ def start(nodes, cpus, mem, time, account, partition):
         'spark_conf': spark_conf,
     }
 
-    spark_manager = SlurmSparkManager(spark_cfg)
+    spark_manager = SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id)
     spark_master = spark_manager.start_cluster()
     click.echo(f"Spark cluster started. Master URL: {spark_master}")
 
 @spark.command()
-def stop():
+@click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
+def stop(driver_job_id):
     """Stop the running Spark cluster."""
     from .engines.slurm_cluster import SlurmSparkManager
-    spark_manager = SlurmSparkManager({})
+    spark_manager = SlurmSparkManager({}, driver_job_id=driver_job_id)
     spark_manager.stop_cluster()
 
 @main.command()
@@ -481,7 +481,6 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     For HPC submission, use `fairway submit` instead.
     """
     import yaml
-    from .config_loader import Config
     from .pipeline import IngestionPipeline
     from .logging_config import setup_logging
 
@@ -496,8 +495,6 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     if config is None:
         config = discover_config()
         click.echo(f"Auto-discovered config: {config}")
-
-    cfg = Config(config)
 
     # Load spark_conf from spark.yaml for executor settings
     spark_conf = None
@@ -517,8 +514,14 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     if skip_summary:
         click.echo("Summary generation will be skipped. Run `fairway summarize` separately.")
     pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
-    pipeline.run(skip_summary=skip_summary)
-    click.echo("Pipeline execution completed successfully.")
+    try:
+        pipeline.run(skip_summary=skip_summary)
+        click.echo("Pipeline execution completed successfully.")
+    finally:
+        # Explicitly stop the engine to release Spark resources
+        if hasattr(pipeline, 'engine') and hasattr(pipeline.engine, 'stop'):
+            pipeline.engine.stop()
+
 
 
 @main.command()
@@ -767,12 +770,16 @@ def eject():
 @main.command()
 @click.option('--force', is_flag=True, help='Force rebuild (overwrite existing image).')
 def build(force):
-    """Build the container image (Apptainer preferred, falls back to Docker)."""
-    
+    """Build the container image (Apptainer preferred, falls back to Docker).
+
+    The container installs fairway from the main branch. For development,
+    use 'fairway shell --dev' to bind-mount local source code.
+    """
+
     # Check for Apptainer.def
     if os.path.exists('Apptainer.def'):
         click.echo("Found Apptainer.def. Building Apptainer image...")
-        
+
         if os.path.exists("fairway.sif"):
             if force:
                 click.echo("Overwriting existing fairway.sif...")
@@ -785,7 +792,7 @@ def build(force):
         try:
             subprocess.run(cmd, check=True)
             click.echo("\nBuild complete: fairway.sif")
-            click.echo("You can now run tasks with: fairway run --profile apptainer")
+            click.echo("For development, use: fairway shell --dev")
         except subprocess.CalledProcessError as e:
             raise click.ClickException(f"Apptainer build failed with exit code {e.returncode}")
         except FileNotFoundError:
@@ -809,11 +816,27 @@ def build(force):
         )
 
 
+def _get_dev_bind_path():
+    """Get bind path for dev mode - mounts local src over container's installed package."""
+    # Find local fairway source
+    local_src = os.path.join(os.getcwd(), 'src', 'fairway')
+    if not os.path.isdir(local_src):
+        # Try relative to this file (for when running from fairway repo)
+        local_src = os.path.dirname(os.path.abspath(__file__))
+
+    if os.path.isdir(local_src):
+        # Container's installed package location
+        container_pkg = "/opt/venv/lib/python3.10/site-packages/fairway"
+        return f"{local_src}:{container_pkg}"
+    return None
+
+
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--image', default=None, help='Path to Apptainer image (default: checks local fairway.sif then pulls from registry).')
 @click.option('--bind', multiple=True, help='Additional bind paths.')
-def shell(config, image, bind):
+@click.option('--dev', is_flag=True, help='Dev mode: bind-mount local src/fairway over container package for rapid iteration.')
+def shell(config, image, bind, dev):
     """Enter an interactive shell inside the fairway container."""
     from .config_loader import Config
 
@@ -828,11 +851,20 @@ def shell(config, image, bind):
             click.echo("No config file found. Proceeding without auto-binding project paths.")
 
     bind_paths = set(bind)
-    
+
     if config:
         cfg = Config(config)
         auto_binds = _get_apptainer_binds(cfg)
         bind_paths.update(auto_binds)
+
+    # Dev mode: bind-mount local source over container's installed package
+    dev_bind = None
+    if dev:
+        dev_bind = _get_dev_bind_path()
+        if dev_bind:
+            click.echo(f"Dev mode: mounting local source -> {dev_bind}")
+        else:
+            click.echo("Warning: --dev specified but src/fairway not found in current directory", err=True)
 
     # Determine image
     if image:
@@ -841,19 +873,21 @@ def shell(config, image, bind):
         container_image = "fairway.sif"
     else:
         # Default to latest from registry
-        # We need to import this constant or hardcode it
-        # For now, let's look at the implementation plan
         container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
 
     cmd = ["apptainer", "shell"]
-    
+
+    # Add dev bind first (so it takes precedence)
+    if dev_bind:
+        cmd.extend(["--bind", dev_bind])
+
     if bind_paths:
         bind_str = ','.join(sorted(list(bind_paths)))
         cmd.extend(["--bind", bind_str])
         click.echo(f"Binding paths: {bind_str}")
-    
+
     cmd.append(container_image)
-    
+
     click.echo(f"Launching shell in container: {container_image}")
     try:
         subprocess.run(cmd)
@@ -1003,24 +1037,60 @@ set -e
 # Ensure log directory exists
 mkdir -p logs/slurm
 
-# Load Spark module (includes Java)
-echo "Loading Spark module..."
-module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+# =============================================================================
+# Apptainer Mode Detection
+# =============================================================================
+# Detect if we should use Apptainer mode based on:
+# 1. FAIRWAY_SIF environment variable
+# 2. Local fairway.sif file
+USE_APPTAINER="no"
+FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
+FAIRWAY_BINDS="${{FAIRWAY_BINDS:-/vast}}"
+
+if [ -f "$FAIRWAY_SIF" ]; then
+    USE_APPTAINER="yes"
+    echo "Apptainer mode detected: $FAIRWAY_SIF"
+else
+    echo "Bare-metal mode (no container found at $FAIRWAY_SIF)"
+fi
+
+# =============================================================================
+# Environment Setup
+# =============================================================================
+if [ "$USE_APPTAINER" = "yes" ]; then
+    echo "Using Apptainer container for Spark cluster and driver"
+    # Export for SlurmSparkManager to detect
+    export FAIRWAY_SIF
+    export FAIRWAY_BINDS
+else
+    # Load Spark module only in bare-metal mode (container has its own Spark)
+    echo "Loading Spark module..."
+    module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+fi
+
+# Use job-specific state directory to prevent race conditions with concurrent jobs
+STATE_DIR="$HOME/.fairway-spark/$SLURM_JOB_ID"
+mkdir -p "$STATE_DIR"
 
 # Cleanup function to stop Spark cluster on exit
+# NOTE: fairway spark stop runs on HOST (not in container) because it:
+#   1. Reads state files from host filesystem
+#   2. Runs scancel (Slurm command) to cancel the cluster job
 cleanup() {{
     echo "Stopping Spark cluster..."
-    fairway spark stop || true
+    fairway spark stop --driver-job-id $SLURM_JOB_ID || true
+    # Clean up state directory
+    rm -rf "$STATE_DIR"
 }}
 trap cleanup EXIT
 
-# Start Spark cluster
+# Start Spark cluster with job isolation
 echo "Starting Spark cluster..."
-fairway spark start
+fairway spark start --driver-job-id $SLURM_JOB_ID
 
-# Wait for master URL and conf dir
-MASTER_URL_FILE=~/spark_master_url.txt
-CONF_DIR_FILE=~/spark_conf_dir.txt
+# Wait for master URL and conf dir (job-specific paths)
+MASTER_URL_FILE="$STATE_DIR/master_url.txt"
+CONF_DIR_FILE="$STATE_DIR/conf_dir.txt"
 SPARK_ARGS=""
 if [ -f "$MASTER_URL_FILE" ]; then
     SPARK_MASTER=$(cat "$MASTER_URL_FILE")
@@ -1036,9 +1106,30 @@ if [ -f "$CONF_DIR_FILE" ]; then
     echo "Spark Conf Dir: $SPARK_CONF_DIR"
 fi
 
-# Run pipeline
+# =============================================================================
+# Run Pipeline
+# =============================================================================
 echo "Running pipeline..."
-fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
+if [ "$USE_APPTAINER" = "yes" ]; then
+    # Build bind paths for Apptainer
+    # Use --no-home to prevent classpath pollution from user's home directory
+    BIND_PATHS="${{FAIRWAY_BINDS}}"
+    BIND_PATHS="${{BIND_PATHS}},${{HOME}}/.spark-local"
+    BIND_PATHS="${{BIND_PATHS}},${{HOME}}/.fairway-spark"
+    BIND_PATHS="${{BIND_PATHS}},${{PWD}}"
+    BIND_PATHS="${{BIND_PATHS}},/tmp"
+    if [ -n "$SPARK_CONF_DIR" ]; then
+        BIND_PATHS="${{BIND_PATHS}},${{SPARK_CONF_DIR}}"
+    fi
+    echo "Running inside Apptainer with binds: $BIND_PATHS"
+    apptainer exec --no-home \
+        --bind "$BIND_PATHS" \
+        --env SPARK_CONF_DIR="${{SPARK_CONF_DIR}}" \
+        "$FAIRWAY_SIF" \
+        fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
+else
+    fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
+fi
 
 echo "Pipeline completed successfully."
 '''

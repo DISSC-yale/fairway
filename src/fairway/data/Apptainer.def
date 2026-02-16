@@ -9,10 +9,14 @@ From: python:3.10-slim-bookworm
 %files
     # No external files needed currently
 
-
 %post
     # Fail fast on any error
     set -e
+
+    # -------------------------------------------------------------------------
+    # Change this to build from a different branch/tag/commit
+    # -------------------------------------------------------------------------
+    FAIRWAY_GIT_REF="main"
 
     apt-get update && apt-get install -y --no-install-recommends \
         git \
@@ -20,18 +24,40 @@ From: python:3.10-slim-bookworm
         openjdk-17-jre-headless \
         procps \
         && rm -rf /var/lib/apt/lists/*
-    
-    # Install Nextflow
-    curl -s https://get.nextflow.io | bash
-    mv nextflow /usr/local/bin/
-    chmod +x /usr/local/bin/nextflow
-    
-    # Install Spark
+
+    # Install Spark with integrity verification
     SPARK_VERSION=4.1.1
     HADOOP_VERSION=3
-    curl -sL "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz" | tar -xz -C /opt
+    SPARK_TGZ="spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz"
+    SPARK_URL="https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/${SPARK_TGZ}"
+
+    echo "Downloading Spark ${SPARK_VERSION}..."
+    cd /tmp
+    curl -fSL -o "${SPARK_TGZ}" "${SPARK_URL}"
+
+    # Verify download completed (file should be ~400MB)
+    FILESIZE=$(stat -c%s "${SPARK_TGZ}" 2>/dev/null || stat -f%z "${SPARK_TGZ}")
+    if [ "$FILESIZE" -lt 100000000 ]; then
+        echo "ERROR: Spark download appears incomplete (${FILESIZE} bytes)"
+        exit 1
+    fi
+    echo "Downloaded ${FILESIZE} bytes"
+
+    # Extract and verify
+    echo "Extracting Spark..."
+    tar -xzf "${SPARK_TGZ}" -C /opt
+    rm -f "${SPARK_TGZ}"
     ln -s /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} /opt/spark
-    
+
+    # Verify JAR files are valid
+    echo "Verifying Spark installation..."
+    JAR_COUNT=$(ls /opt/spark/jars/*.jar 2>/dev/null | wc -l)
+    if [ "$JAR_COUNT" -lt 200 ]; then
+        echo "ERROR: Spark JAR count too low (${JAR_COUNT}), expected 200+"
+        exit 1
+    fi
+    echo "Found ${JAR_COUNT} JAR files"
+
     # -------------------------------------------------------------------------
     # Python Environment Setup (Venv to avoid host pollution)
     # -------------------------------------------------------------------------
@@ -42,10 +68,9 @@ From: python:3.10-slim-bookworm
     # Upgrade tools inside the venv
     /opt/venv/bin/pip install --upgrade pip setuptools wheel
 
-    # Install fairway directly (which pulls in all dependencies from pyproject.toml)
-    # We use the [all] extra to ensure we get pyspark, duckdb, etc.
-    echo "Installing fairway[all]..."
-    /opt/venv/bin/pip install --no-cache-dir "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[all]"
+    # Install fairway from git
+    echo "Installing fairway[all] from ref: ${FAIRWAY_GIT_REF}..."
+    /opt/venv/bin/pip install --no-cache-dir "fairway[all] @ git+https://github.com/DISSC-yale/fairway.git@${FAIRWAY_GIT_REF}"
 
 %environment
     export LC_ALL=C
@@ -70,6 +95,21 @@ From: python:3.10-slim-bookworm
 %runscript
     # The PATH update in %environment ensures this runs from the venv
     exec fairway "$@"
+
+%test
+    # Validate the build - these commands must succeed
+    set -e
+    echo "Testing fairway installation..."
+    /opt/venv/bin/fairway --help > /dev/null
+
+    echo "Testing Spark installation..."
+    /opt/spark/bin/spark-submit --version 2>&1 | head -1
+
+    echo "Testing Python environment..."
+    /opt/venv/bin/python -c "import pyspark; print(f'PySpark {pyspark.__version__}')"
+    /opt/venv/bin/python -c "import fairway; print('Fairway module OK')"
+
+    echo "All tests passed!"
 
 %help
     Fairway - A portable data ingestion framework for research data.

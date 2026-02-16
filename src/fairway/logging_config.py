@@ -173,17 +173,3 @@ def setup_logging(
     logger.propagate = False
 
     return logger
-
-
-def get_logger(name: Optional[str] = None) -> logging.Logger:
-    """Get the fairway logger or a child logger.
-
-    Args:
-        name: Optional child logger name (e.g., "pipeline" -> "fairway.pipeline")
-
-    Returns:
-        Logger instance.
-    """
-    if name:
-        return logging.getLogger(f"fairway.{name}")
-    return logging.getLogger("fairway")

@@ -6,6 +6,10 @@ import logging
 
 logger = logging.getLogger("fairway.config")
 
+# Valid SQL/column identifier pattern (RULE-119: prevent injection)
+# Must start with letter or underscore, followed by letters, digits, or underscores
+VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
 
 class ConfigValidationError(Exception):
     """Raised when config validation fails."""
@@ -279,6 +283,9 @@ class Config:
             elif name in table_names:
                 errors.append(f"{prefix}: Duplicate table name '{name}'")
             else:
+                # RULE-119: Validate table name is a safe identifier
+                if not VALID_IDENTIFIER.match(name):
+                    errors.append(f"{prefix}: Invalid table name '{name}' - must be valid identifier (letters, digits, underscores, starting with letter/underscore)")
                 table_names.add(name)
                 prefix = f"tables['{name}']"
 
@@ -354,6 +361,20 @@ class Config:
                                 f"{prefix}: partition_by key '{key}' not found as named group in naming_pattern"
                             )
 
+            # RULE-119: Validate partition_by columns are safe identifiers
+            partition_by = table.get('partition_by', [])
+            for col in partition_by:
+                if not VALID_IDENTIFIER.match(col):
+                    errors.append(f"{prefix}: Invalid partition_by column '{col}' - must be valid identifier")
+
+            # RULE-119: Validate naming_pattern capture groups are safe identifiers
+            naming_pattern = table.get('naming_pattern')
+            if naming_pattern:
+                capture_groups = re.findall(r'\?P<([^>]+)>', naming_pattern)
+                for group in capture_groups:
+                    if not VALID_IDENTIFIER.match(group):
+                        errors.append(f"{prefix}: Invalid naming_pattern group '{group}' - must be valid identifier")
+
             # Glob pattern must match at least one file
             if path and '*' in path:
                 root = table.get('root')
@@ -365,6 +386,12 @@ class Config:
                 matched_files = glob.glob(search_path, recursive=True)
                 if not matched_files:
                     errors.append(f"{prefix}: Glob pattern matches no files: {search_path}")
+
+        # RULE-119: Validate global partition_by columns
+        global_partition_by = self.data.get('partition_by', [])
+        for col in global_partition_by:
+            if not VALID_IDENTIFIER.match(col):
+                errors.append(f"Global partition_by: Invalid column '{col}' - must be valid identifier")
 
         # Print warnings
         for w in warnings:

@@ -308,24 +308,6 @@ class TestLogArchival:
         assert len(archived_files) == 0
 
 
-class TestGetLogger:
-    """Tests for get_logger() convenience function."""
-
-    def test_get_logger_returns_fairway_logger(self):
-        """get_logger() should return the fairway logger."""
-        from fairway.logging_config import get_logger
-
-        logger = get_logger()
-        assert logger.name == "fairway"
-
-    def test_get_logger_returns_child_logger(self):
-        """get_logger(name) should return a child logger."""
-        from fairway.logging_config import get_logger
-
-        logger = get_logger("pipeline")
-        assert logger.name == "fairway.pipeline"
-
-
 class TestCLILoggingIntegration:
     """Tests for CLI logging integration."""
 
