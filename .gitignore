@@ -14,3 +14,10 @@ mock_apptainer
 tests/output
 config/sales_schema.yaml
 /manifest/
+
+# Environment and secrets
+.env
+.env.*
+
+# Coverage artifacts
+coverage.json

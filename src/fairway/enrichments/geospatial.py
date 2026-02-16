@@ -17,16 +17,16 @@ class Enricher:
         # H3 indices are usually 15-character hex strings
         return hex(random.getrandbits(60))[2:].zfill(15)
 
-    @classmethod
-    def enrich_dataframe(self, df):
+    @staticmethod
+    def enrich_dataframe(df):
         """
         Adds mock lat, lon, and H3 index to the dataframe.
         """
         if 'address' in df.columns:
-            coords = df['address'].apply(lambda x: self.mock_geocode(x))
+            coords = df['address'].apply(lambda x: Enricher.mock_geocode(x))
             df['latitude'] = coords.apply(lambda x: x[0])
             df['longitude'] = coords.apply(lambda x: x[1])
-            df['h3_index'] = df.apply(lambda row: self.mock_h3_index(row['latitude'], row['longitude']), axis=1)
+            df['h3_index'] = df.apply(lambda row: Enricher.mock_h3_index(row['latitude'], row['longitude']), axis=1)
         return df
 
     @staticmethod
@@ -50,7 +50,7 @@ class Enricher:
             # Reusing mock_geocode logic locally
             # In distributed context, this runs on workers
             import random
-            def _mock_lat(addr):
+            def _mock_lat(_addr):
                  # Deterministic mock based on hash or just random
                  return random.uniform(-90, 90)
             return address_series.apply(_mock_lat)
@@ -58,15 +58,15 @@ class Enricher:
         @pandas_udf(DoubleType())
         def get_lon(address_series: pd.Series) -> pd.Series:
             import random
-            def _mock_lon(addr):
+            def _mock_lon(_addr):
                 return random.uniform(-180, 180)
             return address_series.apply(_mock_lon)
 
         @pandas_udf(StringType())
-        def get_h3(lat_series: pd.Series, lon_series: pd.Series) -> pd.Series:
+        def get_h3(lat_series: pd.Series, _lon_series: pd.Series) -> pd.Series:
             import random
             # Just return a mock string
-            return lat_series.apply(lambda x: hex(random.getrandbits(60))[2:].zfill(15))
+            return lat_series.apply(lambda _x: hex(random.getrandbits(60))[2:].zfill(15))
 
         if 'address' in df.columns:
             df = df.withColumn("latitude", get_lat(df['address']))

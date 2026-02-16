@@ -39,7 +39,6 @@ class PySparkEngine:
         jvm_options = " ".join(jvm_options_list)
 
         # Ensure these options are passed to the driver via env if not already set (relying on builder config is sometimes insufficient)
-        import os
         if 'PYSPARK_SUBMIT_ARGS' not in os.environ:
              os.environ['PYSPARK_SUBMIT_ARGS'] = f'--driver-java-options "{jvm_options}" pyspark-shell'
 
