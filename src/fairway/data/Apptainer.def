@@ -9,12 +9,14 @@ From: python:3.10-slim-bookworm
 %files
     # No external files needed currently
 
-%arguments
-    FAIRWAY_GIT_REF=main
-
 %post
     # Fail fast on any error
     set -e
+
+    # -------------------------------------------------------------------------
+    # Change this to build from a different branch/tag/commit
+    # -------------------------------------------------------------------------
+    FAIRWAY_GIT_REF="main"
 
     apt-get update && apt-get install -y --no-install-recommends \
         git \
@@ -55,7 +57,7 @@ From: python:3.10-slim-bookworm
         exit 1
     fi
     echo "Found ${JAR_COUNT} JAR files"
-    
+
     # -------------------------------------------------------------------------
     # Python Environment Setup (Venv to avoid host pollution)
     # -------------------------------------------------------------------------
@@ -66,10 +68,7 @@ From: python:3.10-slim-bookworm
     # Upgrade tools inside the venv
     /opt/venv/bin/pip install --upgrade pip setuptools wheel
 
-    # Install fairway directly (which pulls in all dependencies from pyproject.toml)
-    # We use the [all] extra to ensure we get pyspark, duckdb, etc.
-    # Override FAIRWAY_GIT_REF at build time:
-    #   make build-from-branch BRANCH=fix-apptainer
+    # Install fairway from git
     echo "Installing fairway[all] from ref: ${FAIRWAY_GIT_REF}..."
     /opt/venv/bin/pip install --no-cache-dir "fairway[all] @ git+https://github.com/DISSC-yale/fairway.git@${FAIRWAY_GIT_REF}"
 

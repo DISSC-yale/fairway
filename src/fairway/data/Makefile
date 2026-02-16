@@ -1,11 +1,9 @@
 # Fairway Project Makefile
 .PHONY: help run ingest summary submit summary-hpc shell build clean schema schema-hpc
-.PHONY: shell-dev run-dev build-from-branch
+.PHONY: shell-dev run-dev
 
 .DEFAULT_GOAL := help
 
-# Git branch for container builds (override with: make build-from-branch BRANCH=my-branch)
-BRANCH ?= main
 FAIRWAY_SIF ?= fairway.sif
 
 help: ## Show this help
@@ -59,10 +57,3 @@ run-dev: ## Run pipeline with local src/ mounted (no rebuild needed)
 		--bind $${PWD},/vast,$${HOME}/.spark-local,/tmp \
 		$(FAIRWAY_SIF) fairway run
 
-# ============================================================================
-# Container Build Variants
-# ============================================================================
-
-build-from-branch: ## Build container from specific branch (usage: make build-from-branch BRANCH=fix-apptainer)
-	@echo "Building container from branch: $(BRANCH)"
-	apptainer build --force --build-arg FAIRWAY_GIT_REF=$(BRANCH) $(FAIRWAY_SIF) Apptainer.def
