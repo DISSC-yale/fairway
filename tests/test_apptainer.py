@@ -157,11 +157,12 @@ class TestApptainerDefContent:
         assert "%test" in APPTAINER_DEF
         assert "fairway --help" in APPTAINER_DEF
 
-    def test_apptainer_def_git_ref_param(self):
-        """Apptainer.def should support FAIRWAY_GIT_REF."""
+    def test_apptainer_def_has_git_ref_variable(self):
+        """Apptainer.def should have configurable FAIRWAY_GIT_REF variable."""
         from fairway.templates import APPTAINER_DEF
 
-        assert "FAIRWAY_GIT_REF" in APPTAINER_DEF
+        assert 'FAIRWAY_GIT_REF="main"' in APPTAINER_DEF
+        assert "@${FAIRWAY_GIT_REF}" in APPTAINER_DEF
 
 
 class TestDockerfileContent:
