@@ -300,3 +300,25 @@ This ensures configs work both locally (CWD = project root) and on HPC environme
 - `fixed_width_spec` file references
 - `transformation` script paths
 - `preprocess.action` script paths (when `.py` files)
+
+---
+
+### [RULE-122] Container Foreground Processes
+
+**Priority:** MUST
+**Category:** [ARC] Architectural Principles
+
+**Rule:**
+When running long-lived services inside Apptainer containers (e.g., Spark master), MUST use foreground execution (`spark-class`) instead of daemonizing scripts (`start-master.sh`). Daemonized processes fork outside the container's mount namespace and lose access to container paths.
+
+**Example:**
+```bash
+# WRONG: Daemonizes and loses /opt/spark access after apptainer exec exits
+apptainer exec $SIF start-master.sh
+
+# CORRECT: Stays in container namespace, maintains mount access
+apptainer exec $SIF spark-class org.apache.spark.deploy.master.Master
+```
+
+**Rationale:**
+When `start-master.sh` daemonizes the JVM via `nohup`/fork, the child process is orphaned outside the container's mount namespace when `apptainer exec` exits. The orphaned JVM loses access to `/opt/spark/jars/`, causing `ChannelInitializer` failures on every incoming connection. Running `spark-class` directly keeps the JVM inside the container.

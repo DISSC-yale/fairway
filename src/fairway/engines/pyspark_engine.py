@@ -7,7 +7,6 @@ except ImportError as e:
     _spark_import_error = e
 
 import os
-import re
 import logging
 
 logger = logging.getLogger("fairway.engines.pyspark")
@@ -40,7 +39,6 @@ class PySparkEngine:
         jvm_options = " ".join(jvm_options_list)
 
         # Ensure these options are passed to the driver via env if not already set (relying on builder config is sometimes insufficient)
-        import os
         if 'PYSPARK_SUBMIT_ARGS' not in os.environ:
              os.environ['PYSPARK_SUBMIT_ARGS'] = f'--driver-java-options "{jvm_options}" pyspark-shell'
 
@@ -63,14 +61,50 @@ class PySparkEngine:
 
         if spark_master:
             builder = builder.master(spark_master)
-            # Auth settings (spark.authenticate + secret) are picked up automatically
-            # from SPARK_CONF_DIR/spark-defaults.conf, which is set by driver.sh
+            # Load auth settings from SPARK_CONF_DIR/spark-defaults.conf
+            spark_conf_dir = os.environ.get('SPARK_CONF_DIR')
+            logger.info("SPARK_CONF_DIR: %s", spark_conf_dir)
+            if spark_conf_dir:
+                defaults_path = os.path.join(spark_conf_dir, 'spark-defaults.conf')
+                if os.path.exists(defaults_path):
+                    logger.info("Reading spark-defaults.conf from: %s", defaults_path)
+                    with open(defaults_path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            parts = line.split(None, 1)
+                            if len(parts) == 2 and parts[0].startswith('spark.'):
+                                builder = builder.config(parts[0], parts[1])
+                                # Log config (mask secrets)
+                                if 'secret' in parts[0].lower():
+                                    logger.info("Applied config: %s = <masked, len=%d>", parts[0], len(parts[1]))
+                                else:
+                                    logger.info("Applied config: %s = %s", parts[0], parts[1])
+                else:
+                    logger.warning("spark-defaults.conf not found: %s", defaults_path)
         else:
             # Local mode: bind to localhost to avoid network issues on macOS
             builder = builder.config("spark.driver.host", "127.0.0.1") \
                              .config("spark.driver.bindAddress", "127.0.0.1")
 
         self.spark = builder.getOrCreate()
+
+    def stop(self):
+        """Stop the SparkSession and release resources."""
+        if getattr(self, 'spark', None):
+            try:
+                logger.info("Stopping SparkSession...")
+                self.spark.stop()
+                logger.info("SparkSession stopped.")
+            except Exception as e:
+                logger.warning("Error stopping SparkSession: %s", e)
+            finally:
+                self.spark = None
+
+    def __del__(self):
+        """Cleanup on garbage collection."""
+        self.stop()
 
     def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=False, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', target_file_size_mb=128, compression='snappy', max_records_per_file=None, **kwargs):
         """
@@ -276,17 +310,7 @@ class PySparkEngine:
         # Set compression (snappy is default, most efficient for Spark)
         writer = writer.option("compression", compression)
 
-        # --- OPTION B: Table Formats (Delta Lake) ---
-        target_format = self.config_output_format if hasattr(self, 'config_output_format') else 'parquet'
-        # Check if caller passed explicit setting or if we infer from extension? 
-        # Actually PySparkEngine doesn't know global state easily perfectly here without breaking sig.
-        # But `ingest` usually writes to parquet. 
-        # Let's see if we can detect Delta intent via kwargs or standardizing?
-        # Implementation Plan says: Support `format='delta'`.
-        # NOTE: `format` arg in ingest is INPUT format. We need OUTPUT format control.
-        # Let's assume output format defaults parquet but checks for Delta arg or config.
-        
-        # Checking if 'delta' is in kwargs for output format?
+        # Output format: defaults to parquet, supports delta via kwargs
         output_format = kwargs.get('output_format', 'parquet')
         
         logger.info("PySpark Engine writing to %s (format=%s, mode=%s, partitions=%s)", output_path, output_format, write_mode, partition_cols)

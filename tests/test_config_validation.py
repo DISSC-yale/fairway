@@ -47,9 +47,9 @@ def test_valid_table_format():
         'dataset_name': 'test',
         'engine': 'duckdb',
         'tables': [
-            {'path': 'data/test.csv', 'format': 'csv'},
-            {'path': 'data/test.json', 'format': 'json'},
-            {'path': 'data/test.parquet', 'format': 'parquet'}
+            {'name': 'csv_table', 'path': 'data/test.csv', 'format': 'csv'},
+            {'name': 'json_table', 'path': 'data/test.json', 'format': 'json'},
+            {'name': 'parquet_table', 'path': 'data/test.parquet', 'format': 'parquet'}
         ]
     }
     # Create dummy files so expansion works
@@ -192,4 +192,129 @@ class TestBatchStrategyValidation:
             'batch_strategy': 'invalid_strategy',
         }])
         with pytest.raises(ConfigValidationError, match="batch_strategy"):
+            Config(config_path)
+
+
+class TestIdentifierValidation:
+    """RULE-119: Validate user-provided identifiers to prevent injection."""
+
+    def _write_config(self, tmp_path, tables, global_partition_by=None):
+        config_path = str(tmp_path / "config.yaml")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "test.csv").write_text("a,b\n1,2")
+
+        config = {
+            'dataset_name': 'test',
+            'engine': 'duckdb',
+            'tables': tables
+        }
+        if global_partition_by:
+            config['partition_by'] = global_partition_by
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f)
+        return config_path
+
+    def test_valid_table_name(self, tmp_path):
+        """Valid identifier names should pass."""
+        config_path = self._write_config(tmp_path, [{
+            'name': 'valid_table_123',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+        }])
+        config = Config(config_path)
+        assert config.tables[0]['name'] == 'valid_table_123'
+
+    def test_invalid_table_name_with_spaces(self, tmp_path):
+        """Table name with spaces should fail."""
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'invalid table',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+        }])
+        with pytest.raises(ConfigValidationError, match="Invalid table name"):
+            Config(config_path)
+
+    def test_invalid_table_name_with_sql_injection(self, tmp_path):
+        """Table name with SQL injection attempt should fail."""
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'table; DROP TABLE--',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+        }])
+        with pytest.raises(ConfigValidationError, match="Invalid table name"):
+            Config(config_path)
+
+    def test_invalid_table_name_starting_with_number(self, tmp_path):
+        """Table name starting with number should fail."""
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': '123_table',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+        }])
+        with pytest.raises(ConfigValidationError, match="Invalid table name"):
+            Config(config_path)
+
+    def test_valid_partition_by_columns(self, tmp_path):
+        """Valid partition_by column names should pass."""
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+            'partition_by': ['state', 'year_2023'],
+        }])
+        config = Config(config_path)
+        assert config.tables[0]['partition_by'] == ['state', 'year_2023']
+
+    def test_invalid_partition_by_with_injection(self, tmp_path):
+        """partition_by with injection attempt should fail."""
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+            'partition_by': ['state', "year'); DROP TABLE x--"],
+        }])
+        with pytest.raises(ConfigValidationError, match="Invalid partition_by column"):
+            Config(config_path)
+
+    def test_invalid_global_partition_by(self, tmp_path):
+        """Global partition_by with invalid identifier should fail."""
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(
+            tmp_path,
+            [{
+                'name': 'claims',
+                'path': str(tmp_path / "data" / "test.csv"),
+                'format': 'csv',
+            }],
+            global_partition_by=['valid_col', 'invalid-col']
+        )
+        with pytest.raises(ConfigValidationError, match="Invalid column"):
+            Config(config_path)
+
+    def test_valid_naming_pattern_groups(self, tmp_path):
+        """Valid naming_pattern capture groups should pass."""
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+            'naming_pattern': r'(?P<state>[A-Z]{2})_(?P<year_2023>\d{4})',
+        }])
+        config = Config(config_path)
+        assert 'naming_pattern' in config.tables[0]
+
+    def test_invalid_naming_pattern_group_with_hyphen(self, tmp_path):
+        """naming_pattern group with hyphen should fail."""
+        from fairway.config_loader import ConfigValidationError
+        config_path = self._write_config(tmp_path, [{
+            'name': 'claims',
+            'path': str(tmp_path / "data" / "test.csv"),
+            'format': 'csv',
+            'naming_pattern': r'(?P<state-code>[A-Z]{2})',
+        }])
+        with pytest.raises(ConfigValidationError, match="Invalid naming_pattern group"):
             Config(config_path)

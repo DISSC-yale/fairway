@@ -9,8 +9,6 @@ import logging
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
-from .engines.duckdb_engine import DuckDBEngine
-from .engines.pyspark_engine import PySparkEngine
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
@@ -18,6 +16,28 @@ from .exporters.redivis_exporter import RedivisExporter
 from .logging_config import BatchLogger
 
 logger = logging.getLogger("fairway.pipeline")
+
+
+def _is_preprocess_script_allowed(script_path):
+    """Check if preprocessing script path is within an allowed directory.
+
+    Prevents path traversal attacks by restricting custom script execution
+    to project directories only.
+    """
+    real_path = os.path.realpath(script_path)
+    cwd = os.path.realpath(os.getcwd())
+
+    allowed_dirs = [
+        os.path.join(cwd, 'src'),
+        os.path.join(cwd, 'scripts'),
+        os.path.join(cwd, 'transformations'),
+    ]
+
+    for allowed_dir in allowed_dirs:
+        allowed_dir = os.path.realpath(allowed_dir)
+        if real_path.startswith(allowed_dir + os.sep):
+            return True
+    return False
 
 
 class ArchiveCache:
@@ -204,7 +224,6 @@ class IngestionPipeline:
         temp_loc = self.config.temp_dir
         batch_dir = None
         if temp_loc:
-             import hashlib
              # Generate a deterministic batch directory based on the table name
              # This allows reusing preprocessed files across runs (schema gen -> ingestion) and is human readable.
              safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
@@ -243,7 +262,6 @@ class IngestionPipeline:
              # MUST be self-contained for Spark serialization if mode='cluster'
              import os
              import zipfile
-             import shutil
              
              # Determine output location (temp dir usually)
              # We use a temp dir in the configured storage or system temp
@@ -276,10 +294,21 @@ class IngestionPipeline:
              elif action.endswith('.py'):
                  # Custom script logic
                  # For cluster execution, we can't easily dynamic-import a path that doesn't exist on worker.
-                 # Strategy: read script content on driver, exec() it inside the wrapper? 
-                 # Or assume file exists on shared FS. 
+                 # Strategy: read script content on driver, exec() it inside the wrapper?
+                 # Or assume file exists on shared FS.
                  # For now, let's assume shared FS or Driver mode.
-                 
+
+                 # Security: Validate script is in an allowed directory
+                 if not _is_preprocess_script_allowed(action):
+                     raise ValueError(
+                         f"Security error: Preprocessing script must be in project's src/, scripts/, or transformations/ directory. "
+                         f"Attempted to load: {action}"
+                     )
+
+                 # Security: Only allow .py files (already checked by endswith above, but explicit)
+                 if not action.endswith('.py'):
+                     raise ValueError(f"Security error: Preprocessing script must be a .py file: {action}")
+
                  # Dynamic import
                  spec = importlib.util.spec_from_file_location("custom_module", action)
                  if spec and spec.loader:
@@ -404,8 +433,13 @@ class IngestionPipeline:
         # Store all matched files for the engine to process
         table['_extracted_files'] = all_matched_files
 
-        # If single archive, return glob pattern
-        return result_path
+        # Return path pattern for the extracted files
+        if len(all_extracted_dirs) == 1:
+            return os.path.join(all_extracted_dirs[0], files_pattern)
+        else:
+            # Multiple archives - return the first matched file's parent with glob
+            # The engine will use _extracted_files list directly
+            return os.path.join(all_extracted_dirs[0], files_pattern)
 
     def _run_partition_aware(self, table, input_path, table_manifest):
         """Execute partition-aware batched ingestion using coordinator pattern.
@@ -769,12 +803,7 @@ class IngestionPipeline:
                 output_basename = output_name
             else:
                 # Use configured output format extension (parquet or delta? Delta is usually a directory, so no extension or .delta?)
-                # Standard convention for Delta tables is just the directory name, but if we need an extension for clarity:
-                ext = self.config.output_format if self.config.output_format != 'delta' else 'delta' 
-                # Actually delta tables usually don't have extensions in path, they are directories.
-                # But to avoid collision with file names...
-                # Current logic: output_basename = f"{output_name}.parquet"
-                
+                # Delta tables are directories without extensions, others use format extension
                 if self.config.output_format == 'delta':
                      output_basename = output_name
                 else:

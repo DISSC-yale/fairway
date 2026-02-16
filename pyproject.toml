@@ -19,8 +19,6 @@ classifiers = [
 dependencies = [
     "click",
     "pyyaml",
-    "fsspec",
-    "mkdocs-material",
     "pandas",
     "tabulate",
 ]
@@ -54,6 +52,9 @@ all = [
     "numpy",
     "pyarrow",
 ]
+docs = [
+    "mkdocs-material",
+]
 
 [project.scripts]
 fairway = "fairway.cli:main"
@@ -73,5 +74,5 @@ markers = [
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-fairway = ["data/*"]
-"fairway.data" = ["*"]
+"fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]
+"fairway.data.scripts" = ["*.sh", "*.py"]
