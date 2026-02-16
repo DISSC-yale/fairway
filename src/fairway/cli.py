@@ -213,15 +213,13 @@ def generate_data(size, partitioned, format):
 @click.option('--spark-master', hidden=True, help='Spark master URL (for internal run).')
 def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, account, time, cpus, mem, internal_run, spark_master):
     """Generate schema from data.
-    
+
     Modes:
     1. Pipeline Mode: Provide --config. Uses full pipeline (preprocessing/unzipping) to find data.
     2. Legacy Mode: Provide FILE_PATH. Scans that specific file/dir.
     """
     import yaml
-    import os
-    import sys
-    
+
     # ---------------------------------------------------------
     # SLURM SUBMISSION (Wrapper)
     # ---------------------------------------------------------
@@ -770,13 +768,16 @@ def eject():
 
 @main.command()
 @click.option('--force', is_flag=True, help='Force rebuild (overwrite existing image).')
-@click.option('--branch', default='main', help='Git branch/tag to install fairway from (default: main).')
-def build(force, branch):
-    """Build the container image (Apptainer preferred, falls back to Docker)."""
+def build(force):
+    """Build the container image (Apptainer preferred, falls back to Docker).
+
+    The container installs fairway from the main branch. For development,
+    use 'fairway shell --dev' to bind-mount local source code.
+    """
 
     # Check for Apptainer.def
     if os.path.exists('Apptainer.def'):
-        click.echo(f"Found Apptainer.def. Building Apptainer image from branch: {branch}")
+        click.echo("Found Apptainer.def. Building Apptainer image...")
 
         if os.path.exists("fairway.sif"):
             if force:
@@ -786,11 +787,11 @@ def build(force, branch):
                 if not click.confirm("fairway.sif already exists. Overwrite?"):
                     return
 
-        cmd = ["apptainer", "build", "--build-arg", f"FAIRWAY_GIT_REF={branch}", "fairway.sif", "Apptainer.def"]
+        cmd = ["apptainer", "build", "fairway.sif", "Apptainer.def"]
         try:
             subprocess.run(cmd, check=True)
             click.echo("\nBuild complete: fairway.sif")
-            click.echo("You can now run tasks with: fairway run --profile apptainer")
+            click.echo("For development, use: fairway shell --dev")
         except subprocess.CalledProcessError as e:
             raise click.ClickException(f"Apptainer build failed with exit code {e.returncode}")
         except FileNotFoundError:

@@ -19,8 +19,6 @@ classifiers = [
 dependencies = [
     "click",
     "pyyaml",
-    "fsspec",
-    "mkdocs-material",
     "pandas",
     "tabulate",
 ]
@@ -53,6 +51,9 @@ all = [
     "redivis",
     "numpy",
     "pyarrow",
+]
+docs = [
+    "mkdocs-material",
 ]
 
 [project.scripts]
