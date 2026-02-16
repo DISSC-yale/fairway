@@ -523,6 +523,7 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
             pipeline.engine.stop()
 
 
+
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
 @click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
