@@ -201,33 +201,34 @@ EOF
 # -----------------------------------------------------------------------------
 echo "Starting Spark Master..."
 
-# In container mode, Spark is installed inside the container, so we must
-# run start-master.sh inside apptainer. In bare-metal mode, run directly.
+SPARK_MASTER_LOG="${SPARK_LOG_DIR}/spark-master.out"
+
 if [[ "${USE_CONTAINER}" == "yes" ]]; then
-    echo "Starting master inside container..."
-    # Use --no-home to prevent classpath pollution
-    START_OUTPUT=$(apptainer exec --no-home \
+    echo "Starting master inside container (foreground)..."
+    # CRITICAL: Do NOT use start-master.sh in container mode. It daemonizes the JVM
+    # via nohup/fork, which orphans the process outside the container's mount namespace
+    # when apptainer exec exits. The orphaned JVM loses access to /opt/spark/jars/,
+    # causing ChannelInitializer failures on every incoming connection.
+    # Instead, run spark-class directly so the JVM stays inside the container.
+    apptainer exec --no-home \
         --bind "${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH},${PWD},/tmp" \
         --env SPARK_CONF_DIR="${SPARK_CONF_DIR}" \
         --env SPARK_LOG_DIR="${SPARK_LOG_DIR}" \
         --env SPARK_PID_DIR="${SPARK_PID_DIR}" \
         "${FAIRWAY_SIF}" \
-        ${SPARK_HOME}/sbin/start-master.sh 2>&1)
+        ${SPARK_HOME}/bin/spark-class org.apache.spark.deploy.master.Master \
+        --host "$(hostname)" &> "${SPARK_MASTER_LOG}" &
+    MASTER_PID=$!
+    echo "Master container PID: ${MASTER_PID}"
 else
     START_OUTPUT=$(${SPARK_HOME}/sbin/start-master.sh 2>&1)
+    if [[ $? -ne 0 ]]; then
+        echo "ERROR: Spark master failed to start."
+        echo "${START_OUTPUT}"
+        exit 1
+    fi
 fi
 
-if [[ $? -ne 0 ]]; then
-    echo "ERROR: Spark master failed to start."
-    echo "${START_OUTPUT}"
-    exit 1
-fi
-
-SPARK_MASTER_LOG=$(ls -1 ${SPARK_LOG_DIR}/*master*.out 2>/dev/null | head -n 1)
-if [[ -z "${SPARK_MASTER_LOG}" ]]; then
-    echo "ERROR: Could not find Spark master log file."
-    exit 1
-fi
 echo "Spark master log: ${SPARK_MASTER_LOG}"
 
 # Wait for master to start
