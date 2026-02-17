@@ -60,30 +60,41 @@ def discover_config():
 
 
 def _get_apptainer_binds(cfg):
-    """Calculate Apptainer bind paths from config."""
+    """Calculate Apptainer bind paths from config.
+
+    Auto-detects paths that need to be bound based on:
+    - Storage directories (raw, processed, curated)
+    - Temp directory
+    - Table root directories
+    - Explicit apptainer_binds from config
+    """
     bind_paths = set()
-    
+
     # 1. Check storage directories
     for path in [cfg.raw_dir, cfg.processed_dir, cfg.curated_dir]:
         if path:
             abs_path = os.path.abspath(path)
-            if os.path.exists(abs_path):
-                bind_paths.add(abs_path)
-    
-    # 2. Check table paths
+            # Add parent directory to cover the whole storage tree
+            bind_paths.add(os.path.dirname(abs_path) if os.path.isfile(abs_path) else abs_path)
+
+    # 2. Check temp directory
+    if cfg.temp_dir:
+        bind_paths.add(os.path.abspath(cfg.temp_dir))
+
+    # 3. Check table root directories
     if cfg.tables:
         for tbl in cfg.tables:
-            path = tbl.get('path')
+            root = tbl.get('root')
+            if root:
+                bind_paths.add(os.path.abspath(root))
+
+    # 4. Add explicit binds from config
+    if cfg.apptainer_binds:
+        for path in cfg.apptainer_binds.split(','):
+            path = path.strip()
             if path:
-                abs_path = os.path.abspath(path)
-                if os.path.exists(abs_path):
-                    bind_paths.add(abs_path)
-                # Handle unexpanded path patterns if any (though config loader might have expanded them)
-                # The config loader expands tables, so 'path' should be concrete file paths
-                # But we might want to bind the parent directory of files to be safe/cleaner
-                if os.path.isfile(abs_path):
-                    bind_paths.add(os.path.dirname(abs_path))
-    
+                bind_paths.add(path)
+
     return bind_paths
 
 
@@ -410,6 +421,7 @@ def spark():
     pass
 
 @spark.command()
+@click.option('--config', default=None, help='Path to main config file (for container settings).')
 @click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of worker nodes.')
 @click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per node.')
 @click.option('--slurm-mem', 'mem', default=None, help='Memory per node.')
@@ -417,10 +429,38 @@ def spark():
 @click.option('--account', default=None, help='Slurm account.')
 @click.option('--partition', default=None, help='Slurm partition.')
 @click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
-def start(nodes, cpus, mem, time, account, partition, driver_job_id):
+def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
     """Start a Spark cluster on Slurm."""
     import yaml
-    
+    from .config_loader import Config
+
+    # Auto-discover main config for container settings
+    if config is None:
+        config = discover_config()
+
+    # Load main config for container settings
+    main_cfg = Config(config)
+
+    # Auto-detect bind paths from config
+    auto_binds = _get_apptainer_binds(main_cfg)
+    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+
+    # Check if running in Apptainer mode
+    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+    use_apptainer = os.path.exists(sif_path)
+
+    if use_apptainer and not apptainer_binds:
+        raise click.ClickException(
+            "Apptainer mode detected but no bind paths could be determined.\n"
+            "Add 'container.apptainer_binds' to your config file:\n\n"
+            "  container:\n"
+            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
+            "Or ensure storage paths exist so they can be auto-detected."
+        )
+
+    if use_apptainer:
+        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+
     # Load defaults from spark.yaml
     spark_yaml_path = 'config/spark.yaml'
     spark_defaults = {}
@@ -428,13 +468,17 @@ def start(nodes, cpus, mem, time, account, partition, driver_job_id):
         with open(spark_yaml_path, 'r') as f:
             spark_defaults = yaml.safe_load(f) or {}
 
-    # effective resources
-    nodes = nodes or spark_defaults.get('nodes', 2)
-    cpus = cpus or spark_defaults.get('cpus_per_node', 32)
-    mem = mem or spark_defaults.get('mem_per_node', '200G')
-    account = account or spark_defaults.get('account', 'borzekowski')
-    partition = partition or spark_defaults.get('partition', 'day')
-    time = time or spark_defaults.get('time', '24:00:00')
+    # effective resources (no hardcoded defaults)
+    nodes = nodes or spark_defaults.get('nodes')
+    cpus = cpus or spark_defaults.get('cpus_per_node')
+    mem = mem or spark_defaults.get('mem_per_node')
+    account = account or spark_defaults.get('account')
+    partition = partition or spark_defaults.get('partition')
+    time = time or spark_defaults.get('time')
+
+    # Validate required settings
+    if not account:
+        raise click.ClickException("Slurm account is required. Set 'account' in config/spark.yaml or use --account")
 
     from .engines.slurm_cluster import SlurmSparkManager
 
@@ -453,6 +497,7 @@ def start(nodes, cpus, mem, time, account, partition, driver_job_id):
         'slurm_partition': partition,
         'dynamic_allocation': dynamic_alloc,
         'spark_conf': spark_conf,
+        'apptainer_binds': apptainer_binds,
     }
 
     spark_manager = SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id)
@@ -1055,6 +1100,30 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
         config = discover_config()
         click.echo(f"Auto-discovered config: {config}")
 
+    # Load main config to get container settings
+    from fairway.config_loader import Config
+    main_cfg = Config(config)
+
+    # Auto-detect bind paths from config (storage dirs, temp, table roots, explicit binds)
+    auto_binds = _get_apptainer_binds(main_cfg)
+    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+
+    # Check if running in Apptainer mode (fairway.sif exists)
+    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+    use_apptainer = os.path.exists(sif_path)
+
+    if use_apptainer and not apptainer_binds:
+        raise click.ClickException(
+            "Apptainer mode detected but no bind paths could be determined.\n"
+            "Add 'container.apptainer_binds' to your config file:\n\n"
+            "  container:\n"
+            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
+            "Or ensure storage paths exist so they can be auto-detected."
+        )
+
+    if use_apptainer:
+        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+
     # Load spark.yaml for defaults
     spark_yaml_path = 'config/spark.yaml'
     spark_defaults = {}
@@ -1062,8 +1131,12 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
         with open(spark_yaml_path, 'r') as f:
             spark_defaults = yaml.safe_load(f) or {}
 
-    # Apply defaults from spark.yaml if not specified
-    account = account or spark_defaults.get('account', 'borzekowski')
+    # Apply defaults from spark.yaml if not specified (no hardcoded defaults)
+    account = account or spark_defaults.get('account')
+    if not account:
+        raise click.ClickException(
+            "Slurm account is required. Set 'account' in config/spark.yaml or use --account"
+        )
 
     # Validate all parameters to prevent command injection
     time = _validate_slurm_time(time)
@@ -1099,7 +1172,7 @@ mkdir -p logs/slurm
 # 2. Local fairway.sif file
 USE_APPTAINER="no"
 FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
-FAIRWAY_BINDS="${{FAIRWAY_BINDS:-/vast}}"
+FAIRWAY_BINDS="{apptainer_binds}"
 
 if [ -f "$FAIRWAY_SIF" ]; then
     USE_APPTAINER="yes"
