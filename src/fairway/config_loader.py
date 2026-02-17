@@ -67,6 +67,10 @@ class Config:
         # Direct control over max records per file (overrides target_file_size_mb heuristic)
         self.max_records_per_file = performance.get('max_records_per_file')
 
+        # Container settings
+        container = self.data.get('container', {})
+        self.apptainer_binds = container.get('apptainer_binds')
+
 
 
     def _resolve_path(self, path_ref, config_dir):
