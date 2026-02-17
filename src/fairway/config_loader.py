@@ -317,10 +317,13 @@ class Config:
                 if not fixed_width_spec:
                     errors.append(f"{prefix}: format 'fixed_width' requires 'fixed_width_spec' path")
                 else:
-                    # Check spec file exists
-                    spec_path = os.path.join(config_dir, fixed_width_spec) if not os.path.isabs(fixed_width_spec) else fixed_width_spec
-                    if not os.path.exists(spec_path):
-                        errors.append(f"{prefix}: fixed_width_spec file not found: {fixed_width_spec}")
+                    # Defer spec file existence check if preprocessing is configured
+                    # (preprocessing may generate the spec file)
+                    has_preprocessing = table.get('archives') or table.get('preprocess')
+                    if not has_preprocessing:
+                        spec_path = os.path.join(config_dir, fixed_width_spec) if not os.path.isabs(fixed_width_spec) else fixed_width_spec
+                        if not os.path.exists(spec_path):
+                            errors.append(f"{prefix}: fixed_width_spec file not found: {fixed_width_spec}")
 
             # Schema file exists (if specified as path)
             schema = table.get('schema')
