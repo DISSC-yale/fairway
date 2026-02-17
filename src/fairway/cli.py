@@ -741,30 +741,84 @@ def logs(log_file, level, batch_id, last_n, output_json, errors):
 
 
 @main.command()
-def eject():
-    """Eject container definitions (Apptainer.def, Dockerfile) to the current directory."""
-    if os.path.exists('Apptainer.def') or os.path.exists('Dockerfile'):
-        if not click.confirm('Container files already exist. Overwrite?'):
-            return
+@click.option('--scripts', is_flag=True, help='Eject only Slurm/HPC scripts.')
+@click.option('--container', is_flag=True, help='Eject only container files (Apptainer.def, Dockerfile).')
+@click.option('--output', '-o', default='.', help='Output directory (default: current directory).')
+@click.option('--force', is_flag=True, help='Overwrite existing files without prompting.')
+def eject(scripts, container, output, force):
+    """Eject bundled scripts and container definitions for customization.
 
-    from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE
-    
-    # Write Apptainer.def from template
-    with open('Apptainer.def', 'w') as f:
-        f.write(APPTAINER_DEF)
-    click.echo("  Created file: Apptainer.def (Apptainer container definition)")
+    By default, ejects both container files and Slurm scripts.
+    Use --scripts or --container to eject only one category.
 
-    # Write Dockerfile from template
-    with open('Dockerfile', 'w') as f:
-        f.write(DOCKERFILE_TEMPLATE)
-    click.echo("  Created file: Dockerfile (Docker container definition)")
+    Examples:
 
-    # Write .dockerignore from template
-    from .templates import DOCKERIGNORE
-    if not os.path.exists('.dockerignore') or click.confirm('.dockerignore already exists. Overwrite?'):
-        with open('.dockerignore', 'w') as f:
-            f.write(DOCKERIGNORE)
-        click.echo("  Created file: .dockerignore")
+        fairway eject                  # Eject everything
+        fairway eject --scripts        # Eject only scripts/
+        fairway eject --container      # Eject only container files
+        fairway eject -o custom/       # Eject to custom directory
+    """
+    from .templates import (
+        APPTAINER_DEF, DOCKERFILE_TEMPLATE, DOCKERIGNORE, MAKEFILE_TEMPLATE,
+        DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, SPARK_START_TEMPLATE, HPC_SCRIPT
+    )
+
+    # If neither flag is set, eject both
+    eject_scripts = scripts or not container
+    eject_container = container or not scripts
+
+    # Create output directory if needed
+    if output != '.':
+        os.makedirs(output, exist_ok=True)
+
+    def write_file(rel_path, content, executable=False):
+        """Write a file, handling existing files and permissions."""
+        full_path = os.path.join(output, rel_path)
+        dir_path = os.path.dirname(full_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        if os.path.exists(full_path) and not force:
+            click.echo(f"  Skipping (exists): {rel_path}")
+            return False
+
+        with open(full_path, 'w') as f:
+            f.write(content)
+
+        if executable:
+            os.chmod(full_path, 0o755)
+
+        click.echo(f"  Created: {rel_path}")
+        return True
+
+    created = []
+
+    if eject_container:
+        click.echo("Ejecting container files...")
+        if write_file('Apptainer.def', APPTAINER_DEF):
+            created.append('Apptainer.def')
+        if write_file('Dockerfile', DOCKERFILE_TEMPLATE):
+            created.append('Dockerfile')
+        if write_file('.dockerignore', DOCKERIGNORE):
+            created.append('.dockerignore')
+        if write_file('Makefile', MAKEFILE_TEMPLATE):
+            created.append('Makefile')
+
+    if eject_scripts:
+        click.echo("Ejecting Slurm/HPC scripts...")
+        if write_file('scripts/driver.sh', DRIVER_TEMPLATE, executable=True):
+            created.append('scripts/driver.sh')
+        if write_file('scripts/driver-schema.sh', DRIVER_SCHEMA_TEMPLATE, executable=True):
+            created.append('scripts/driver-schema.sh')
+        if write_file('scripts/fairway-spark-start.sh', SPARK_START_TEMPLATE, executable=True):
+            created.append('scripts/fairway-spark-start.sh')
+        if write_file('scripts/fairway-hpc.sh', HPC_SCRIPT, executable=True):
+            created.append('scripts/fairway-hpc.sh')
+
+    if created:
+        click.echo(f"\nEjected {len(created)} files to {output}")
+    else:
+        click.echo("\nNo files created (all already exist). Use --force to overwrite.")
 
 
 @main.command()

@@ -51,8 +51,9 @@ if [ -z "$USE_APPTAINER" ]; then
     fi
 fi
 
-# Default bind paths - adjust for your HPC environment
-FAIRWAY_BINDS=${FAIRWAY_BINDS:-/vast}
+# Additional bind paths - set via config (apptainer_binds) or environment
+# Base paths (PWD, /tmp, ~/.spark-local) are always included by fairway-spark-start.sh
+FAIRWAY_BINDS=${FAIRWAY_BINDS:-}
 
 # Export for SlurmSparkManager to detect
 export FAIRWAY_SIF
