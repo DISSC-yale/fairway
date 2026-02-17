@@ -227,6 +227,33 @@ sstat -j <JOB_ID> --format=JobID,MaxRSS,MaxVMSize,AveCPU
    export JAVA_HOME=/opt/homebrew/opt/openjdk@11
    ```
 
+### Issue: Container Mount Fails (Bind Path Not Found)
+
+**Cause:** Apptainer trying to bind a path that doesn't exist on your cluster (e.g., `/vast` on a non-Yale cluster).
+
+**Error:**
+```
+FATAL: container creation failed: mount hook function failure: mount /vast->/vast error: while mounting /vast: mount source /vast doesn't exist
+```
+
+**Solution:**
+1. Set the correct bind path for your cluster:
+   ```bash
+   # Environment variable (temporary)
+   export FAIRWAY_BINDS="/scratch/$USER,/gpfs/data"
+   fairway submit --with-spark
+   ```
+
+2. Or add to `spark.yaml` (permanent):
+   ```yaml
+   apptainer_binds: "/scratch,/gpfs"
+   ```
+
+3. Common cluster paths:
+   - Yale: `/vast`
+   - Grace/Farnam: `/gpfs/ycga`
+   - Generic: `/scratch`, `/project`, `/home`
+
 ### Issue: Container Build Fails
 
 **Cause:** Missing dependencies or disk space.
@@ -234,8 +261,14 @@ sstat -j <JOB_ID> --format=JobID,MaxRSS,MaxVMSize,AveCPU
 **Solution:**
 1. Eject and customize container definition:
    ```bash
+   # Eject everything
    fairway eject
-   # Edit Apptainer.def as needed
+
+   # Or eject just container files
+   fairway eject --container
+
+   # Or eject to custom directory
+   fairway eject --output custom/
    ```
 2. Build with verbose output:
    ```bash

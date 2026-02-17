@@ -125,8 +125,8 @@ class SlurmSparkManager:
             for key, value in spark_conf.items()
         )
 
-        # Get bind paths for Apptainer
-        bind_paths = self.config.get('apptainer_binds', '/vast')
+        # Get bind paths for Apptainer (empty default - auto-detected from storage config)
+        bind_paths = self.config.get('apptainer_binds', '')
 
         if use_apptainer:
             sbatch_script = self._generate_apptainer_script(

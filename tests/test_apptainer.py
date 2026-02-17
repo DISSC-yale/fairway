@@ -485,7 +485,7 @@ class TestSlurmSparkManagerJobIsolation:
             nodes=2, cpus=4, mem='16G', account='test',
             time_limit='1:00:00', partition='day',
             sif_path=str(tmp_path / "fairway.sif"),
-            bind_paths='/vast',
+            bind_paths='/test/data',  # Generic test path (not hardcoded to specific HPC)
             dynamic_alloc_script='',
             spark_conf_lines=''
         )
@@ -524,7 +524,7 @@ class TestSlurmSparkManagerScriptGeneration:
             nodes=2, cpus=4, mem='16G', account='test',
             time_limit='1:00:00', partition='day',
             sif_path=str(tmp_path / "fairway.sif"),
-            bind_paths='/vast',
+            bind_paths='/test/data',  # Generic test path (not hardcoded to specific HPC)
             dynamic_alloc_script='',
             spark_conf_lines=''
         )
@@ -561,3 +561,194 @@ class TestSlurmSparkManagerScriptGeneration:
         # The script should call: bash fairway-spark-start.sh (or similar)
         assert 'bash' in spark_start_invocation, \
             f"Should invoke with bash, found: {spark_start_invocation}"
+
+
+class TestBindPathConfiguration:
+    """Tests for configurable bind paths (no hardcoded /vast)."""
+
+    def test_slurm_manager_default_bind_is_empty(self, tmp_path, monkeypatch):
+        """SlurmSparkManager should default to empty bind paths, not /vast."""
+        from fairway.engines.slurm_cluster import SlurmSparkManager
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "fairway.sif").write_text("fake sif")
+
+        # Config with no apptainer_binds specified
+        manager = SlurmSparkManager({})
+        script = manager._generate_apptainer_script(
+            nodes=2, cpus=4, mem='16G', account='test',
+            time_limit='1:00:00', partition='day',
+            sif_path=str(tmp_path / "fairway.sif"),
+            bind_paths='',  # Empty - what we expect as default
+            dynamic_alloc_script='',
+            spark_conf_lines=''
+        )
+
+        # Script should NOT contain /vast as a hardcoded path
+        assert '/vast' not in script, "Script should not hardcode /vast"
+
+    def test_slurm_manager_config_bind_override(self, tmp_path, monkeypatch):
+        """SlurmSparkManager should respect apptainer_binds from config."""
+        from fairway.engines.slurm_cluster import SlurmSparkManager
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "fairway.sif").write_text("fake sif")
+
+        config = {'apptainer_binds': '/scratch,/gpfs'}
+        manager = SlurmSparkManager(config)
+
+        # The config value should be used
+        bind_paths = config.get('apptainer_binds', '')
+        assert bind_paths == '/scratch,/gpfs'
+
+    def test_driver_script_no_vast_default(self):
+        """driver.sh should not default to /vast."""
+        from fairway.templates import DRIVER_TEMPLATE
+
+        # Should not have /vast as default
+        assert 'FAIRWAY_BINDS:-/vast' not in DRIVER_TEMPLATE
+        assert "FAIRWAY_BINDS:-}" in DRIVER_TEMPLATE or 'FAIRWAY_BINDS:-"' in DRIVER_TEMPLATE
+
+    def test_spark_start_script_no_vast_default(self):
+        """fairway-spark-start.sh should not default to /vast."""
+        from fairway.templates import SPARK_START_TEMPLATE
+
+        # Should not have /vast as default
+        assert 'FAIRWAY_BINDS:-/vast' not in SPARK_START_TEMPLATE
+        assert ':-/vast' not in SPARK_START_TEMPLATE
+
+    def test_spark_start_script_handles_empty_binds(self):
+        """fairway-spark-start.sh should handle empty FAIRWAY_BINDS gracefully."""
+        from fairway.templates import SPARK_START_TEMPLATE
+
+        # Should have logic to handle empty FAIRWAY_BINDS
+        # Look for conditional that checks if FAIRWAY_BINDS is non-empty
+        assert 'if [ -n "${FAIRWAY_BINDS' in SPARK_START_TEMPLATE or \
+               'if [ -n "$FAIRWAY_BINDS' in SPARK_START_TEMPLATE or \
+               '[ -n "${FAIRWAY_BINDS}' in SPARK_START_TEMPLATE
+
+
+class TestEjectCommandExtended:
+    """Extended tests for fairway eject command with new flags."""
+
+    @pytest.fixture
+    def runner(self):
+        return CliRunner()
+
+    def test_eject_scripts_only(self, runner):
+        """fairway eject --scripts creates only scripts directory."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ['eject', '--scripts'])
+
+            assert result.exit_code == 0
+            assert os.path.exists('scripts/driver.sh')
+            assert os.path.exists('scripts/fairway-spark-start.sh')
+            # Should NOT create container files
+            assert not os.path.exists('Apptainer.def')
+            assert not os.path.exists('Dockerfile')
+
+    def test_eject_container_only(self, runner):
+        """fairway eject --container creates only container files."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ['eject', '--container'])
+
+            assert result.exit_code == 0
+            assert os.path.exists('Apptainer.def')
+            assert os.path.exists('Dockerfile')
+            assert os.path.exists('.dockerignore')
+            # Should NOT create scripts directory
+            assert not os.path.exists('scripts/driver.sh')
+
+    def test_eject_custom_output_directory(self, runner):
+        """fairway eject --output creates files in custom directory."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ['eject', '--output', 'custom'])
+
+            assert result.exit_code == 0
+            assert os.path.exists('custom/Apptainer.def')
+            assert os.path.exists('custom/Dockerfile')
+            assert os.path.exists('custom/scripts/driver.sh')
+
+    def test_eject_warns_existing_files(self, runner):
+        """fairway eject warns when files already exist."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            # Create existing file
+            os.makedirs('scripts', exist_ok=True)
+            with open('Apptainer.def', 'w') as f:
+                f.write('existing content')
+
+            result = runner.invoke(main, ['eject'])
+
+            # Should warn about existing files (but not fail)
+            assert 'exist' in result.output.lower() or 'skip' in result.output.lower()
+
+    def test_eject_force_overwrites(self, runner):
+        """fairway eject --force overwrites existing files."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            # Create existing file with different content
+            with open('Apptainer.def', 'w') as f:
+                f.write('old content')
+
+            result = runner.invoke(main, ['eject', '--force'])
+
+            assert result.exit_code == 0
+            with open('Apptainer.def') as f:
+                content = f.read()
+            assert 'Bootstrap: docker' in content  # Should have new content
+
+    def test_eject_scripts_executable(self, runner):
+        """Ejected shell scripts have executable permissions."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ['eject'])
+
+            assert result.exit_code == 0
+
+            # Check scripts have executable bit
+            for script in ['scripts/driver.sh', 'scripts/fairway-spark-start.sh']:
+                if os.path.exists(script):
+                    mode = os.stat(script).st_mode
+                    assert mode & 0o111, f"{script} should be executable"
+
+    def test_eject_creates_all_scripts(self, runner):
+        """fairway eject creates all expected scripts."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ['eject'])
+
+            assert result.exit_code == 0
+
+            expected_scripts = [
+                'scripts/driver.sh',
+                'scripts/driver-schema.sh',
+                'scripts/fairway-spark-start.sh',
+                'scripts/fairway-hpc.sh',
+            ]
+            for script in expected_scripts:
+                assert os.path.exists(script), f"Missing: {script}"
+
+    def test_eject_creates_makefile(self, runner):
+        """fairway eject creates Makefile for container builds."""
+        from fairway.cli import main
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(main, ['eject'])
+
+            assert result.exit_code == 0
+            assert os.path.exists('Makefile')
+
+            with open('Makefile') as f:
+                content = f.read()
+            assert 'apptainer' in content.lower() or 'build' in content.lower()

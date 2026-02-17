@@ -180,10 +180,29 @@ mkdocs build  # Build static site
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `FAIRWAY_BINDS` | Additional Apptainer bind paths (comma-separated) | Auto-detected from config |
 | `FAIRWAY_TEMP` | Temporary directory for large operations | System temp |
 | `REDIVIS_API_TOKEN` | API token for Redivis data export | None |
 | `SPARK_LOCAL_IP` | Spark driver bind address | Auto-detect |
 | `PYSPARK_SUBMIT_ARGS` | Additional Spark submit arguments | Auto-configured |
+
+### HPC Bind Paths
+
+When running on HPC clusters, you may need to set `FAIRWAY_BINDS` to include your cluster's shared storage:
+
+```bash
+# For clusters using /scratch
+export FAIRWAY_BINDS="/scratch/$USER"
+
+# For clusters with multiple storage paths
+export FAIRWAY_BINDS="/gpfs/data,/project/mygroup"
+```
+
+Alternatively, set `apptainer_binds` in your `spark.yaml`:
+
+```yaml
+apptainer_binds: "/scratch,/gpfs"
+```
 
 ## Code Style
 
