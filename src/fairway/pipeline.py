@@ -29,6 +29,7 @@ def _is_preprocess_script_allowed(script_path):
 
     allowed_dirs = [
         os.path.join(cwd, 'src'),
+        os.path.join(cwd, 'src', 'preprocess'),
         os.path.join(cwd, 'scripts'),
         os.path.join(cwd, 'transformations'),
     ]
@@ -314,8 +315,13 @@ class IngestionPipeline:
                  if spec and spec.loader:
                      module = importlib.util.module_from_spec(spec)
                      spec.loader.exec_module(module)
-                     if hasattr(module, 'process'):
-                         return module.process(file_path)
+                     # Pass extra config options (e.g., password_file) to the script
+                     extra_opts = {k: v for k, v in preprocess_config.items()
+                                   if k not in ('action', 'scope', 'execution_mode', 'include')}
+                     if hasattr(module, 'process_file'):
+                         return module.process_file(file_path, output_dir, **extra_opts)
+                     elif hasattr(module, 'process'):
+                         return module.process(file_path, output_dir, **extra_opts)
                  return file_path
              
              return file_path
