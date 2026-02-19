@@ -221,6 +221,14 @@ class IngestionPipeline:
         if include_pattern:
             logger.debug("File filter: %s", include_pattern)
 
+        # If table has fixed_width_spec, derive specs_dir so preprocessing
+        # writes the spec file where the config expects to find it
+        if not preprocess_config.get('specs_dir') and table.get('fixed_width_spec'):
+            specs_dir = os.path.dirname(table['fixed_width_spec'])
+            if specs_dir:
+                preprocess_config['specs_dir'] = specs_dir
+                logger.debug("Derived specs_dir from fixed_width_spec: %s", specs_dir)
+
         # Temp Location Support
         temp_loc = self.config.temp_dir
         batch_dir = None
@@ -310,19 +318,32 @@ class IngestionPipeline:
                  if not action.endswith('.py'):
                      raise ValueError(f"Security error: Preprocessing script must be a .py file: {action}")
 
+                 # Verify script exists before attempting import
+                 if not os.path.exists(action):
+                     raise FileNotFoundError(
+                         f"Preprocessing script not found: {action} (CWD: {os.getcwd()})"
+                     )
+
                  # Dynamic import
                  spec = importlib.util.spec_from_file_location("custom_module", action)
-                 if spec and spec.loader:
-                     module = importlib.util.module_from_spec(spec)
-                     spec.loader.exec_module(module)
-                     # Pass extra config options (e.g., password_file) to the script
-                     extra_opts = {k: v for k, v in preprocess_config.items()
-                                   if k not in ('action', 'scope', 'execution_mode', 'include')}
-                     if hasattr(module, 'process_file'):
-                         return module.process_file(file_path, output_dir, **extra_opts)
-                     elif hasattr(module, 'process'):
-                         return module.process(file_path, output_dir, **extra_opts)
-                 return file_path
+                 if not spec or not spec.loader:
+                     raise ImportError(
+                         f"Failed to load preprocessing script (importlib returned None): {action}"
+                     )
+
+                 module = importlib.util.module_from_spec(spec)
+                 spec.loader.exec_module(module)
+                 # Pass extra config options (e.g., password_file) to the script
+                 extra_opts = {k: v for k, v in preprocess_config.items()
+                               if k not in ('action', 'scope', 'execution_mode', 'include')}
+                 if hasattr(module, 'process_file'):
+                     return module.process_file(file_path, output_dir, **extra_opts)
+                 elif hasattr(module, 'process'):
+                     return module.process(file_path, output_dir, **extra_opts)
+                 else:
+                     raise AttributeError(
+                         f"Preprocessing script has no 'process_file' or 'process' function: {action}"
+                     )
              
              return file_path
 
