@@ -167,34 +167,29 @@ class Config:
                  # If pattern, basename might be '*.csv'. Ideally user provides name.
                  table_name = tbl.get('name', os.path.basename(resolved_path))
 
-                 # Resolve fixed_width_spec relative to project root (not config dir)
-                 # This allows specs/ to be at project root level
-                 raw_spec = tbl.get('fixed_width_spec')
-                 if raw_spec and not os.path.isabs(raw_spec):
-                     fixed_width_spec = os.path.abspath(raw_spec)
-                 else:
-                     fixed_width_spec = raw_spec
+                 # Resolve fixed_width_spec relative to config dir (consistent with other path resolution)
+                 fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
                  transformation = self._resolve_path(tbl.get('transformation'), config_dir)
 
-                 # Resolve preprocess.action relative to project root (not config dir)
+                 # Resolve preprocess.action relative to config dir
                  # Default search order: as-specified, src/preprocess/, scripts/
                  preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
                  if preprocess.get('action', '').endswith('.py'):
                      script_path = preprocess['action']
                      if not os.path.isabs(script_path):
-                         # Check multiple locations for the script
+                         # Check multiple locations for the script (relative to config dir)
                          candidates = [
-                             script_path,  # As specified (e.g., scripts/foo.py)
-                             os.path.join('src', 'preprocess', os.path.basename(script_path)),  # src/preprocess/foo.py
-                             os.path.join('scripts', os.path.basename(script_path)),  # scripts/foo.py
+                             os.path.join(config_dir, script_path),  # As specified (e.g., scripts/foo.py)
+                             os.path.join(config_dir, 'src', 'preprocess', os.path.basename(script_path)),  # src/preprocess/foo.py
+                             os.path.join(config_dir, 'scripts', os.path.basename(script_path)),  # scripts/foo.py
                          ]
                          resolved = None
                          for candidate in candidates:
                              if os.path.exists(candidate):
-                                 resolved = os.path.abspath(candidate)
+                                 resolved = candidate
                                  break
-                         # If not found, default to src/preprocess/
-                         preprocess['action'] = resolved or os.path.abspath(os.path.join('src', 'preprocess', os.path.basename(script_path)))
+                         # If not found, fall back to simple config_dir-relative resolution
+                         preprocess['action'] = resolved or os.path.join(config_dir, script_path)
 
                  expanded.append({
                     'name': table_name,
@@ -347,7 +342,7 @@ class Config:
                     if not has_preprocessing:
                         spec_path = os.path.join(config_dir, fixed_width_spec) if not os.path.isabs(fixed_width_spec) else fixed_width_spec
                         if not os.path.exists(spec_path):
-                            errors.append(f"{prefix}: fixed_width_spec file not found: {fixed_width_spec}")
+                            errors.append(f"{prefix}: fixed_width_spec file not found: {spec_path}")
 
             # Schema file exists (if specified as path)
             schema = table.get('schema')
