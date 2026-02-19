@@ -6,6 +6,7 @@ import tarfile
 import hashlib
 import importlib.util
 import logging
+import tempfile
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
@@ -145,9 +146,21 @@ class IngestionPipeline:
         logger.debug("Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
-        self.engine = self._get_engine(spark_master, engine_override, spark_conf)
+        self._engine = None  # Lazy-initialized; use self.engine property
+        self._engine_args = (spark_master, engine_override, spark_conf)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
+
+    @property
+    def engine(self):
+        """Lazy engine initialization — defers Spark cluster startup until first use."""
+        if self._engine is None:
+            self._engine = self._get_engine(*self._engine_args)
+        return self._engine
+
+    @engine.setter
+    def engine(self, value):
+        self._engine = value
 
     def _get_engine(self, spark_master=None, engine_override=None, spark_conf=None):
         # CLI override takes precedence over config
@@ -229,17 +242,19 @@ class IngestionPipeline:
                 preprocess_config['specs_dir'] = specs_dir
                 logger.debug("Derived specs_dir from fixed_width_spec: %s", specs_dir)
 
-        # Temp Location Support
+        # Scratch directory for preprocessing output
+        # Priority: storage.temp > $SCRATCH/fairway > /tmp/fairway_$USER
         temp_loc = self.config.temp_dir
-        batch_dir = None
-        if temp_loc:
-             # Generate a deterministic batch directory based on the table name
-             # This allows reusing preprocessed files across runs (schema gen -> ingestion) and is human readable.
-             safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
-             batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
-             # Ensure the batch root exists
-             os.makedirs(batch_dir, exist_ok=True)
-             logger.info("Using global temp location: %s", batch_dir)
+        if not temp_loc:
+            scratch_base = os.environ.get('SCRATCH')
+            if scratch_base:
+                temp_loc = os.path.join(scratch_base, 'fairway')
+            else:
+                temp_loc = os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}')
+        safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
+        batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
+        os.makedirs(batch_dir, exist_ok=True)
+        logger.info("Preprocessing scratch dir: %s", batch_dir)
         
         # Resolve input files
         # If input_path is a glob, we get all files.
@@ -398,8 +413,8 @@ class IngestionPipeline:
                   # Structure: batch_dir / <file_dir> / <contents>
                   result_path = os.path.join(batch_dir, "*", file_glob)
              else:
-                  # Original logic: sibling directories
-                  base = os.path.dirname(input_path)
+                  # Fallback: sibling directories (use root-resolved path)
+                  base = os.path.dirname(full_input_path)
                   result_path = os.path.join(base, ".preprocessed_*", file_glob)
 
         # Record result for future reuse
@@ -742,7 +757,17 @@ class IngestionPipeline:
              logger.warning("No tables found to process! Check your config path patterns and ensuring data exists.")
              logger.warning("Configured tables: %s", self.config.data.get('tables', []))
 
-        
+        # --- Phase 0: Run all preprocessing BEFORE engine startup ---
+        # This avoids launching Spark (expensive) just for driver-mode preprocessing
+        preprocessed_paths = {}
+        for table in self.config.tables:
+            preprocess_config = table.get('preprocess')
+            archives_pattern = table.get('archives')
+            if preprocess_config or archives_pattern:
+                logger.info("Pre-run preprocessing for %s...", table['name'])
+                preprocessed_paths[table['name']] = self._preprocess(table)
+
+        # --- Phase 1: Engine startup and ingestion ---
         # Optimize: Distributed Manifest Check for Cluster Mode
         # Group tables by root to perform batch hashing on the cluster
         if hasattr(self.engine, 'calculate_hashes'):
@@ -777,10 +802,16 @@ class IngestionPipeline:
             # Table dict is unmodified, we just change the variable we use for input
             original_path = table['path']
 
+            # Use pre-computed preprocessing result if available, otherwise run now
+            def get_preprocessed_path():
+                if table['name'] in preprocessed_paths:
+                    return preprocessed_paths[table['name']]
+                return self._preprocess(table)
+
             # Partition-aware batching: skip whole-table manifest check,
             # do per-file checking instead in _run_partition_aware()
             if table.get('batch_strategy') == 'partition_aware':
-                input_path = self._preprocess(table)
+                input_path = get_preprocessed_path()
                 if input_path != original_path:
                     logger.info("Preprocessing complete. Ingesting from: %s", input_path)
                 self._run_partition_aware(table, input_path, table_manifest)
@@ -797,7 +828,7 @@ class IngestionPipeline:
                  logger.info("Skipping %s (already processed and hash matches)", table['name'])
                  continue
 
-            input_path = self._preprocess(table)
+            input_path = get_preprocessed_path()
 
             if input_path != original_path:
                 logger.info("Preprocessing complete. Ingesting from: %s", input_path)

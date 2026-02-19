@@ -77,9 +77,14 @@ def _get_apptainer_binds(cfg):
             # Add parent directory to cover the whole storage tree
             bind_paths.add(os.path.dirname(abs_path) if os.path.isfile(abs_path) else abs_path)
 
-    # 2. Check temp directory
+    # 2. Check temp/scratch directory
     if cfg.temp_dir:
         bind_paths.add(os.path.abspath(cfg.temp_dir))
+    elif os.environ.get('SCRATCH'):
+        bind_paths.add(os.path.join(os.environ['SCRATCH'], 'fairway'))
+    else:
+        import tempfile
+        bind_paths.add(os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}'))
 
     # 3. Check table root directories
     if cfg.tables:
