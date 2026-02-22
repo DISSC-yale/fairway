@@ -70,11 +70,12 @@ def _get_apptainer_binds(cfg):
     """
     bind_paths = set()
 
-    # 1. Check storage directories
+    # 1. Check storage directories (must already exist)
     for path in [cfg.raw_dir, cfg.processed_dir, cfg.curated_dir]:
         if path:
             abs_path = os.path.abspath(path)
-            # Add parent directory to cover the whole storage tree
+            if not os.path.exists(abs_path):
+                continue
             bind_paths.add(os.path.dirname(abs_path) if os.path.isfile(abs_path) else abs_path)
 
     # 2. Check temp/scratch directory
