@@ -243,7 +243,7 @@ class IngestionPipeline:
                 logger.debug("Derived specs_dir from fixed_width_spec: %s", specs_dir)
 
         # Scratch directory for preprocessing output
-        # Priority: storage.temp > $SCRATCH/fairway > /tmp/fairway_$USER
+        # Priority: config.temp_dir (FAIRWAY_TEMP > storage.temp > storage.scratch_dir) > $SCRATCH/fairway > /tmp/fairway_$USER
         temp_loc = self.config.temp_dir
         if not temp_loc:
             scratch_base = os.environ.get('SCRATCH')
