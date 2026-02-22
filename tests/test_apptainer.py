@@ -259,7 +259,9 @@ class TestGetApptainerBinds:
         cfg.raw_dir = str(raw_dir)
         cfg.processed_dir = str(processed_dir)
         cfg.curated_dir = None
+        cfg.temp_dir = None
         cfg.tables = []
+        cfg.apptainer_binds = None
 
         binds = _get_apptainer_binds(cfg)
 
@@ -267,29 +269,28 @@ class TestGetApptainerBinds:
         assert str(processed_dir) in binds
 
     def test_binds_include_table_paths(self, tmp_path):
-        """Bind paths include table file directories."""
+        """Bind paths include table root directories."""
         from fairway.cli import _get_apptainer_binds
         from unittest.mock import MagicMock
 
-        # Create a table file
+        # Create a table directory
         table_dir = tmp_path / "tables"
         table_dir.mkdir()
-        table_file = table_dir / "data.csv"
-        table_file.write_text("a,b,c")
 
         cfg = MagicMock()
         cfg.raw_dir = None
         cfg.processed_dir = None
         cfg.curated_dir = None
-        cfg.tables = [{"path": str(table_file)}]
+        cfg.temp_dir = None
+        cfg.tables = [{"root": str(table_dir)}]
+        cfg.apptainer_binds = None
 
         binds = _get_apptainer_binds(cfg)
 
-        # Should include the directory containing the file
         assert str(table_dir) in binds
 
     def test_binds_skip_nonexistent_paths(self, tmp_path):
-        """Bind paths skip directories that don't exist."""
+        """Bind paths skip storage directories that don't exist."""
         from fairway.cli import _get_apptainer_binds
         from unittest.mock import MagicMock
 
@@ -297,7 +298,9 @@ class TestGetApptainerBinds:
         cfg.raw_dir = str(tmp_path / "nonexistent")
         cfg.processed_dir = None
         cfg.curated_dir = None
+        cfg.temp_dir = None
         cfg.tables = []
+        cfg.apptainer_binds = None
 
         binds = _get_apptainer_binds(cfg)
 

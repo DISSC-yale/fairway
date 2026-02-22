@@ -60,6 +60,19 @@ fi
 # Base paths (PWD, /tmp) are always included below
 FAIRWAY_BINDS="${FAIRWAY_BINDS:-}"
 
+# Ensure all bind-mount source directories exist on this node.
+# Apptainer FATAL-errors if a bind source path is missing.
+if [ -n "${FAIRWAY_BINDS}" ]; then
+    IFS=',' read -ra _bind_dirs <<< "${FAIRWAY_BINDS}"
+    for _dir in "${_bind_dirs[@]}"; do
+        # Strip whitespace and any :/dest suffix (bind syntax: src:dest)
+        _dir="${_dir%%:*}"
+        _dir="$(echo "${_dir}" | xargs)"
+        [ -n "${_dir}" ] && mkdir -p "${_dir}" 2>/dev/null || true
+    done
+    unset _bind_dirs _dir
+fi
+
 # -----------------------------------------------------------------------------
 # Validate Spark Installation
 # -----------------------------------------------------------------------------
