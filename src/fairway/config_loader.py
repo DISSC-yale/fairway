@@ -41,8 +41,9 @@ class Config:
         self.processed_dir = self.storage.get('processed', os.path.join(self.output_root, 'processed'))
         self.curated_dir = self.storage.get('curated', os.path.join(self.output_root, 'curated'))
 
-        # Unified temp directory: FAIRWAY_TEMP env > storage.temp — expand env vars
-        temp_raw = os.environ.get('FAIRWAY_TEMP') or self.storage.get('temp')
+        # Unified temp directory: FAIRWAY_TEMP env > storage.temp > storage.scratch_dir
+        # scratch_dir is documented for HPC fast-scratch storage; treat as fallback for temp
+        temp_raw = os.environ.get('FAIRWAY_TEMP') or self.storage.get('temp') or self.storage.get('scratch_dir')
         self.temp_dir = os.path.expandvars(temp_raw) if temp_raw else None
 
         # Support both root-level 'tables' and 'data: tables' structures

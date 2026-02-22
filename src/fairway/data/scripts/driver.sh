@@ -173,6 +173,16 @@ if [ "$USE_APPTAINER" = "yes" ]; then
 
     echo "Bind paths: $BIND_PATHS"
 
+    # Ensure all bind-mount source directories exist on this node.
+    # Apptainer FATAL-errors if a bind source path is missing.
+    IFS=',' read -ra _bind_dirs <<< "$BIND_PATHS"
+    for _dir in "${_bind_dirs[@]}"; do
+        _dir="${_dir%%:*}"
+        _dir="$(echo "${_dir}" | xargs)"
+        [ -n "${_dir}" ] && mkdir -p "${_dir}" 2>/dev/null || true
+    done
+    unset _bind_dirs _dir
+
     # Run pipeline inside container
     # Use --no-home to prevent classpath pollution (e.g., corrupted ~/.ivy2)
     # Pass through SPARK_CONF_DIR so PySpark finds auth settings

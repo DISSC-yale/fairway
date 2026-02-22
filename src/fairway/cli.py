@@ -1255,6 +1255,16 @@ if [ "$USE_APPTAINER" = "yes" ]; then
         BIND_PATHS="${{BIND_PATHS}},${{SPARK_CONF_DIR}}"
     fi
     echo "Running inside Apptainer with binds: $BIND_PATHS"
+
+    # Ensure all bind-mount source directories exist on this node.
+    IFS=',' read -ra _bind_dirs <<< "$BIND_PATHS"
+    for _dir in "${{_bind_dirs[@]}}"; do
+        _dir="${{_dir%%:*}}"
+        _dir="$(echo "${{_dir}}" | xargs)"
+        [ -n "${{_dir}}" ] && mkdir -p "${{_dir}}" 2>/dev/null || true
+    done
+    unset _bind_dirs _dir
+
     apptainer exec --no-home \
         --bind "$BIND_PATHS" \
         --env SPARK_CONF_DIR="${{SPARK_CONF_DIR}}" \
