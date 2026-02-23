@@ -569,9 +569,11 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
         pipeline.run(skip_summary=skip_summary)
         click.echo("Pipeline execution completed successfully.")
     finally:
-        # Explicitly stop the engine to release Spark resources
-        if hasattr(pipeline, 'engine') and hasattr(pipeline.engine, 'stop'):
-            pipeline.engine.stop()
+        # Explicitly stop the engine to release Spark resources.
+        # Check _engine directly to avoid triggering lazy init via the property —
+        # if preprocessing failed before Phase 1, Spark was never started.
+        if pipeline._engine is not None and hasattr(pipeline._engine, 'stop'):
+            pipeline._engine.stop()
 
 
 
@@ -1109,6 +1111,21 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
     # Load main config to get container settings
     from fairway.config_loader import Config
     main_cfg = Config(config)
+
+    # Read resource hints from first table's preprocess config
+    preprocess_resources = {}
+    for t in main_cfg.tables:
+        res = t.get('preprocess', {}).get('resources', {})
+        if res:
+            preprocess_resources = res
+            break
+
+    # Apply config defaults only when CLI used default values
+    ctx = click.get_current_context()
+    if ctx.get_parameter_source('cpus') != click.core.ParameterSource.COMMANDLINE:
+        cpus = preprocess_resources.get('cpus', cpus)
+    if ctx.get_parameter_source('mem') != click.core.ParameterSource.COMMANDLINE:
+        mem = preprocess_resources.get('memory', mem)
 
     # Auto-detect bind paths from config (storage dirs, temp, table roots, explicit binds)
     auto_binds = _get_apptainer_binds(main_cfg)

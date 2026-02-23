@@ -350,7 +350,7 @@ class IngestionPipeline:
                  spec.loader.exec_module(module)
                  # Pass extra config options (e.g., password_file) to the script
                  extra_opts = {k: v for k, v in preprocess_config.items()
-                               if k not in ('action', 'scope', 'execution_mode', 'include')}
+                               if k not in ('action', 'scope', 'execution_mode', 'include', 'resources')}
                  if hasattr(module, 'process_file'):
                      return module.process_file(file_path, output_dir, **extra_opts)
                  elif hasattr(module, 'process'):
