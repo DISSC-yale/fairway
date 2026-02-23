@@ -75,12 +75,36 @@ class Config:
 
 
     def _resolve_path(self, path_ref, config_dir):
-        """Resolve a path relative to config directory if not absolute."""
+        """Resolve a relative path, checking CWD (project root) before config directory."""
         if not path_ref:
             return None
         if os.path.isabs(path_ref):
             return path_ref
-        return os.path.join(config_dir, path_ref)
+        cwd_path = os.path.join(os.getcwd(), path_ref)
+        if os.path.exists(cwd_path):
+            return cwd_path
+        cfg_path = os.path.join(config_dir, path_ref)
+        if os.path.exists(cfg_path):
+            return cfg_path
+        return cwd_path
+
+    def _resolve_script_path(self, script_path, config_dir):
+        """Resolve a preprocessing script path, searching CWD then config_dir."""
+        if os.path.isabs(script_path):
+            return script_path
+        cwd = os.getcwd()
+        candidates = [
+            os.path.join(cwd, script_path),
+            os.path.join(cwd, 'scripts', os.path.basename(script_path)),
+            os.path.join(cwd, 'src', 'preprocess', os.path.basename(script_path)),
+            os.path.join(config_dir, script_path),
+            os.path.join(config_dir, 'scripts', os.path.basename(script_path)),
+            os.path.join(config_dir, 'src', 'preprocess', os.path.basename(script_path)),
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return os.path.join(cwd, script_path)
 
     def _load_schema(self, schema_ref):
         """Loads schema from a file if schema_ref is a path string, otherwise returns it as-is."""
@@ -172,25 +196,10 @@ class Config:
                  fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
                  transformation = self._resolve_path(tbl.get('transformation'), config_dir)
 
-                 # Resolve preprocess.action relative to config dir
-                 # Default search order: as-specified, src/preprocess/, scripts/
+                 # Resolve preprocess.action: CWD first, then config_dir
                  preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
                  if preprocess.get('action', '').endswith('.py'):
-                     script_path = preprocess['action']
-                     if not os.path.isabs(script_path):
-                         # Check multiple locations for the script (relative to config dir)
-                         candidates = [
-                             os.path.join(config_dir, script_path),  # As specified (e.g., scripts/foo.py)
-                             os.path.join(config_dir, 'src', 'preprocess', os.path.basename(script_path)),  # src/preprocess/foo.py
-                             os.path.join(config_dir, 'scripts', os.path.basename(script_path)),  # scripts/foo.py
-                         ]
-                         resolved = None
-                         for candidate in candidates:
-                             if os.path.exists(candidate):
-                                 resolved = candidate
-                                 break
-                         # If not found, fall back to simple config_dir-relative resolution
-                         preprocess['action'] = resolved or os.path.join(config_dir, script_path)
+                     preprocess['action'] = self._resolve_script_path(preprocess['action'], config_dir)
 
                  expanded.append({
                     'name': table_name,
@@ -255,10 +264,10 @@ class Config:
                     fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
                     transformation = self._resolve_path(tbl.get('transformation'), config_dir)
 
-                    # Resolve preprocess.action if it's a script path
+                    # Resolve preprocess.action: CWD first, then config_dir
                     preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
                     if preprocess.get('action', '').endswith('.py'):
-                        preprocess['action'] = self._resolve_path(preprocess['action'], config_dir)
+                        preprocess['action'] = self._resolve_script_path(preprocess['action'], config_dir)
 
                     expanded.append({
                         'name': tbl.get('name', os.path.basename(f)),
@@ -383,6 +392,17 @@ class Config:
                             errors.append(
                                 f"{prefix}: partition_by key '{key}' not found as named group in naming_pattern"
                             )
+
+            # Validate preprocess.resources
+            preprocess = table.get('preprocess', {})
+            resources = preprocess.get('resources', {}) if isinstance(preprocess, dict) else {}
+            if resources:
+                if 'cpus' in resources:
+                    if not isinstance(resources['cpus'], int) or resources['cpus'] < 1:
+                        errors.append(f"{prefix}: preprocess.resources.cpus must be a positive integer")
+                if 'memory' in resources:
+                    if not re.match(r'^\d+[KMGT]?$', str(resources['memory']), re.IGNORECASE):
+                        errors.append(f"{prefix}: preprocess.resources.memory has invalid format (expected e.g. '16G', '1024M')")
 
             # RULE-119: Validate partition_by columns are safe identifiers
             partition_by = table.get('partition_by', [])
