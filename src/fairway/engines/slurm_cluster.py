@@ -1,7 +1,83 @@
 import subprocess
 import os
+import re
 import time
 import click
+
+
+def _parse_mem_to_gb(mem_str):
+    """Parse a SLURM memory string (e.g. '200G', '1024M') to gigabytes (int)."""
+    if not mem_str:
+        return None
+    m = re.match(r'^(\d+)\s*([KMGT]?)$', str(mem_str).strip(), re.IGNORECASE)
+    if not m:
+        return None
+    value = int(m.group(1))
+    unit = m.group(2).upper()
+    if unit == 'T':
+        return value * 1024
+    if unit == 'G' or unit == '':
+        return value
+    if unit == 'M':
+        return max(1, value // 1024)
+    if unit == 'K':
+        return max(1, value // (1024 * 1024))
+    return value
+
+
+def compute_executor_defaults(nodes, cpus_per_node, mem_per_node_str):
+    """Derive Spark executor settings from SLURM resource allocation.
+
+    Formula:
+        - Reserve 1 CPU per node for OS/Spark daemons
+        - executor.cores = 4 (balances parallelism vs JVM overhead)
+        - executors_per_node = floor(usable_cpus / cores_per_executor)
+        - Reserve 10% memory per node for OS overhead
+        - mem_per_executor = floor(usable_mem / executors_per_node)
+        - Split: ~83% executor.memory, ~17% memoryOverhead
+
+    Returns:
+        tuple of (spark_conf dict, max_executors int, detail_lines list[str])
+        detail_lines are human-readable strings explaining the calculation.
+    """
+    mem_gb = _parse_mem_to_gb(mem_per_node_str)
+    if not all([nodes, cpus_per_node, mem_gb]):
+        return {}, None, ["Auto-compute skipped: missing SLURM resource values"]
+
+    cores_per_executor = 4
+    reserved_cpus = 1
+    usable_cpus = cpus_per_node - reserved_cpus
+    executors_per_node = usable_cpus // cores_per_executor
+
+    if executors_per_node < 1:
+        return {}, None, [f"Auto-compute skipped: only {usable_cpus} usable CPUs, need at least {cores_per_executor}"]
+
+    os_reserve_fraction = 0.10
+    usable_mem_gb = int(mem_gb * (1 - os_reserve_fraction))
+    mem_per_executor_gb = usable_mem_gb // executors_per_node
+
+    # Split: ~83% heap, ~17% overhead (safe for wide schemas)
+    overhead_gb = max(1, mem_per_executor_gb // 6)
+    heap_gb = mem_per_executor_gb - overhead_gb
+
+    max_executors = executors_per_node * nodes
+
+    conf = {
+        'spark.executor.cores': str(cores_per_executor),
+        'spark.executor.memory': f'{heap_gb}g',
+        'spark.executor.memoryOverhead': f'{overhead_gb}g',
+    }
+
+    details = [
+        f"SLURM allocation: {nodes} nodes x {cpus_per_node} CPUs x {mem_per_node_str}",
+        f"  Reserved per node: {reserved_cpus} CPU for daemons, {os_reserve_fraction:.0%} memory for OS",
+        f"  Usable per node: {usable_cpus} CPUs, {usable_mem_gb}G memory",
+        f"  executor.cores={cores_per_executor} -> {executors_per_node} executors/node, {max_executors} max total",
+        f"  {mem_per_executor_gb}G per executor -> {heap_gb}g heap + {overhead_gb}g overhead",
+    ]
+
+    return conf, max_executors, details
+
 
 class SlurmSparkManager:
     """Manages Spark clusters on Slurm with support for Apptainer containers."""
@@ -105,8 +181,29 @@ class SlurmSparkManager:
         time_limit = self.config.get('slurm_time')
         partition = self.config.get('slurm_partition')
 
-        # Build dynamic allocation settings
+        # Auto-compute executor defaults from SLURM resources
+        computed_conf, computed_max, detail_lines = compute_executor_defaults(nodes, cpus, mem)
+        if detail_lines:
+            click.echo("Spark executor auto-compute:")
+            for line in detail_lines:
+                click.echo(f"  {line}")
+
+        # Merge: user-specified spark_conf wins over computed defaults
+        spark_conf = dict(computed_conf)
+        user_conf = self.config.get('spark_conf', {})
+        if user_conf:
+            overridden = [k for k in user_conf if k in computed_conf]
+            if overridden:
+                click.echo(f"  User overrides: {', '.join(overridden)}")
+            spark_conf.update(user_conf)
+
+        # Build dynamic allocation settings (after auto-compute so max_executors can be filled)
         dynamic_alloc = self.config.get('dynamic_allocation', {})
+        if computed_max and dynamic_alloc.get('max_executors') is None:
+            dynamic_alloc = dict(dynamic_alloc)
+            dynamic_alloc['max_executors'] = computed_max
+            click.echo(f"  Auto-set dynamic_allocation.max_executors={computed_max}")
+
         da_lines = []
         if dynamic_alloc.get('enabled') is not None:
             da_lines.append(f'echo "spark.dynamicAllocation.enabled {dynamic_alloc["enabled"]}" >> $DEFAULTS_FILE')
@@ -118,8 +215,10 @@ class SlurmSparkManager:
             da_lines.append(f'echo "spark.dynamicAllocation.initialExecutors {dynamic_alloc["initial_executors"]}" >> $DEFAULTS_FILE')
         dynamic_alloc_script = "\n".join(da_lines)
 
-        # Build spark_conf settings
-        spark_conf = self.config.get('spark_conf', {})
+        click.echo("Effective spark_conf:")
+        for k, v in spark_conf.items():
+            click.echo(f"  {k} = {v}")
+
         spark_conf_lines = "\n".join(
             f'echo "{key} {value}" >> $DEFAULTS_FILE'
             for key, value in spark_conf.items()
