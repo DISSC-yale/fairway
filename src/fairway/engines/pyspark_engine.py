@@ -379,6 +379,15 @@ class PySparkEngine:
         # Step 1: Read file as text (one line per row)
         df = self.spark.read.text(input_path)
 
+        # Step 1b: Filter by record type if specified (for hierarchical fixed-width files)
+        record_filter = spec.get('record_type_filter')
+        if record_filter:
+            pos = record_filter['position'] + 1  # PySpark substr is 1-indexed
+            length = record_filter['length']
+            value = record_filter['value']
+            logger.info("Filtering to record_type='%s' at position %d (length %d)", value, record_filter['position'], length)
+            df = df.filter(F.col("value").substr(pos, length) == value)
+
         # Step 2: Validate line lengths using sampling (RULE-103: avoid full dataset scan)
         # Sample first 10,000 rows for validation - catches most data issues without O(n) cost
         validation_sample_size = 10000

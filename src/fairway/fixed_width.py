@@ -190,7 +190,13 @@ def validate_spec(spec):
     else:
         line_length = 0
 
-    return {
+    result = {
         'columns': validated_columns,
         'line_length': line_length
     }
+
+    # Pass through record_type_filter if present (for hierarchical fixed-width files)
+    if spec.get('record_type_filter'):
+        result['record_type_filter'] = spec['record_type_filter']
+
+    return result
