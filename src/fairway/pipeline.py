@@ -545,6 +545,7 @@ class IngestionPipeline:
         read_options = table.get('read_options', {})
         write_mode = table.get('write_mode', 'overwrite')
         fixed_width_spec = table.get('fixed_width_spec')
+        min_line_length = table.get('min_line_length')
         output_name = os.path.splitext(table_name)[0]
         intermediate_dir = self.config.processed_dir
         base_output = os.path.join(intermediate_dir, output_name)
@@ -628,6 +629,7 @@ class IngestionPipeline:
                     write_mode=write_mode,
                     output_format=self.config.output_format,
                     fixed_width_spec=fixed_width_spec,
+                    min_line_length=min_line_length,
                     **read_options
                 )
 
@@ -921,6 +923,7 @@ class IngestionPipeline:
             read_options = table.get('read_options', {})
             write_mode = table.get('write_mode', 'overwrite')
             fixed_width_spec = table.get('fixed_width_spec')
+            min_line_length = table.get('min_line_length')
 
             # For partitioning, DuckDB creates a directory.
             logger.info("Starting ingestion for %s from %s to %s", table['name'], input_path, output_path)
@@ -941,6 +944,7 @@ class IngestionPipeline:
                 write_mode=write_mode,
                 output_format=self.config.output_format,
                 fixed_width_spec=fixed_width_spec,
+                min_line_length=min_line_length,
                 **read_options
             )
             

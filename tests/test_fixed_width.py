@@ -189,6 +189,33 @@ class TestDuckDBFixedWidth:
                 fixed_width_spec=spec_path
             )
 
+    def test_min_line_length_skips_short_lines(self, output_dir):
+        """min_line_length config filters out corrupted short lines."""
+        engine = DuckDBEngine()
+        output_path = os.path.join(output_dir, "output.parquet")
+
+        # Create a file with a short/corrupted line
+        mixed_file = os.path.join(output_dir, "mixed.txt")
+        with open(mixed_file, "w") as f:
+            f.write("001Alice               030\n")
+            f.write("BAD\n")  # Corrupted line (length 3)
+            f.write("002Bob                 025\n")
+
+        spec_path = str(FIXTURES_DIR / "simple_spec.yaml")
+
+        # Without min_line_length, this would fail with RULE-115
+        # With min_line_length=20, the short line is filtered out
+        engine.ingest(
+            mixed_file, output_path,
+            format="fixed_width",
+            fixed_width_spec=spec_path,
+            min_line_length=20
+        )
+
+        df = engine.con.execute(f"SELECT * FROM '{output_path}'").df()
+        assert len(df) == 2  # Only valid lines kept
+        assert df["id"].tolist() == ["001", "002"]
+
     def test_metadata_injection(self, output_dir):
         """Metadata can be injected into fixed-width output."""
         engine = DuckDBEngine()

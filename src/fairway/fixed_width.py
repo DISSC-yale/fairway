@@ -211,4 +211,11 @@ def validate_spec(spec):
     if spec.get('record_type_filter'):
         result['record_type_filter'] = spec['record_type_filter']
 
+    # Pass through min_line_length if present (to skip corrupted/short lines before validation)
+    if spec.get('min_line_length'):
+        min_len = spec['min_line_length']
+        if not isinstance(min_len, int) or min_len < 0:
+            raise FixedWidthSpecError([f"'min_line_length' must be a non-negative integer, got {min_len}"])
+        result['min_line_length'] = min_len
+
     return result
