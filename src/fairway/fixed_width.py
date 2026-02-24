@@ -173,12 +173,24 @@ def validate_spec(spec):
             errors.append(f"{prefix}: 'trim' must be a boolean, got {trim}")
             trim = False
 
+        # Optional: cast_mode controls behaviour when a value cannot be cast to the declared type.
+        # 'adaptive' (default) – use TRY_CAST so non-castable values become NULL
+        # 'strict'             – use CAST so non-castable values raise an error
+        VALID_CAST_MODES = {'adaptive', 'strict'}
+        cast_mode = col.get('cast_mode', 'adaptive')
+        if not isinstance(cast_mode, str) or cast_mode not in VALID_CAST_MODES:
+            errors.append(
+                f"{prefix}: 'cast_mode' must be one of {sorted(VALID_CAST_MODES)}, got {cast_mode!r}"
+            )
+            cast_mode = 'adaptive'
+
         validated_columns.append({
             'name': name,
             'start': start,
             'length': length,
             'type': col_type,
-            'trim': trim
+            'trim': trim,
+            'cast_mode': cast_mode,
         })
 
     if errors:

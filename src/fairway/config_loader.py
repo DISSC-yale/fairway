@@ -219,6 +219,7 @@ class Config:
                     'files': files_pattern,
                     'fixed_width_spec': fixed_width_spec,
                     'batch_strategy': tbl.get('batch_strategy', 'bulk'),
+                    'type_enforcement': tbl.get('type_enforcement', {}),
                 })
 
             else:
@@ -287,6 +288,7 @@ class Config:
                         'files': files_pattern,
                         'fixed_width_spec': fixed_width_spec,
                         'batch_strategy': tbl.get('batch_strategy', 'bulk'),
+                        'type_enforcement': tbl.get('type_enforcement', {}),
                     })
         return expanded
 

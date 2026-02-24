@@ -419,9 +419,8 @@ class PySparkEngine:
             if trim:
                 extract_expr = F.trim(extract_expr)
 
-            # Cast to target type
-            spark_type = TYPE_MAP.get(col_type, StringType())
-            df = df.withColumn(name, extract_expr.cast(spark_type))
+            # Store as STRING — casting happens in enforce_types() (curated layer)
+            df = df.withColumn(name, extract_expr)
 
         # Drop the original 'value' column
         df = df.drop("value")
@@ -462,6 +461,76 @@ class PySparkEngine:
         Enables 'mergeSchema' to handle evolving schemas across partitions.
         """
         return self.spark.read.option("mergeSchema", "true").parquet(path)
+
+    def enforce_types(self, input_path, output_path, columns, on_fail='null',
+                      partition_by=None, write_mode='overwrite',
+                      target_file_size_mb=128, compression='snappy',
+                      max_records_per_file=None):
+        """
+        Reads the STRING-preserved processed layer and writes a typed curated layer.
+
+        For each column declared with a non-string type:
+          - on_fail='null'   → try_cast SQL expr: non-castable values become NULL (default)
+          - on_fail='strict' → cast() call: non-castable values raise an error
+
+        Per-column cast_mode='strict' overrides on_fail='null' for that column.
+
+        Args:
+            input_path:  Path to the processed (all-STRING) Parquet.
+            output_path: Path to write the typed curated Parquet.
+            columns:     List of column dicts with 'name', 'type', 'cast_mode' keys.
+            on_fail:     Global default: 'null' or 'strict'.
+            partition_by, write_mode, target_file_size_mb, compression, max_records_per_file:
+                         Standard writer options (same as _ingest_fixed_width).
+        """
+        from pyspark.sql.types import IntegerType, LongType, DoubleType, StringType, FloatType
+
+        # Map spec type names to Spark SQL type names used in try_cast(col AS <type>)
+        SPARK_SQL_TYPE = {
+            'INTEGER': 'INT', 'INT': 'INT',
+            'BIGINT': 'BIGINT', 'LONG': 'BIGINT',
+            'DOUBLE': 'DOUBLE', 'FLOAT': 'FLOAT',
+            'VARCHAR': 'STRING', 'STRING': 'STRING',
+        }
+        TYPE_MAP = {
+            'INTEGER': IntegerType(), 'INT': IntegerType(),
+            'BIGINT': LongType(), 'LONG': LongType(),
+            'DOUBLE': DoubleType(), 'FLOAT': FloatType(),
+            'VARCHAR': StringType(), 'STRING': StringType(),
+        }
+
+        df = self.spark.read.option("mergeSchema", "true").parquet(input_path)
+
+        for col in columns:
+            name = col['name']
+            col_type = col['type'].upper()
+            col_cast_mode = col.get('cast_mode', 'adaptive')
+            effective_strict = (on_fail == 'strict') or (col_cast_mode == 'strict')
+
+            if col_type in ('VARCHAR', 'STRING'):
+                continue  # already STRING — no action needed
+
+            spark_type = TYPE_MAP.get(col_type, StringType())
+
+            if effective_strict:
+                df = df.withColumn(name, F.col(name).cast(spark_type))
+            else:
+                sql_type = SPARK_SQL_TYPE.get(col_type, 'STRING')
+                df = df.withColumn(name, F.expr(f"try_cast(`{name}` AS {sql_type})"))
+
+        writer = df.write.mode(write_mode)
+        if max_records_per_file:
+            computed_max = max_records_per_file
+        else:
+            computed_max = target_file_size_mb * 8000
+        writer = writer.option("maxRecordsPerFile", computed_max)
+        writer = writer.option("compression", compression)
+
+        if partition_by:
+            writer = writer.partitionBy(*partition_by)
+
+        writer.parquet(output_path)
+        return True
 
     def distribute_task(self, items, func):
         """

@@ -141,6 +141,51 @@ class ArchiveCache:
             raise ValueError(f"Unsupported archive type: {archive_path}")
 
 
+def _build_enforcement_schema(table, fixed_width_spec_path):
+    """
+    Returns the list of column dicts (name, type, cast_mode) to use for type
+    enforcement, or an empty list if type enforcement should be skipped.
+
+    Rules:
+      - fixed_width tables: auto-enabled when the spec has any non-STRING typed
+        column, unless type_enforcement.enabled is explicitly False.
+      - All other formats: only enabled when type_enforcement.enabled is True
+        and a schema is declared.
+    """
+    type_enforcement = table.get('type_enforcement', {})
+    explicitly_disabled = type_enforcement.get('enabled') is False
+
+    if explicitly_disabled:
+        return []
+
+    # Fixed-width path: derive column list from the spec
+    if fixed_width_spec_path:
+        try:
+            from fairway.fixed_width import load_spec
+            spec = load_spec(fixed_width_spec_path)
+            cols = spec.get('columns', [])
+            typed_cols = [c for c in cols if c.get('type', 'VARCHAR').upper() not in ('VARCHAR', 'STRING')]
+            if typed_cols:
+                return cols  # pass all columns; enforce_types() skips VARCHAR ones
+        except Exception:
+            pass
+        return []
+
+    # Non-fixed-width path: only enabled when explicitly opted in
+    if not type_enforcement.get('enabled'):
+        return []
+
+    raw_schema = table.get('schema', {})
+    if not raw_schema:
+        return []
+
+    # Build column list from the schema dict {col_name: type_string}
+    return [
+        {'name': col_name, 'type': col_type, 'cast_mode': 'adaptive'}
+        for col_name, col_type in raw_schema.items()
+    ]
+
+
 class IngestionPipeline:
     def __init__(self, config_path, spark_master=None, engine_override=None, spark_conf=None):
         logger.debug("Loading local fairway.pipeline")
@@ -966,29 +1011,14 @@ class IngestionPipeline:
                 
                 if l1['passed'] and l2['passed']:
                     logger.info("Validations passed for %s", table['name'])
-                    
-                    # Move/Copy to final directory logic ... (Simplified from previous viewing)
-                    # For brevity in this replacement, retaining key parts
-                    final_basename = f"{output_name}.{table_format}" if not partition_by else output_name
+
                     if partition_by:
                         final_basename = output_name
                     else:
                         final_basename = f"{output_name}.parquet"
 
                     final_output_path = os.path.join(self.config.curated_dir, final_basename)
-                    
-                    # Logic for write_mode in finalization?
-                    # If append, we shouldn't wipe the final directory if it exists.
-                    # But if we copy over... 
-                    # If write_mode == append, we rely on the engine having already done the needful in intermediate?
-                    # Actually, usually intermediate is transient. Final is persistent.
-                    # If we ingested 1 file related to 'MyDataset', and we append...
-                    # The intermediate output_path was likely specific to that file or batch.
-                    # The final path is usually the dataset path.
-                    # This logic needs refinement for full incremental support, 
-                    # but for now we follow the existing pattern: 
-                    # Intermediate -> Validate -> Copy to Final.
-                    
+
                     # If overwrite (default), we clear final.
                     if write_mode == 'overwrite':
                         if os.path.exists(final_output_path):
@@ -997,20 +1027,37 @@ class IngestionPipeline:
                                 shutil.rmtree(final_output_path)
                             else:
                                 os.remove(final_output_path)
-                    
-                    import shutil
-                    # If append, and final exists, we merge? 
-                    # Parquet directory merge is handled by engine logic usually.
-                    # Simple Copy might overwrite if names conflict or directory structure differs.
-                    # For now: Standard copy.
-                    
+
                     os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
 
-                    if os.path.isdir(validation_target_path):
-                        shutil.copytree(validation_target_path, final_output_path, dirs_exist_ok=True)
+                    # Phase 1.5: Type enforcement — produce a typed curated layer.
+                    # The processed layer (validation_target_path) has all-STRING columns
+                    # for fixed-width tables. enforce_types() reads it and writes a typed
+                    # Parquet to final_output_path using TRY_CAST (or CAST for strict cols).
+                    enforcement_columns = _build_enforcement_schema(table, fixed_width_spec)
+                    if enforcement_columns:
+                        type_enforcement = table.get('type_enforcement', {})
+                        on_fail = type_enforcement.get('on_fail', 'null')
+                        logger.info(
+                            "Enforcing types for %s (on_fail=%s, %d typed columns)",
+                            table['name'], on_fail, len(enforcement_columns)
+                        )
+                        self.engine.enforce_types(
+                            validation_target_path,
+                            final_output_path,
+                            enforcement_columns,
+                            on_fail=on_fail,
+                            partition_by=partition_by,
+                            write_mode=write_mode,
+                        )
                     else:
-                        shutil.copy2(validation_target_path, final_output_path)
-                    
+                        # No type enforcement — copy processed → curated as-is.
+                        import shutil
+                        if os.path.isdir(validation_target_path):
+                            shutil.copytree(validation_target_path, final_output_path, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(validation_target_path, final_output_path)
+
                     logger.info("Data finalized at %s", final_output_path)
 
                     # Record each individual file in manifest (like schema_pipeline does)

@@ -256,10 +256,8 @@ class DuckDBEngine:
             if trim:
                 extract_expr = f"trim({extract_expr})"
 
-            # Cast to target type
-            cast_expr = f"CAST({extract_expr} AS {col_type})"
-
-            select_parts.append(f"{cast_expr} AS {name}")
+            # Store as VARCHAR — casting happens in enforce_types() (curated layer)
+            select_parts.append(f"{extract_expr} AS {name}")
 
         select_clause = ", ".join(select_parts)
 
@@ -306,6 +304,66 @@ class DuckDBEngine:
             (FORMAT PARQUET{partition_clause}, OVERWRITE {overwrite_val})
         """)
         return True
+
+    def enforce_types(self, input_path, output_path, columns, on_fail='null',
+                      partition_by=None, write_mode='overwrite'):
+        """
+        Reads the STRING-preserved processed layer and writes a typed curated layer.
+
+        For each column declared with a non-string type:
+          - on_fail='null'   → TRY_CAST: non-castable values become NULL (default)
+          - on_fail='strict' → CAST: non-castable values raise an error
+
+        Per-column cast_mode='strict' overrides on_fail='null' for that column.
+
+        Args:
+            input_path:  Path to the processed (all-STRING) Parquet.
+            output_path: Path to write the typed curated Parquet.
+            columns:     List of column dicts with 'name', 'type', 'cast_mode' keys
+                         (from fixed_width_spec or built from schema config).
+            on_fail:     Global default: 'null' or 'strict'.
+            partition_by: Optional list of partition column names.
+            write_mode:  'overwrite' or 'append'.
+        """
+        ALLOWED_TYPES = {
+            'VARCHAR', 'STRING', 'INTEGER', 'INT', 'BIGINT', 'DOUBLE', 'FLOAT',
+            'DATE', 'TIMESTAMP', 'BOOLEAN', 'DECIMAL',
+        }
+
+        # Resolve the parquet source (file or directory glob)
+        if os.path.isdir(input_path):
+            parquet_source = os.path.join(input_path, '**', '*.parquet').replace('\\', '/')
+        else:
+            parquet_source = input_path
+
+        select_parts = []
+        for col in columns:
+            name = _validate_sql_identifier(col['name'])
+            col_type = col['type'].upper()
+            base_type = col_type.split('(')[0]
+            if base_type not in ALLOWED_TYPES:
+                raise ValueError(f"enforce_types: invalid column type '{col_type}'")
+
+            col_cast_mode = col.get('cast_mode', 'adaptive')
+            effective_strict = (on_fail == 'strict') or (col_cast_mode == 'strict')
+
+            if base_type in ('VARCHAR', 'STRING'):
+                select_parts.append(name)
+            elif effective_strict:
+                select_parts.append(f"CAST({name} AS {col_type}) AS {name}")
+            else:
+                select_parts.append(f"TRY_CAST({name} AS {col_type}) AS {name}")
+
+        select_clause = ', '.join(select_parts)
+
+        self.con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW raw_data AS
+            SELECT {select_clause}
+            FROM read_parquet('{parquet_source}', union_by_name=true)
+        """)
+
+        return self._write_to_parquet(output_path, partition_by=partition_by,
+                                      write_mode=write_mode)
 
     def read_result(self, path):
         """
