@@ -190,10 +190,25 @@ class DuckDBEngine:
         # Step 1: Read file as single text column (no header, no delimiter parsing)
         # Use a delimiter that won't appear in fixed-width data (ASCII unit separator)
         self.con.execute(f"""
-            CREATE OR REPLACE TEMP VIEW raw_lines AS
+            CREATE OR REPLACE TEMP VIEW raw_lines_unfiltered AS
             SELECT column0 AS line
             FROM read_csv('{read_path}', header=false, sep=E'\\x1F', columns={{'column0': 'VARCHAR'}})
         """)
+
+        # Step 1b: Filter by record type if specified (for hierarchical fixed-width files)
+        record_filter = spec.get('record_type_filter')
+        if record_filter:
+            pos = int(record_filter['position']) + 1  # DuckDB substr is 1-indexed
+            length = int(record_filter['length'])
+            value = record_filter['value']
+            logger.info("Filtering to record_type='%s' at position %d (length %d)", value, record_filter['position'], length)
+            self.con.execute(f"""
+                CREATE OR REPLACE TEMP VIEW raw_lines AS
+                SELECT line FROM raw_lines_unfiltered
+                WHERE substr(line, {pos}, {length}) = '{value}'
+            """)
+        else:
+            self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines AS SELECT line FROM raw_lines_unfiltered")
 
         # Step 2: Validate line lengths (fail strict per RULE-115)
         validation_query = f"""
