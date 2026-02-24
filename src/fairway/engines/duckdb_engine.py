@@ -175,6 +175,12 @@ class DuckDBEngine:
 
         # Load and validate spec
         spec = load_spec(spec_path)
+
+        # Allow config-level min_line_length to override spec value
+        config_min_line_length = kwargs.pop('min_line_length', None)
+        if config_min_line_length is not None:
+            spec['min_line_length'] = config_min_line_length
+
         columns = spec['columns']
         line_length = spec['line_length']
 
@@ -196,19 +202,38 @@ class DuckDBEngine:
         """)
 
         # Step 1b: Filter by record type if specified (for hierarchical fixed-width files)
+        # When filtering, materialize to TEMP TABLE to avoid re-evaluating filter on every access
         record_filter = spec.get('record_type_filter')
         if record_filter:
             pos = int(record_filter['position']) + 1  # DuckDB substr is 1-indexed
             length = int(record_filter['length'])
             value = record_filter['value']
             logger.info("Filtering to record_type='%s' at position %d (length %d)", value, record_filter['position'], length)
+            # Use TEMP TABLE to materialize filtered rows (filter applied once, not on every access)
+            self.con.execute("DROP TABLE IF EXISTS raw_lines")
             self.con.execute(f"""
-                CREATE OR REPLACE TEMP VIEW raw_lines AS
+                CREATE TEMP TABLE raw_lines AS
                 SELECT line FROM raw_lines_unfiltered
                 WHERE substr(line, {pos}, {length}) = '{value}'
             """)
         else:
             self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines AS SELECT line FROM raw_lines_unfiltered")
+
+        # Step 1c: Filter out short/corrupted lines if min_line_length specified
+        min_line_length = spec.get('min_line_length')
+        if min_line_length:
+            logger.info("Filtering lines shorter than min_line_length=%d", min_line_length)
+            # Re-create raw_lines with additional length filter
+            # raw_lines could be a TABLE (with record_type_filter) or VIEW (without)
+            self.con.execute("DROP TABLE IF EXISTS raw_lines_filtered")
+            self.con.execute(f"""
+                CREATE TEMP TABLE raw_lines_filtered AS
+                SELECT line FROM raw_lines
+                WHERE length(line) >= {min_line_length}
+            """)
+            self.con.execute("DROP VIEW IF EXISTS raw_lines")
+            self.con.execute("DROP TABLE IF EXISTS raw_lines")
+            self.con.execute("ALTER TABLE raw_lines_filtered RENAME TO raw_lines")
 
         # Step 2: Validate line lengths (fail strict per RULE-115)
         validation_query = f"""

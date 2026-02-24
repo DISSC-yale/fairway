@@ -358,6 +358,12 @@ class PySparkEngine:
 
         # Load and validate spec
         spec = load_spec(spec_path)
+
+        # Allow config-level min_line_length to override spec value
+        config_min_line_length = kwargs.pop('min_line_length', None)
+        if config_min_line_length is not None:
+            spec['min_line_length'] = config_min_line_length
+
         columns = spec['columns']
         line_length = spec['line_length']
 
@@ -387,6 +393,18 @@ class PySparkEngine:
             value = record_filter['value']
             logger.info("Filtering to record_type='%s' at position %d (length %d)", value, record_filter['position'], length)
             df = df.filter(F.col("value").substr(pos, length) == value)
+
+        # Step 1c: Filter out short/corrupted lines if min_line_length specified
+        min_line_length = spec.get('min_line_length')
+        if min_line_length:
+            pre_count = df.count() if logger.isEnabledFor(logging.DEBUG) else None
+            df = df.filter(F.length(F.col("value")) >= min_line_length)
+            if pre_count is not None:
+                post_count = df.count()
+                logger.debug("min_line_length=%d filter: %d -> %d rows (dropped %d)",
+                            min_line_length, pre_count, post_count, pre_count - post_count)
+            else:
+                logger.info("Filtering lines shorter than min_line_length=%d", min_line_length)
 
         # Step 2: Validate line lengths using sampling (RULE-103: avoid full dataset scan)
         # Sample first 10,000 rows for validation - catches most data issues without O(n) cost
