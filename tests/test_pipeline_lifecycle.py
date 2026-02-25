@@ -9,7 +9,7 @@ These tests prove that contract holds and catch regressions.
 import os
 import pytest
 import yaml
-from unittest.mock import patch, MagicMock, PropertyMock, call
+from unittest.mock import patch, MagicMock, call
 from click.testing import CliRunner
 
 

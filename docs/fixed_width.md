@@ -68,6 +68,68 @@ Use native engine types directly:
 | DOUBLE | DOUBLE | 64-bit float |
 | VARCHAR | STRING | Text |
 
+## Hierarchical Data (Record Type Filtering)
+
+Some fixed-width formats (e.g., IPUMS census data) interleave multiple record types in a single file — household records (`H`) and person records (`P`) on alternating lines. Use `record_type_filter` in the spec to select only one record type:
+
+```yaml
+# specs/us1950_H_spec.yaml
+record_type_filter:
+  position: 0       # 0-indexed position of the record type indicator
+  length: 1         # Length of the indicator field
+  value: "H"        # Keep only lines where this field equals "H"
+
+columns:
+  - name: rectype
+    start: 0
+    length: 1
+    type: VARCHAR
+  - name: serial
+    start: 1
+    length: 8
+    type: BIGINT
+    trim: true
+  # ... household-specific columns
+```
+
+Generate separate spec files for each record type (e.g., `us1950_H_spec.yaml` and `us1950_P_spec.yaml`) and configure separate tables for each:
+
+```yaml
+tables:
+  - name: "census_1950_household"
+    path: "data/*.dat"
+    format: "fixed_width"
+    fixed_width_spec: "specs/us1950_H_spec.yaml"
+
+  - name: "census_1950_person"
+    path: "data/*.dat"
+    format: "fixed_width"
+    fixed_width_spec: "specs/us1950_P_spec.yaml"
+```
+
+## Type Enforcement
+
+Fixed-width columns are initially read as VARCHAR. Fairway applies two-layer type enforcement to convert them to the types declared in your spec:
+
+1. **Spec types**: Column types defined in the spec file (e.g., `BIGINT`, `DOUBLE`)
+2. **TRY_CAST**: Safe casting that converts invalid values to NULL instead of failing
+
+Configure the failure behavior per table:
+
+```yaml
+tables:
+  - name: "census_data"
+    format: "fixed_width"
+    fixed_width_spec: "specs/census_spec.yaml"
+    type_enforcement:
+      on_fail: null    # TRY_CAST: invalid values become NULL (default)
+```
+
+| `on_fail` | Behavior |
+|-----------|----------|
+| `null` (default) | Use TRY_CAST — invalid values become NULL |
+| `strict` | Use CAST — fail on any invalid value |
+
 ## Data Validation
 
 Fixed-width ingestion enforces strict validation per **RULE-115**:
@@ -76,7 +138,22 @@ Fixed-width ingestion enforces strict validation per **RULE-115**:
 - **Short Lines Fail**: If any line is too short, ingestion fails with a clear error showing samples
 - **No Silent Truncation**: Partial data is never silently dropped
 
-Example error:
+### Skipping Corrupted Lines
+
+If your data has a small number of corrupted or truncated lines, use `min_line_length` to filter them out before validation:
+
+```yaml
+tables:
+  - name: "legacy_records"
+    path: "data/*.dat"
+    format: "fixed_width"
+    fixed_width_spec: "specs/legacy_spec.yaml"
+    min_line_length: 500    # Skip lines shorter than 500 characters
+```
+
+Lines shorter than `min_line_length` are silently dropped before the RULE-115 check runs. This is useful for fixed-width files with occasional corrupted records that would otherwise fail the entire ingestion.
+
+Example error (without `min_line_length`):
 ```
 [RULE-115] Data Integrity Error: 15 lines are shorter than expected
 line length 45. Samples: len=20: '001Alice...'; len=15: '002Bob...'
@@ -128,6 +205,9 @@ columns:
 | Metadata injection | ✅ | ✅ |
 | Partitioning | ✅ | ✅ |
 | Line validation | ✅ | ✅ |
+| Record type filter | ✅ | ✅ |
+| min_line_length | ✅ | ✅ |
+| Type enforcement | ✅ | ✅ |
 
 ## Troubleshooting
 

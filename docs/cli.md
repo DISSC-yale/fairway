@@ -142,6 +142,39 @@ fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
 fairway submit --with-spark --dry-run
 ```
 
+### `fairway summarize`
+
+Generate summary stats and reports for already-ingested data. Use this after running `fairway run --skip-summary` to generate summaries in a separate step (useful on HPC where ingestion and summarization have different resource needs).
+
+```bash
+fairway summarize [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--config TEXT` | Auto-discover | Path to config file |
+| `--spark-master TEXT` | None | Spark master URL |
+| `--slurm` | False | Submit as a Slurm job (loads Spark/Java modules) |
+| `--account TEXT` | From spark.yaml | Slurm account |
+| `--partition TEXT` | `day` | Slurm partition |
+| `--time TEXT` | `04:00:00` | Slurm time limit |
+| `--mem TEXT` | `32G` | Slurm memory |
+| `--cpus INTEGER` | `4` | Slurm CPUs per task |
+| `--log-file TEXT` | `logs/fairway.jsonl` | Path to JSONL log file |
+| `--log-level` | `INFO` | Log level |
+
+**Examples:**
+```bash
+# Run summarization locally
+fairway summarize
+
+# Submit as Slurm job
+fairway summarize --slurm
+
+# Submit with custom resources
+fairway summarize --slurm --mem 64G --time 08:00:00
+```
+
 ### `fairway cancel`
 
 Cancel Slurm jobs (wrapper around `scancel`).
