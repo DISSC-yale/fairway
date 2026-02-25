@@ -348,6 +348,122 @@ class TestTableManifestQuery:
         assert entry["metadata"]["partition"] == "state=CT"
 
 
+class TestPreprocessedFileKeyCollision:
+    """Tests for manifest key uniqueness when preprocessed files share basenames.
+
+    Bug: When multiple zips are extracted to batch_dir/<zip_stem>/, files with
+    the same basename (e.g. us1950b_usa_res.dat) get the same manifest key
+    because get_file_key() falls back to os.path.basename() when files aren't
+    under table_root. The second entry overwrites the first.
+    """
+
+    def test_same_basename_different_dirs_without_root_collides(self, tmp_path):
+        """Demonstrates the bug: same basename → same key without proper root."""
+        manifest_dir = str(tmp_path / "manifest")
+        batch_dir = tmp_path / "batch_v1"
+        dir_a = batch_dir / "zip_a"
+        dir_b = batch_dir / "zip_b"
+        dir_a.mkdir(parents=True)
+        dir_b.mkdir(parents=True)
+
+        f1 = dir_a / "data.dat"
+        f2 = dir_b / "data.dat"
+        f1.write_text("content_a")
+        f2.write_text("content_b")
+
+        tm = TableManifest(manifest_dir, "census")
+        # Without a matching root, both get key "data.dat"
+        key1 = tm.get_file_key(str(f1))
+        key2 = tm.get_file_key(str(f2))
+        assert key1 == key2 == "data.dat"  # This IS the bug
+
+    def test_same_basename_different_dirs_with_batch_root_unique(self, tmp_path):
+        """Fix: using batch_dir as table_root produces unique keys."""
+        manifest_dir = str(tmp_path / "manifest")
+        batch_dir = tmp_path / "batch_v1"
+        dir_a = batch_dir / "zip_a"
+        dir_b = batch_dir / "zip_b"
+        dir_a.mkdir(parents=True)
+        dir_b.mkdir(parents=True)
+
+        f1 = dir_a / "data.dat"
+        f2 = dir_b / "data.dat"
+        f1.write_text("content_a")
+        f2.write_text("content_b")
+
+        tm = TableManifest(manifest_dir, "census")
+        key1 = tm.get_file_key(str(f1), table_root=str(batch_dir))
+        key2 = tm.get_file_key(str(f2), table_root=str(batch_dir))
+
+        assert key1 != key2
+        assert key1 == "zip_a/data.dat"
+        assert key2 == "zip_b/data.dat"
+
+    def test_update_file_no_collision_with_batch_root(self, tmp_path):
+        """Both files recorded as separate entries when batch_dir used as root."""
+        manifest_dir = str(tmp_path / "manifest")
+        batch_dir = tmp_path / "batch_v1"
+        dir_a = batch_dir / "zip_a"
+        dir_b = batch_dir / "zip_b"
+        dir_a.mkdir(parents=True)
+        dir_b.mkdir(parents=True)
+
+        f1 = dir_a / "data.dat"
+        f2 = dir_b / "data.dat"
+        f1.write_text("content_a")
+        f2.write_text("content_b")
+
+        tm = TableManifest(manifest_dir, "census")
+        tm.update_file(str(f1), status="success", table_root=str(batch_dir))
+        tm.update_file(str(f2), status="success", table_root=str(batch_dir))
+
+        assert len(tm.data["files"]) == 2
+        assert "zip_a/data.dat" in tm.data["files"]
+        assert "zip_b/data.dat" in tm.data["files"]
+
+    def test_get_pending_files_no_false_dedup_with_batch_root(self, tmp_path):
+        """get_pending_files returns both files when batch_dir used as root."""
+        manifest_dir = str(tmp_path / "manifest")
+        batch_dir = tmp_path / "batch_v1"
+        dir_a = batch_dir / "zip_a"
+        dir_b = batch_dir / "zip_b"
+        dir_a.mkdir(parents=True)
+        dir_b.mkdir(parents=True)
+
+        f1 = dir_a / "data.dat"
+        f2 = dir_b / "data.dat"
+        f1.write_text("content_a")
+        f2.write_text("content_b")
+
+        tm = TableManifest(manifest_dir, "census")
+        # Record only f1 as processed
+        tm.update_file(str(f1), status="success", table_root=str(batch_dir))
+
+        # f2 should still be pending (different key)
+        pending = tm.get_pending_files([str(f1), str(f2)], table_root=str(batch_dir))
+        assert pending == [str(f2)]
+
+    def test_should_process_distinguishes_same_basename_files(self, tmp_path):
+        """should_process correctly distinguishes files with same basename."""
+        manifest_dir = str(tmp_path / "manifest")
+        batch_dir = tmp_path / "batch_v1"
+        dir_a = batch_dir / "zip_a"
+        dir_b = batch_dir / "zip_b"
+        dir_a.mkdir(parents=True)
+        dir_b.mkdir(parents=True)
+
+        f1 = dir_a / "data.dat"
+        f2 = dir_b / "data.dat"
+        f1.write_text("content_a")
+        f2.write_text("content_b")
+
+        tm = TableManifest(manifest_dir, "census")
+        tm.update_file(str(f1), status="success", table_root=str(batch_dir))
+
+        assert tm.should_process(str(f1), table_root=str(batch_dir)) is False
+        assert tm.should_process(str(f2), table_root=str(batch_dir)) is True
+
+
 class TestManifestStore:
     def test_manifest_store_creates_table_manifests(self, tmp_path):
         manifest_dir = str(tmp_path / "manifest")

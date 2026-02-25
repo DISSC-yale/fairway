@@ -6,6 +6,7 @@ import tarfile
 import hashlib
 import importlib.util
 import logging
+import tempfile
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
@@ -29,6 +30,7 @@ def _is_preprocess_script_allowed(script_path):
 
     allowed_dirs = [
         os.path.join(cwd, 'src'),
+        os.path.join(cwd, 'src', 'preprocess'),
         os.path.join(cwd, 'scripts'),
         os.path.join(cwd, 'transformations'),
     ]
@@ -139,14 +141,71 @@ class ArchiveCache:
             raise ValueError(f"Unsupported archive type: {archive_path}")
 
 
+def _build_enforcement_schema(table, fixed_width_spec_path):
+    """
+    Returns the list of column dicts (name, type, cast_mode) to use for type
+    enforcement, or an empty list if type enforcement should be skipped.
+
+    Rules:
+      - fixed_width tables: auto-enabled when the spec has any non-STRING typed
+        column, unless type_enforcement.enabled is explicitly False.
+      - All other formats: only enabled when type_enforcement.enabled is True
+        and a schema is declared.
+    """
+    type_enforcement = table.get('type_enforcement', {})
+    explicitly_disabled = type_enforcement.get('enabled') is False
+
+    if explicitly_disabled:
+        return []
+
+    # Fixed-width path: derive column list from the spec
+    if fixed_width_spec_path:
+        try:
+            from fairway.fixed_width import load_spec
+            spec = load_spec(fixed_width_spec_path)
+            cols = spec.get('columns', [])
+            typed_cols = [c for c in cols if c.get('type', 'VARCHAR').upper() not in ('VARCHAR', 'STRING')]
+            if typed_cols:
+                return cols  # pass all columns; enforce_types() skips VARCHAR ones
+        except Exception:
+            pass
+        return []
+
+    # Non-fixed-width path: only enabled when explicitly opted in
+    if not type_enforcement.get('enabled'):
+        return []
+
+    raw_schema = table.get('schema', {})
+    if not raw_schema:
+        return []
+
+    # Build column list from the schema dict {col_name: type_string}
+    return [
+        {'name': col_name, 'type': col_type, 'cast_mode': 'adaptive'}
+        for col_name, col_type in raw_schema.items()
+    ]
+
+
 class IngestionPipeline:
     def __init__(self, config_path, spark_master=None, engine_override=None, spark_conf=None):
         logger.debug("Loading local fairway.pipeline")
         self.config = Config(config_path)
         self.manifest_store = ManifestStore()
-        self.engine = self._get_engine(spark_master, engine_override, spark_conf)
+        self._engine = None  # Lazy-initialized; use self.engine property
+        self._engine_args = (spark_master, engine_override, spark_conf)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
+
+    @property
+    def engine(self):
+        """Lazy engine initialization — defers Spark cluster startup until first use."""
+        if self._engine is None:
+            self._engine = self._get_engine(*self._engine_args)
+        return self._engine
+
+    @engine.setter
+    def engine(self, value):
+        self._engine = value
 
     def _get_engine(self, spark_master=None, engine_override=None, spark_conf=None):
         # CLI override takes precedence over config
@@ -203,6 +262,24 @@ class IngestionPipeline:
             }
             include_pattern = format_to_ext.get(file_format)
 
+        # Compute batch_dir early (before cache check) so we can set
+        # _preprocess_root for manifest key generation even on cache hits.
+        # Without this, files with the same basename in different extraction
+        # subdirs get the same manifest key (basename-only fallback).
+        temp_loc = self.config.temp_dir
+        if not temp_loc:
+            scratch_base = os.environ.get('SCRATCH')
+            if scratch_base:
+                temp_loc = os.path.join(scratch_base, 'fairway')
+            else:
+                temp_loc = os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}')
+        safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
+        batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
+
+        # Store batch_dir on table dict so manifest recording uses it as
+        # table_root for preprocessed files (avoids basename key collisions)
+        table['_preprocess_root'] = batch_dir
+
         # Check preprocessing cache first
         table_manifest = self.manifest_store.get_table_manifest(table['name'])
         cached = table_manifest.get_preprocessed_path(
@@ -220,17 +297,16 @@ class IngestionPipeline:
         if include_pattern:
             logger.debug("File filter: %s", include_pattern)
 
-        # Temp Location Support
-        temp_loc = self.config.temp_dir
-        batch_dir = None
-        if temp_loc:
-             # Generate a deterministic batch directory based on the table name
-             # This allows reusing preprocessed files across runs (schema gen -> ingestion) and is human readable.
-             safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
-             batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
-             # Ensure the batch root exists
-             os.makedirs(batch_dir, exist_ok=True)
-             logger.info("Using global temp location: %s", batch_dir)
+        # If table has fixed_width_spec, derive specs_dir so preprocessing
+        # writes the spec file where the config expects to find it
+        if not preprocess_config.get('specs_dir') and table.get('fixed_width_spec'):
+            specs_dir = os.path.dirname(table['fixed_width_spec'])
+            if specs_dir:
+                preprocess_config['specs_dir'] = specs_dir
+                logger.debug("Derived specs_dir from fixed_width_spec: %s", specs_dir)
+
+        os.makedirs(batch_dir, exist_ok=True)
+        logger.info("Preprocessing scratch dir: %s", batch_dir)
         
         # Resolve input files
         # If input_path is a glob, we get all files.
@@ -309,14 +385,32 @@ class IngestionPipeline:
                  if not action.endswith('.py'):
                      raise ValueError(f"Security error: Preprocessing script must be a .py file: {action}")
 
+                 # Verify script exists before attempting import
+                 if not os.path.exists(action):
+                     raise FileNotFoundError(
+                         f"Preprocessing script not found: {action} (CWD: {os.getcwd()})"
+                     )
+
                  # Dynamic import
                  spec = importlib.util.spec_from_file_location("custom_module", action)
-                 if spec and spec.loader:
-                     module = importlib.util.module_from_spec(spec)
-                     spec.loader.exec_module(module)
-                     if hasattr(module, 'process'):
-                         return module.process(file_path)
-                 return file_path
+                 if not spec or not spec.loader:
+                     raise ImportError(
+                         f"Failed to load preprocessing script (importlib returned None): {action}"
+                     )
+
+                 module = importlib.util.module_from_spec(spec)
+                 spec.loader.exec_module(module)
+                 # Pass extra config options (e.g., password_file) to the script
+                 extra_opts = {k: v for k, v in preprocess_config.items()
+                               if k not in ('action', 'scope', 'execution_mode', 'include', 'resources')}
+                 if hasattr(module, 'process_file'):
+                     return module.process_file(file_path, output_dir, **extra_opts)
+                 elif hasattr(module, 'process'):
+                     return module.process(file_path, output_dir, **extra_opts)
+                 else:
+                     raise AttributeError(
+                         f"Preprocessing script has no 'process_file' or 'process' function: {action}"
+                     )
              
              return file_path
 
@@ -371,8 +465,8 @@ class IngestionPipeline:
                   # Structure: batch_dir / <file_dir> / <contents>
                   result_path = os.path.join(batch_dir, "*", file_glob)
              else:
-                  # Original logic: sibling directories
-                  base = os.path.dirname(input_path)
+                  # Fallback: sibling directories (use root-resolved path)
+                  base = os.path.dirname(full_input_path)
                   result_path = os.path.join(base, ".preprocessed_*", file_glob)
 
         # Record result for future reuse
@@ -433,6 +527,13 @@ class IngestionPipeline:
         # Store all matched files for the engine to process
         table['_extracted_files'] = all_matched_files
 
+        # Store common parent of extracted dirs so manifest recording uses
+        # unique relative-path keys (avoids basename collision across archives)
+        if len(all_extracted_dirs) > 1:
+            table['_preprocess_root'] = os.path.commonpath(all_extracted_dirs)
+        else:
+            table['_preprocess_root'] = all_extracted_dirs[0]
+
         # Return path pattern for the extracted files
         if len(all_extracted_dirs) == 1:
             return os.path.join(all_extracted_dirs[0], files_pattern)
@@ -458,6 +559,7 @@ class IngestionPipeline:
         read_options = table.get('read_options', {})
         write_mode = table.get('write_mode', 'overwrite')
         fixed_width_spec = table.get('fixed_width_spec')
+        min_line_length = table.get('min_line_length')
         output_name = os.path.splitext(table_name)[0]
         intermediate_dir = self.config.processed_dir
         base_output = os.path.join(intermediate_dir, output_name)
@@ -473,7 +575,9 @@ class IngestionPipeline:
             return
 
         # Filter through manifest -> pending files only
-        pending = table_manifest.get_pending_files(all_files, table.get('root'))
+        # Use _preprocess_root for files in scratch space (avoids basename key collision)
+        effective_root = table.get('_preprocess_root', table.get('root'))
+        pending = table_manifest.get_pending_files(all_files, effective_root)
         if not pending:
             logger.info("Skipping %s - all %d files already processed", table_name, len(all_files))
             return
@@ -541,6 +645,7 @@ class IngestionPipeline:
                     write_mode=write_mode,
                     output_format=self.config.output_format,
                     fixed_width_spec=fixed_width_spec,
+                    min_line_length=min_line_length,
                     **read_options
                 )
 
@@ -551,7 +656,7 @@ class IngestionPipeline:
                             table_manifest.update_file(
                                 f, status="success",
                                 metadata={"partition": subpath},
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 batch_id=batch_id
                             )
                     success_count += 1
@@ -562,7 +667,7 @@ class IngestionPipeline:
                             table_manifest.update_file(
                                 f, status="failed",
                                 metadata={"partition": subpath, "error": "ingestion_failed"},
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 batch_id=batch_id
                             )
                     failed_count += 1
@@ -715,7 +820,17 @@ class IngestionPipeline:
              logger.warning("No tables found to process! Check your config path patterns and ensuring data exists.")
              logger.warning("Configured tables: %s", self.config.data.get('tables', []))
 
-        
+        # --- Phase 0: Run all preprocessing BEFORE engine startup ---
+        # This avoids launching Spark (expensive) just for driver-mode preprocessing
+        preprocessed_paths = {}
+        for table in self.config.tables:
+            preprocess_config = table.get('preprocess')
+            archives_pattern = table.get('archives')
+            if preprocess_config or archives_pattern:
+                logger.info("Pre-run preprocessing for %s...", table['name'])
+                preprocessed_paths[table['name']] = self._preprocess(table)
+
+        # --- Phase 1: Engine startup and ingestion ---
         # Optimize: Distributed Manifest Check for Cluster Mode
         # Group tables by root to perform batch hashing on the cluster
         if hasattr(self.engine, 'calculate_hashes'):
@@ -750,10 +865,16 @@ class IngestionPipeline:
             # Table dict is unmodified, we just change the variable we use for input
             original_path = table['path']
 
+            # Use pre-computed preprocessing result if available, otherwise run now
+            def get_preprocessed_path():
+                if table['name'] in preprocessed_paths:
+                    return preprocessed_paths[table['name']]
+                return self._preprocess(table)
+
             # Partition-aware batching: skip whole-table manifest check,
             # do per-file checking instead in _run_partition_aware()
             if table.get('batch_strategy') == 'partition_aware':
-                input_path = self._preprocess(table)
+                input_path = get_preprocessed_path()
                 if input_path != original_path:
                     logger.info("Preprocessing complete. Ingesting from: %s", input_path)
                 self._run_partition_aware(table, input_path, table_manifest)
@@ -770,7 +891,7 @@ class IngestionPipeline:
                  logger.info("Skipping %s (already processed and hash matches)", table['name'])
                  continue
 
-            input_path = self._preprocess(table)
+            input_path = get_preprocessed_path()
 
             if input_path != original_path:
                 logger.info("Preprocessing complete. Ingesting from: %s", input_path)
@@ -781,6 +902,9 @@ class IngestionPipeline:
                 discovered_files = [f for f in discovered_files if os.path.isfile(f)]
             else:
                 discovered_files = [input_path] if os.path.exists(input_path) else []
+
+            # Use _preprocess_root for files in scratch space (avoids basename key collision)
+            effective_root = table.get('_preprocess_root', table.get('root'))
 
             # Calculate hashes for tracking
             file_hashes = {
@@ -818,6 +942,7 @@ class IngestionPipeline:
             read_options = table.get('read_options', {})
             write_mode = table.get('write_mode', 'overwrite')
             fixed_width_spec = table.get('fixed_width_spec')
+            min_line_length = table.get('min_line_length')
 
             # For partitioning, DuckDB creates a directory.
             logger.info("Starting ingestion for %s from %s to %s", table['name'], input_path, output_path)
@@ -838,6 +963,7 @@ class IngestionPipeline:
                 write_mode=write_mode,
                 output_format=self.config.output_format,
                 fixed_width_spec=fixed_width_spec,
+                min_line_length=min_line_length,
                 **read_options
             )
             
@@ -908,29 +1034,14 @@ class IngestionPipeline:
                 
                 if l1['passed'] and l2['passed']:
                     logger.info("Validations passed for %s", table['name'])
-                    
-                    # Move/Copy to final directory logic ... (Simplified from previous viewing)
-                    # For brevity in this replacement, retaining key parts
-                    final_basename = f"{output_name}.{table_format}" if not partition_by else output_name
+
                     if partition_by:
                         final_basename = output_name
                     else:
                         final_basename = f"{output_name}.parquet"
 
                     final_output_path = os.path.join(self.config.curated_dir, final_basename)
-                    
-                    # Logic for write_mode in finalization?
-                    # If append, we shouldn't wipe the final directory if it exists.
-                    # But if we copy over... 
-                    # If write_mode == append, we rely on the engine having already done the needful in intermediate?
-                    # Actually, usually intermediate is transient. Final is persistent.
-                    # If we ingested 1 file related to 'MyDataset', and we append...
-                    # The intermediate output_path was likely specific to that file or batch.
-                    # The final path is usually the dataset path.
-                    # This logic needs refinement for full incremental support, 
-                    # but for now we follow the existing pattern: 
-                    # Intermediate -> Validate -> Copy to Final.
-                    
+
                     # If overwrite (default), we clear final.
                     if write_mode == 'overwrite':
                         if os.path.exists(final_output_path):
@@ -939,20 +1050,37 @@ class IngestionPipeline:
                                 shutil.rmtree(final_output_path)
                             else:
                                 os.remove(final_output_path)
-                    
-                    import shutil
-                    # If append, and final exists, we merge? 
-                    # Parquet directory merge is handled by engine logic usually.
-                    # Simple Copy might overwrite if names conflict or directory structure differs.
-                    # For now: Standard copy.
-                    
+
                     os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
 
-                    if os.path.isdir(validation_target_path):
-                        shutil.copytree(validation_target_path, final_output_path, dirs_exist_ok=True)
+                    # Phase 1.5: Type enforcement — produce a typed curated layer.
+                    # The processed layer (validation_target_path) has all-STRING columns
+                    # for fixed-width tables. enforce_types() reads it and writes a typed
+                    # Parquet to final_output_path using TRY_CAST (or CAST for strict cols).
+                    enforcement_columns = _build_enforcement_schema(table, fixed_width_spec)
+                    if enforcement_columns:
+                        type_enforcement = table.get('type_enforcement', {})
+                        on_fail = type_enforcement.get('on_fail', 'null')
+                        logger.info(
+                            "Enforcing types for %s (on_fail=%s, %d typed columns)",
+                            table['name'], on_fail, len(enforcement_columns)
+                        )
+                        self.engine.enforce_types(
+                            validation_target_path,
+                            final_output_path,
+                            enforcement_columns,
+                            on_fail=on_fail,
+                            partition_by=partition_by,
+                            write_mode=write_mode,
+                        )
                     else:
-                        shutil.copy2(validation_target_path, final_output_path)
-                    
+                        # No type enforcement — copy processed → curated as-is.
+                        import shutil
+                        if os.path.isdir(validation_target_path):
+                            shutil.copytree(validation_target_path, final_output_path, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(validation_target_path, final_output_path)
+
                     logger.info("Data finalized at %s", final_output_path)
 
                     # Record each individual file in manifest (like schema_pipeline does)
@@ -965,7 +1093,7 @@ class IngestionPipeline:
                                     "config_path": getattr(self.config, 'config_path', 'unknown'),
                                     "table_name": table['name'],
                                 },
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 computed_hash=file_hashes.get(file_path)
                             )
                     # Also record table-level entry for backward compatibility
@@ -985,7 +1113,7 @@ class IngestionPipeline:
                                 file_path,
                                 status="failed",
                                 metadata={"errors": errors},
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 computed_hash=file_hashes.get(file_path)
                             )
                     table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))

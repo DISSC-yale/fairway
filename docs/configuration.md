@@ -77,25 +77,55 @@ Salting is useful when:
 
 **Note:** Salting adds a `salt` column to your output data and requires a full data count operation, which can be expensive for very large datasets.
 
-## Data Sources
+## Tables
 
-The `sources` section defines where your raw data lives and how to identify it.
+The `tables` section defines your data sources and how to process them.
 
 ```yaml
-sources:
+tables:
   - name: "provider_extract"
-    path_pattern: "data/raw/provider_*.csv"
+    path: "data/raw/provider_*.csv"
+    root: "/data/shared"                # Optional: root directory for path resolution
     naming_pattern: "provider_(?P<state>[A-Z]{2})_(?P<date>\\d{8})\\.csv"
     format: "csv"
 ```
 
-### Source Expansion
+### File Discovery
 
-fairway uses `glob` to discover files matching the `path_pattern`. Each discovered file becomes a separate task in the pipeline.
+fairway uses `glob` to discover files matching `path`. If `root` is specified, the path is resolved relative to it.
 
 ### Metadata Extraction
 
 If a `naming_pattern` (Python regex) is provided, fairway extracts named groups from the filename and injects them as columns into the data. In the example above, a file named `provider_CT_20230101.csv` will have `state='CT'` and `date='20230101'` added to every row.
+
+### Fixed-Width Options
+
+For `format: "fixed_width"`, additional options are available:
+
+| Field | Description | Default |
+| :--- | :--- | :--- |
+| `fixed_width_spec` | Path to YAML spec defining column positions | Required |
+| `min_line_length` | Skip lines shorter than this (corrupted data) | None |
+| `type_enforcement.on_fail` | `null` (TRY_CAST, default) or `strict` (CAST) | `null` |
+
+See [Fixed-Width Format](fixed_width.md) for full documentation.
+
+### Preprocessing
+
+Tables can define preprocessing steps to run before ingestion (e.g., extracting zip files, converting codebooks):
+
+```yaml
+tables:
+  - name: "census_data"
+    path: "data/raw/*.zip"
+    format: "fixed_width"
+    preprocess:
+      action: "scripts/preprocess_ipums.py"   # Custom script or "unzip"
+      scope: "per_file"                        # Process each matched file independently
+      password_file: "/path/to/password.txt"   # Optional: for encrypted zips
+```
+
+The preprocessing script must define a `process_file(file_path, output_dir, **kwargs)` function that extracts/transforms data and returns the path to the processed output.
 
 ## Validations
 
@@ -128,7 +158,7 @@ enrichment:
 If your data requires complex reshaping, you can point to a custom transformation script for each source.
 
 ```yaml
-sources:
+tables:
   - name: "sales"
     path: "data/raw/sales.csv"
     format: "csv"

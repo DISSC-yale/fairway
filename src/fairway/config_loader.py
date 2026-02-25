@@ -41,8 +41,9 @@ class Config:
         self.processed_dir = self.storage.get('processed', os.path.join(self.output_root, 'processed'))
         self.curated_dir = self.storage.get('curated', os.path.join(self.output_root, 'curated'))
 
-        # Unified temp directory: FAIRWAY_TEMP env > storage.temp — expand env vars
-        temp_raw = os.environ.get('FAIRWAY_TEMP') or self.storage.get('temp')
+        # Unified temp directory: FAIRWAY_TEMP env > storage.temp > storage.scratch_dir
+        # scratch_dir is documented for HPC fast-scratch storage; treat as fallback for temp
+        temp_raw = os.environ.get('FAIRWAY_TEMP') or self.storage.get('temp') or self.storage.get('scratch_dir')
         self.temp_dir = os.path.expandvars(temp_raw) if temp_raw else None
 
         # Support both root-level 'tables' and 'data: tables' structures
@@ -67,15 +68,43 @@ class Config:
         # Direct control over max records per file (overrides target_file_size_mb heuristic)
         self.max_records_per_file = performance.get('max_records_per_file')
 
+        # Container settings
+        container = self.data.get('container', {})
+        self.apptainer_binds = container.get('apptainer_binds')
+
 
 
     def _resolve_path(self, path_ref, config_dir):
-        """Resolve a path relative to config directory if not absolute."""
+        """Resolve a relative path, checking CWD (project root) before config directory."""
         if not path_ref:
             return None
         if os.path.isabs(path_ref):
             return path_ref
-        return os.path.join(config_dir, path_ref)
+        cwd_path = os.path.join(os.getcwd(), path_ref)
+        if os.path.exists(cwd_path):
+            return cwd_path
+        cfg_path = os.path.join(config_dir, path_ref)
+        if os.path.exists(cfg_path):
+            return cfg_path
+        return cwd_path
+
+    def _resolve_script_path(self, script_path, config_dir):
+        """Resolve a preprocessing script path, searching CWD then config_dir."""
+        if os.path.isabs(script_path):
+            return script_path
+        cwd = os.getcwd()
+        candidates = [
+            os.path.join(cwd, script_path),
+            os.path.join(cwd, 'scripts', os.path.basename(script_path)),
+            os.path.join(cwd, 'src', 'preprocess', os.path.basename(script_path)),
+            os.path.join(config_dir, script_path),
+            os.path.join(config_dir, 'scripts', os.path.basename(script_path)),
+            os.path.join(config_dir, 'src', 'preprocess', os.path.basename(script_path)),
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return os.path.join(cwd, script_path)
 
     def _load_schema(self, schema_ref):
         """Loads schema from a file if schema_ref is a path string, otherwise returns it as-is."""
@@ -163,14 +192,14 @@ class Config:
                  # If pattern, basename might be '*.csv'. Ideally user provides name.
                  table_name = tbl.get('name', os.path.basename(resolved_path))
 
-                 # Resolve file paths relative to config dir
+                 # Resolve fixed_width_spec relative to config dir (consistent with other path resolution)
                  fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
                  transformation = self._resolve_path(tbl.get('transformation'), config_dir)
 
-                 # Resolve preprocess.action if it's a script path
+                 # Resolve preprocess.action: CWD first, then config_dir
                  preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
                  if preprocess.get('action', '').endswith('.py'):
-                     preprocess['action'] = self._resolve_path(preprocess['action'], config_dir)
+                     preprocess['action'] = self._resolve_script_path(preprocess['action'], config_dir)
 
                  expanded.append({
                     'name': table_name,
@@ -190,6 +219,7 @@ class Config:
                     'files': files_pattern,
                     'fixed_width_spec': fixed_width_spec,
                     'batch_strategy': tbl.get('batch_strategy', 'bulk'),
+                    'type_enforcement': tbl.get('type_enforcement', {}),
                 })
 
             else:
@@ -235,10 +265,10 @@ class Config:
                     fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
                     transformation = self._resolve_path(tbl.get('transformation'), config_dir)
 
-                    # Resolve preprocess.action if it's a script path
+                    # Resolve preprocess.action: CWD first, then config_dir
                     preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
                     if preprocess.get('action', '').endswith('.py'):
-                        preprocess['action'] = self._resolve_path(preprocess['action'], config_dir)
+                        preprocess['action'] = self._resolve_script_path(preprocess['action'], config_dir)
 
                     expanded.append({
                         'name': tbl.get('name', os.path.basename(f)),
@@ -258,6 +288,7 @@ class Config:
                         'files': files_pattern,
                         'fixed_width_spec': fixed_width_spec,
                         'batch_strategy': tbl.get('batch_strategy', 'bulk'),
+                        'type_enforcement': tbl.get('type_enforcement', {}),
                     })
         return expanded
 
@@ -317,10 +348,13 @@ class Config:
                 if not fixed_width_spec:
                     errors.append(f"{prefix}: format 'fixed_width' requires 'fixed_width_spec' path")
                 else:
-                    # Check spec file exists
-                    spec_path = os.path.join(config_dir, fixed_width_spec) if not os.path.isabs(fixed_width_spec) else fixed_width_spec
-                    if not os.path.exists(spec_path):
-                        errors.append(f"{prefix}: fixed_width_spec file not found: {fixed_width_spec}")
+                    # Defer spec file existence check if preprocessing is configured
+                    # (preprocessing may generate the spec file)
+                    has_preprocessing = table.get('archives') or table.get('preprocess')
+                    if not has_preprocessing:
+                        spec_path = os.path.join(config_dir, fixed_width_spec) if not os.path.isabs(fixed_width_spec) else fixed_width_spec
+                        if not os.path.exists(spec_path):
+                            errors.append(f"{prefix}: fixed_width_spec file not found: {spec_path}")
 
             # Schema file exists (if specified as path)
             schema = table.get('schema')
@@ -360,6 +394,17 @@ class Config:
                             errors.append(
                                 f"{prefix}: partition_by key '{key}' not found as named group in naming_pattern"
                             )
+
+            # Validate preprocess.resources
+            preprocess = table.get('preprocess', {})
+            resources = preprocess.get('resources', {}) if isinstance(preprocess, dict) else {}
+            if resources:
+                if 'cpus' in resources:
+                    if not isinstance(resources['cpus'], int) or resources['cpus'] < 1:
+                        errors.append(f"{prefix}: preprocess.resources.cpus must be a positive integer")
+                if 'memory' in resources:
+                    if not re.match(r'^\d+[KMGT]?$', str(resources['memory']), re.IGNORECASE):
+                        errors.append(f"{prefix}: preprocess.resources.memory has invalid format (expected e.g. '16G', '1024M')")
 
             # RULE-119: Validate partition_by columns are safe identifiers
             partition_by = table.get('partition_by', [])

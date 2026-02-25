@@ -173,12 +173,24 @@ def validate_spec(spec):
             errors.append(f"{prefix}: 'trim' must be a boolean, got {trim}")
             trim = False
 
+        # Optional: cast_mode controls behaviour when a value cannot be cast to the declared type.
+        # 'adaptive' (default) – use TRY_CAST so non-castable values become NULL
+        # 'strict'             – use CAST so non-castable values raise an error
+        VALID_CAST_MODES = {'adaptive', 'strict'}
+        cast_mode = col.get('cast_mode', 'adaptive')
+        if not isinstance(cast_mode, str) or cast_mode not in VALID_CAST_MODES:
+            errors.append(
+                f"{prefix}: 'cast_mode' must be one of {sorted(VALID_CAST_MODES)}, got {cast_mode!r}"
+            )
+            cast_mode = 'adaptive'
+
         validated_columns.append({
             'name': name,
             'start': start,
             'length': length,
             'type': col_type,
-            'trim': trim
+            'trim': trim,
+            'cast_mode': cast_mode,
         })
 
     if errors:
@@ -190,7 +202,20 @@ def validate_spec(spec):
     else:
         line_length = 0
 
-    return {
+    result = {
         'columns': validated_columns,
         'line_length': line_length
     }
+
+    # Pass through record_type_filter if present (for hierarchical fixed-width files)
+    if spec.get('record_type_filter'):
+        result['record_type_filter'] = spec['record_type_filter']
+
+    # Pass through min_line_length if present (to skip corrupted/short lines before validation)
+    if spec.get('min_line_length'):
+        min_len = spec['min_line_length']
+        if not isinstance(min_len, int) or min_len < 0:
+            raise FixedWidthSpecError([f"'min_line_length' must be a non-negative integer, got {min_len}"])
+        result['min_line_length'] = min_len
+
+    return result

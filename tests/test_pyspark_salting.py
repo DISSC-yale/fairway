@@ -1,6 +1,5 @@
 import pytest
 import pandas as pd
-import pyspark.sql.functions as F
 from fairway.engines.pyspark_engine import PySparkEngine
 
 # Check if PySpark is available
