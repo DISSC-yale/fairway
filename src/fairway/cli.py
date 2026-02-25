@@ -621,6 +621,30 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
     # SLURM SUBMISSION
     # ---------------------------------------------------------
     if slurm:
+        # Load main config to get container settings
+        from fairway.config_loader import Config
+        main_cfg = Config(config)
+
+        # Auto-detect bind paths from config
+        auto_binds = _get_apptainer_binds(main_cfg)
+        apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+
+        # Check if running in Apptainer mode (fairway.sif exists)
+        sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+        use_apptainer = os.path.exists(sif_path)
+
+        if use_apptainer and not apptainer_binds:
+            raise click.ClickException(
+                "Apptainer mode detected but no bind paths could be determined.\n"
+                "Add 'container.apptainer_binds' to your config file:\n\n"
+                "  container:\n"
+                "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
+                "Or ensure storage paths exist so they can be auto-detected."
+            )
+
+        if use_apptainer:
+            click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+
         # Load spark.yaml for account default
         spark_yaml_path = 'config/spark.yaml'
         if os.path.exists(spark_yaml_path):
@@ -651,13 +675,60 @@ set -e
 # Ensure log directory exists
 mkdir -p logs/slurm
 
-# Load Spark module (includes Java)
-echo "Loading Spark module..."
-module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+# =============================================================================
+# Apptainer Mode Detection
+# =============================================================================
+USE_APPTAINER="no"
+FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
+FAIRWAY_BINDS="{apptainer_binds}"
 
-# Run summarization
+if [ -f "$FAIRWAY_SIF" ]; then
+    USE_APPTAINER="yes"
+    echo "Apptainer mode detected: $FAIRWAY_SIF"
+else
+    echo "Bare-metal mode (no container found at $FAIRWAY_SIF)"
+fi
+
+# =============================================================================
+# Environment Setup
+# =============================================================================
+if [ "$USE_APPTAINER" = "yes" ]; then
+    echo "Using Apptainer container for summarization"
+    export FAIRWAY_SIF
+    export FAIRWAY_BINDS
+else
+    # Load Spark module only in bare-metal mode (container has its own Spark)
+    echo "Loading Spark module..."
+    module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+fi
+
+# =============================================================================
+# Run Summarization
+# =============================================================================
 echo "Running summarization for config: {config}"
-fairway summarize --config {config}
+if [ "$USE_APPTAINER" = "yes" ]; then
+    # Build bind paths for Apptainer
+    BIND_PATHS="${{FAIRWAY_BINDS}}"
+    BIND_PATHS="${{BIND_PATHS}},${{PWD}}"
+    BIND_PATHS="${{BIND_PATHS}},/tmp"
+    echo "Running inside Apptainer with binds: $BIND_PATHS"
+
+    # Ensure all bind-mount source directories exist on this node
+    IFS=',' read -ra _bind_dirs <<< "$BIND_PATHS"
+    for _dir in "${{_bind_dirs[@]}}"; do
+        _dir="${{_dir%%:*}}"
+        _dir="$(echo "${{_dir}}" | xargs)"
+        [ -n "${{_dir}}" ] && mkdir -p "${{_dir}}" 2>/dev/null || true
+    done
+    unset _bind_dirs _dir
+
+    apptainer exec --no-home \\
+        --bind "$BIND_PATHS" \\
+        "$FAIRWAY_SIF" \\
+        fairway summarize --config {config}
+else
+    fairway summarize --config {config}
+fi
 
 echo "Summary generation completed successfully."
 '''
