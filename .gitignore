@@ -14,6 +14,7 @@ mock_apptainer
 tests/output
 config/sales_schema.yaml
 /manifest/
+.fairway_cache/
 
 # Environment and secrets
 .env
@@ -21,3 +22,8 @@ config/sales_schema.yaml
 
 # Coverage artifacts
 coverage.json
+config/census_1950.yaml
+.gitignore
+.gitignore
+.reports/security-analysis.md
+.gitignore

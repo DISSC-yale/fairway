@@ -107,7 +107,7 @@ class TestDuckDBFixedWidth:
             shutil.rmtree(base_dir)
 
     def test_basic_read(self, output_dir):
-        """Read simple.txt with spec and verify values."""
+        """Ingest simple.txt → processed layer has correct trimmed STRING values."""
         engine = DuckDBEngine()
         input_path = str(FIXTURES_DIR / "simple.txt")
         spec_path = str(FIXTURES_DIR / "simple_spec.yaml")
@@ -120,38 +120,42 @@ class TestDuckDBFixedWidth:
         )
         assert result is True
 
-        # Verify output
         df = engine.con.execute(f"SELECT * FROM '{output_path}'").df()
         assert len(df) == 3
         assert list(df.columns) == ["id", "name", "age"]
 
-        # Check values (with trim applied)
-        assert df["id"].tolist() == [1, 2, 3]
+        # Processed layer: all columns are STRING (trimmed per spec)
+        # id/age have leading zeros — trim removes whitespace only, not zeros
+        assert df["id"].tolist() == ["001", "002", "003"]
         assert df["name"].tolist() == ["Alice", "Bob", "Carol"]
-        assert df["age"].tolist() == [30, 25, 28]
+        assert df["age"].tolist() == ["030", "025", "028"]
 
     def test_type_conversion(self, output_dir):
-        """Verify types are correctly converted."""
+        """enforce_types() produces correctly typed columns in the curated layer."""
         engine = DuckDBEngine()
         input_path = str(FIXTURES_DIR / "simple.txt")
         spec_path = str(FIXTURES_DIR / "simple_spec.yaml")
-        output_path = os.path.join(output_dir, "output.parquet")
+        processed_path = os.path.join(output_dir, "processed.parquet")
+        curated_path = os.path.join(output_dir, "curated.parquet")
 
-        engine.ingest(
-            input_path, output_path,
-            format="fixed_width",
-            fixed_width_spec=spec_path
-        )
+        engine.ingest(input_path, processed_path, format="fixed_width", fixed_width_spec=spec_path)
 
-        # Check types via DuckDB
+        spec = load_spec(spec_path)
+        engine.enforce_types(processed_path, curated_path, spec["columns"])
+
         result = engine.con.execute(f"""
             SELECT typeof(id), typeof(name), typeof(age)
-            FROM '{output_path}' LIMIT 1
+            FROM '{curated_path}' LIMIT 1
         """).fetchone()
 
         assert "INTEGER" in result[0]
         assert "VARCHAR" in result[1]
         assert "INTEGER" in result[2]
+
+        # Curated values are correctly typed integers
+        df = engine.con.execute(f"SELECT id, age FROM '{curated_path}' ORDER BY id").df()
+        assert df["id"].tolist() == [1, 2, 3]
+        assert df["age"].tolist() == [30, 25, 28]
 
     def test_missing_spec_fails(self, output_dir):
         """Ingestion fails without spec file."""
@@ -184,6 +188,33 @@ class TestDuckDBFixedWidth:
                 format="fixed_width",
                 fixed_width_spec=spec_path
             )
+
+    def test_min_line_length_skips_short_lines(self, output_dir):
+        """min_line_length config filters out corrupted short lines."""
+        engine = DuckDBEngine()
+        output_path = os.path.join(output_dir, "output.parquet")
+
+        # Create a file with a short/corrupted line
+        mixed_file = os.path.join(output_dir, "mixed.txt")
+        with open(mixed_file, "w") as f:
+            f.write("001Alice               030\n")
+            f.write("BAD\n")  # Corrupted line (length 3)
+            f.write("002Bob                 025\n")
+
+        spec_path = str(FIXTURES_DIR / "simple_spec.yaml")
+
+        # Without min_line_length, this would fail with RULE-115
+        # With min_line_length=20, the short line is filtered out
+        engine.ingest(
+            mixed_file, output_path,
+            format="fixed_width",
+            fixed_width_spec=spec_path,
+            min_line_length=20
+        )
+
+        df = engine.con.execute(f"SELECT * FROM '{output_path}'").df()
+        assert len(df) == 2  # Only valid lines kept
+        assert df["id"].tolist() == ["001", "002"]
 
     def test_metadata_injection(self, output_dir):
         """Metadata can be injected into fixed-width output."""
@@ -224,15 +255,17 @@ class TestPySparkFixedWidth:
         from fairway.engines.pyspark_engine import PySparkEngine
         engine = PySparkEngine.__new__(PySparkEngine)
         engine.spark = spark_session
-        return engine
+        yield engine
+        # Detach the shared session so that engine.__del__ does NOT call
+        # spark_session.stop(), which would break subsequent tests.
+        engine.spark = None
 
     def test_basic_read(self, output_dir, spark_engine):
-        """Read simple.txt with spec and verify values."""
+        """Ingest simple.txt → processed layer has correct trimmed STRING values."""
         input_path = str(FIXTURES_DIR / "simple.txt")
         spec_path = str(FIXTURES_DIR / "simple_spec.yaml")
         output_path = os.path.join(output_dir, "output.parquet")
 
-        # Test through public API
         result = spark_engine.ingest(
             input_path, output_path,
             format="fixed_width",
@@ -240,16 +273,18 @@ class TestPySparkFixedWidth:
         )
         assert result is True
 
-        # Verify output
-        df = spark_engine.spark.read.parquet(output_path)
-        assert df.count() == 3
+        # Read back with pandas to avoid holding a Spark DataFrame whose py4j GC
+        # could interfere with the shared session in the next test.
+        import pandas as pd
+        df = pd.read_parquet(output_path)
+        assert len(df) == 3
         assert set(df.columns) == {"id", "name", "age"}
 
-        # Check values
-        rows = df.orderBy("id").collect()
-        assert rows[0]["id"] == 1
-        assert rows[0]["name"] == "Alice"
-        assert rows[0]["age"] == 30
+        # Processed layer: all columns are STRING (trimmed per spec)
+        df = df.sort_values("id").reset_index(drop=True)
+        assert df["id"].tolist() == ["001", "002", "003"]
+        assert df["name"].tolist() == ["Alice", "Bob", "Carol"]
+        assert df["age"].tolist() == ["030", "025", "028"]
 
     def test_short_line_fails(self, output_dir, spark_engine):
         """Short lines trigger RULE-115 failure."""
@@ -267,3 +302,151 @@ class TestPySparkFixedWidth:
             spark_engine._ingest_fixed_width(
                 short_file, output_path, spec_path
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: cast_mode field in spec validator
+# ---------------------------------------------------------------------------
+
+CODED_FIXTURES_DIR = FIXTURES_DIR  # same dir
+
+
+class TestSpecCastMode:
+    """Validates cast_mode field parsing in fixed_width spec."""
+
+    def test_cast_mode_defaults_to_adaptive(self):
+        col = validate_spec({"columns": [{"name": "x", "start": 0, "length": 3, "type": "BIGINT"}]})
+        assert col["columns"][0]["cast_mode"] == "adaptive"
+
+    def test_cast_mode_strict_is_preserved(self):
+        col = validate_spec({"columns": [{"name": "x", "start": 0, "length": 3, "type": "BIGINT", "cast_mode": "strict"}]})
+        assert col["columns"][0]["cast_mode"] == "strict"
+
+    def test_cast_mode_invalid_value_raises(self):
+        with pytest.raises(FixedWidthSpecError, match="cast_mode"):
+            validate_spec({"columns": [{"name": "x", "start": 0, "length": 3, "cast_mode": "banana"}]})
+
+    def test_cast_mode_non_string_raises(self):
+        with pytest.raises(FixedWidthSpecError, match="cast_mode"):
+            validate_spec({"columns": [{"name": "x", "start": 0, "length": 3, "cast_mode": 42}]})
+
+    def test_coded_values_spec_loads(self):
+        spec = load_spec(FIXTURES_DIR / "coded_values_spec.yaml")
+        cols = {c["name"]: c for c in spec["columns"]}
+        assert cols["rectype"]["cast_mode"] == "strict"
+        assert cols["income"]["cast_mode"] == "adaptive"
+        assert cols["name"]["type"] == "VARCHAR"
+
+
+# ---------------------------------------------------------------------------
+# Tests: DuckDB two-layer type enforcement
+# ---------------------------------------------------------------------------
+
+class TestDuckDBTypeEnforcement:
+    """Tests for the STRING-preserved processed layer and typed curated layer."""
+
+    @pytest.fixture
+    def dirs(self, tmp_path):
+        processed = str(tmp_path / "processed.parquet")
+        curated = str(tmp_path / "curated.parquet")
+        return processed, curated
+
+    @pytest.fixture
+    def engine(self):
+        return DuckDBEngine()
+
+    @pytest.fixture
+    def coded_spec(self):
+        return str(FIXTURES_DIR / "coded_values_spec.yaml")
+
+    @pytest.fixture
+    def coded_input(self):
+        return str(FIXTURES_DIR / "coded_values.txt")
+
+    def test_ingest_preserves_coded_value_as_string(self, engine, dirs, coded_input, coded_spec):
+        """Ingestion must NOT crash and must write 'ZZZ' as a string to processed."""
+        processed, _ = dirs
+        result = engine.ingest(coded_input, processed, format="fixed_width", fixed_width_spec=coded_spec)
+        assert result is True
+        rows = engine.con.execute(f"SELECT income FROM '{processed}' ORDER BY income").fetchall()
+        incomes = [r[0] for r in rows]
+        assert "ZZZ" in incomes
+
+    def test_ingest_produces_all_string_columns(self, engine, dirs, coded_input, coded_spec):
+        """All fixed-width columns must be VARCHAR in the processed layer."""
+        processed, _ = dirs
+        engine.ingest(coded_input, processed, format="fixed_width", fixed_width_spec=coded_spec)
+        types = engine.con.execute(
+            f"SELECT typeof(rectype), typeof(income) FROM '{processed}' LIMIT 1"
+        ).fetchone()
+        assert types[0].upper() in ("VARCHAR", "TEXT")
+        assert types[1].upper() in ("VARCHAR", "TEXT")
+
+    def test_enforce_types_produces_correct_types(self, engine, dirs, coded_input, coded_spec):
+        """enforce_types() must write typed columns to the curated layer."""
+        processed, curated = dirs
+        engine.ingest(coded_input, processed, format="fixed_width", fixed_width_spec=coded_spec)
+        spec = load_spec(coded_spec)
+        engine.enforce_types(processed, curated, spec["columns"])
+        types = engine.con.execute(
+            f"SELECT typeof(rectype), typeof(income) FROM '{curated}' LIMIT 1"
+        ).fetchone()
+        assert "INT" in types[0].upper()
+        assert "INT" in types[1].upper()
+
+    def test_enforce_types_nulls_coded_values(self, engine, dirs, coded_input, coded_spec):
+        """Non-castable coded values must become NULL in the curated layer."""
+        processed, curated = dirs
+        engine.ingest(coded_input, processed, format="fixed_width", fixed_width_spec=coded_spec)
+        spec = load_spec(coded_spec)
+        engine.enforce_types(processed, curated, spec["columns"])
+        df = engine.con.execute(f"SELECT rectype, income, name FROM '{curated}' ORDER BY name").df()
+        import pandas as pd
+        bob = df[df["name"] == "Bob"].iloc[0]
+        assert pd.isna(bob["income"])
+
+    def test_enforce_types_valid_values_cast_correctly(self, engine, dirs, coded_input, coded_spec):
+        """Numeric values in the coded-value file must cast to integers correctly."""
+        processed, curated = dirs
+        engine.ingest(coded_input, processed, format="fixed_width", fixed_width_spec=coded_spec)
+        spec = load_spec(coded_spec)
+        engine.enforce_types(processed, curated, spec["columns"])
+        df = engine.con.execute(f"SELECT income FROM '{curated}' WHERE income IS NOT NULL ORDER BY income").df()
+        assert list(df["income"]) == [123456, 789012]
+
+    def test_enforce_types_strict_raises_on_coded_value(self, engine, dirs, coded_input, coded_spec):
+        """on_fail='strict' must raise when a column contains non-castable values."""
+        processed, curated = dirs
+        engine.ingest(coded_input, processed, format="fixed_width", fixed_width_spec=coded_spec)
+        spec = load_spec(coded_spec)
+        # income column has cast_mode=adaptive in spec; override globally with strict
+        with pytest.raises(Exception):
+            engine.enforce_types(processed, curated, spec["columns"], on_fail="strict")
+
+    def test_enforce_types_strict_column_raises(self, engine, dirs, coded_input, coded_spec):
+        """A column with cast_mode=strict must raise even when on_fail='null' globally."""
+        processed, _ = dirs
+        curated2 = str(Path(processed).parent / "curated2.parquet")
+        # Write a version of the data where rectype has a non-numeric value
+        bad_data = str(Path(processed).parent / "bad_rectype.txt")
+        import subprocess
+        with open(bad_data, "w") as f:
+            # rectype='XX' (non-numeric), income=' 123456', name='Alice     '
+            f.write("XX 123456Alice     \n")
+        engine2 = DuckDBEngine()
+        engine2.ingest(bad_data, processed + "_bad", format="fixed_width", fixed_width_spec=coded_spec)
+        spec = load_spec(coded_spec)
+        with pytest.raises(Exception):
+            engine2.enforce_types(processed + "_bad", curated2, spec["columns"], on_fail="null")
+
+    def test_clean_file_ingest_still_works(self, engine, tmp_path):
+        """Regression: a file with no coded values still ingests cleanly."""
+        output = str(tmp_path / "simple.parquet")
+        result = engine.ingest(
+            str(FIXTURES_DIR / "simple.txt"), output,
+            format="fixed_width",
+            fixed_width_spec=str(FIXTURES_DIR / "simple_spec.yaml"),
+        )
+        assert result is True
+        count = engine.con.execute(f"SELECT COUNT(*) FROM '{output}'").fetchone()[0]
+        assert count == 3

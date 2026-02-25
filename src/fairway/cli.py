@@ -60,30 +60,47 @@ def discover_config():
 
 
 def _get_apptainer_binds(cfg):
-    """Calculate Apptainer bind paths from config."""
+    """Calculate Apptainer bind paths from config.
+
+    Auto-detects paths that need to be bound based on:
+    - Storage directories (raw, processed, curated)
+    - Temp directory
+    - Table root directories
+    - Explicit apptainer_binds from config
+    """
     bind_paths = set()
-    
-    # 1. Check storage directories
+
+    # 1. Check storage directories (must already exist)
     for path in [cfg.raw_dir, cfg.processed_dir, cfg.curated_dir]:
         if path:
             abs_path = os.path.abspath(path)
-            if os.path.exists(abs_path):
-                bind_paths.add(abs_path)
-    
-    # 2. Check table paths
+            if not os.path.exists(abs_path):
+                continue
+            bind_paths.add(os.path.dirname(abs_path) if os.path.isfile(abs_path) else abs_path)
+
+    # 2. Check temp/scratch directory
+    if cfg.temp_dir:
+        bind_paths.add(os.path.abspath(cfg.temp_dir))
+    elif os.environ.get('SCRATCH'):
+        bind_paths.add(os.path.join(os.environ['SCRATCH'], 'fairway'))
+    else:
+        import tempfile
+        bind_paths.add(os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}'))
+
+    # 3. Check table root directories
     if cfg.tables:
         for tbl in cfg.tables:
-            path = tbl.get('path')
+            root = tbl.get('root')
+            if root:
+                bind_paths.add(os.path.abspath(root))
+
+    # 4. Add explicit binds from config
+    if cfg.apptainer_binds:
+        for path in cfg.apptainer_binds.split(','):
+            path = path.strip()
             if path:
-                abs_path = os.path.abspath(path)
-                if os.path.exists(abs_path):
-                    bind_paths.add(abs_path)
-                # Handle unexpanded path patterns if any (though config loader might have expanded them)
-                # The config loader expands tables, so 'path' should be concrete file paths
-                # But we might want to bind the parent directory of files to be safe/cleaner
-                if os.path.isfile(abs_path):
-                    bind_paths.add(os.path.dirname(abs_path))
-    
+                bind_paths.add(path)
+
     return bind_paths
 
 
@@ -410,6 +427,7 @@ def spark():
     pass
 
 @spark.command()
+@click.option('--config', default=None, help='Path to main config file (for container settings).')
 @click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of worker nodes.')
 @click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per node.')
 @click.option('--slurm-mem', 'mem', default=None, help='Memory per node.')
@@ -417,10 +435,38 @@ def spark():
 @click.option('--account', default=None, help='Slurm account.')
 @click.option('--partition', default=None, help='Slurm partition.')
 @click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
-def start(nodes, cpus, mem, time, account, partition, driver_job_id):
+def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
     """Start a Spark cluster on Slurm."""
     import yaml
-    
+    from .config_loader import Config
+
+    # Auto-discover main config for container settings
+    if config is None:
+        config = discover_config()
+
+    # Load main config for container settings
+    main_cfg = Config(config)
+
+    # Auto-detect bind paths from config
+    auto_binds = _get_apptainer_binds(main_cfg)
+    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+
+    # Check if running in Apptainer mode
+    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+    use_apptainer = os.path.exists(sif_path)
+
+    if use_apptainer and not apptainer_binds:
+        raise click.ClickException(
+            "Apptainer mode detected but no bind paths could be determined.\n"
+            "Add 'container.apptainer_binds' to your config file:\n\n"
+            "  container:\n"
+            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
+            "Or ensure storage paths exist so they can be auto-detected."
+        )
+
+    if use_apptainer:
+        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+
     # Load defaults from spark.yaml
     spark_yaml_path = 'config/spark.yaml'
     spark_defaults = {}
@@ -428,13 +474,17 @@ def start(nodes, cpus, mem, time, account, partition, driver_job_id):
         with open(spark_yaml_path, 'r') as f:
             spark_defaults = yaml.safe_load(f) or {}
 
-    # effective resources
-    nodes = nodes or spark_defaults.get('nodes', 2)
-    cpus = cpus or spark_defaults.get('cpus_per_node', 32)
-    mem = mem or spark_defaults.get('mem_per_node', '200G')
-    account = account or spark_defaults.get('account', 'borzekowski')
-    partition = partition or spark_defaults.get('partition', 'day')
-    time = time or spark_defaults.get('time', '24:00:00')
+    # effective resources (no hardcoded defaults)
+    nodes = nodes or spark_defaults.get('nodes')
+    cpus = cpus or spark_defaults.get('cpus_per_node')
+    mem = mem or spark_defaults.get('mem_per_node')
+    account = account or spark_defaults.get('account')
+    partition = partition or spark_defaults.get('partition')
+    time = time or spark_defaults.get('time')
+
+    # Validate required settings
+    if not account:
+        raise click.ClickException("Slurm account is required. Set 'account' in config/spark.yaml or use --account")
 
     from .engines.slurm_cluster import SlurmSparkManager
 
@@ -453,6 +503,7 @@ def start(nodes, cpus, mem, time, account, partition, driver_job_id):
         'slurm_partition': partition,
         'dynamic_allocation': dynamic_alloc,
         'spark_conf': spark_conf,
+        'apptainer_binds': apptainer_binds,
     }
 
     spark_manager = SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id)
@@ -518,9 +569,11 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
         pipeline.run(skip_summary=skip_summary)
         click.echo("Pipeline execution completed successfully.")
     finally:
-        # Explicitly stop the engine to release Spark resources
-        if hasattr(pipeline, 'engine') and hasattr(pipeline.engine, 'stop'):
-            pipeline.engine.stop()
+        # Explicitly stop the engine to release Spark resources.
+        # Check _engine directly to avoid triggering lazy init via the property —
+        # if preprocessing failed before Phase 1, Spark was never started.
+        if pipeline._engine is not None and hasattr(pipeline._engine, 'stop'):
+            pipeline._engine.stop()
 
 
 
@@ -568,6 +621,30 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
     # SLURM SUBMISSION
     # ---------------------------------------------------------
     if slurm:
+        # Load main config to get container settings
+        from fairway.config_loader import Config
+        main_cfg = Config(config)
+
+        # Auto-detect bind paths from config
+        auto_binds = _get_apptainer_binds(main_cfg)
+        apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+
+        # Check if running in Apptainer mode (fairway.sif exists)
+        sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+        use_apptainer = os.path.exists(sif_path)
+
+        if use_apptainer and not apptainer_binds:
+            raise click.ClickException(
+                "Apptainer mode detected but no bind paths could be determined.\n"
+                "Add 'container.apptainer_binds' to your config file:\n\n"
+                "  container:\n"
+                "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
+                "Or ensure storage paths exist so they can be auto-detected."
+            )
+
+        if use_apptainer:
+            click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+
         # Load spark.yaml for account default
         spark_yaml_path = 'config/spark.yaml'
         if os.path.exists(spark_yaml_path):
@@ -598,13 +675,60 @@ set -e
 # Ensure log directory exists
 mkdir -p logs/slurm
 
-# Load Spark module (includes Java)
-echo "Loading Spark module..."
-module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+# =============================================================================
+# Apptainer Mode Detection
+# =============================================================================
+USE_APPTAINER="no"
+FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
+FAIRWAY_BINDS="{apptainer_binds}"
 
-# Run summarization
+if [ -f "$FAIRWAY_SIF" ]; then
+    USE_APPTAINER="yes"
+    echo "Apptainer mode detected: $FAIRWAY_SIF"
+else
+    echo "Bare-metal mode (no container found at $FAIRWAY_SIF)"
+fi
+
+# =============================================================================
+# Environment Setup
+# =============================================================================
+if [ "$USE_APPTAINER" = "yes" ]; then
+    echo "Using Apptainer container for summarization"
+    export FAIRWAY_SIF
+    export FAIRWAY_BINDS
+else
+    # Load Spark module only in bare-metal mode (container has its own Spark)
+    echo "Loading Spark module..."
+    module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
+fi
+
+# =============================================================================
+# Run Summarization
+# =============================================================================
 echo "Running summarization for config: {config}"
-fairway summarize --config {config}
+if [ "$USE_APPTAINER" = "yes" ]; then
+    # Build bind paths for Apptainer
+    BIND_PATHS="${{FAIRWAY_BINDS}}"
+    BIND_PATHS="${{BIND_PATHS}},${{PWD}}"
+    BIND_PATHS="${{BIND_PATHS}},/tmp"
+    echo "Running inside Apptainer with binds: $BIND_PATHS"
+
+    # Ensure all bind-mount source directories exist on this node
+    IFS=',' read -ra _bind_dirs <<< "$BIND_PATHS"
+    for _dir in "${{_bind_dirs[@]}}"; do
+        _dir="${{_dir%%:*}}"
+        _dir="$(echo "${{_dir}}" | xargs)"
+        [ -n "${{_dir}}" ] && mkdir -p "${{_dir}}" 2>/dev/null || true
+    done
+    unset _bind_dirs _dir
+
+    apptainer exec --no-home \\
+        --bind "$BIND_PATHS" \\
+        "$FAIRWAY_SIF" \\
+        fairway summarize --config {config}
+else
+    fairway summarize --config {config}
+fi
 
 echo "Summary generation completed successfully."
 '''
@@ -741,30 +865,84 @@ def logs(log_file, level, batch_id, last_n, output_json, errors):
 
 
 @main.command()
-def eject():
-    """Eject container definitions (Apptainer.def, Dockerfile) to the current directory."""
-    if os.path.exists('Apptainer.def') or os.path.exists('Dockerfile'):
-        if not click.confirm('Container files already exist. Overwrite?'):
-            return
+@click.option('--scripts', is_flag=True, help='Eject only Slurm/HPC scripts.')
+@click.option('--container', is_flag=True, help='Eject only container files (Apptainer.def, Dockerfile).')
+@click.option('--output', '-o', default='.', help='Output directory (default: current directory).')
+@click.option('--force', is_flag=True, help='Overwrite existing files without prompting.')
+def eject(scripts, container, output, force):
+    """Eject bundled scripts and container definitions for customization.
 
-    from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE
-    
-    # Write Apptainer.def from template
-    with open('Apptainer.def', 'w') as f:
-        f.write(APPTAINER_DEF)
-    click.echo("  Created file: Apptainer.def (Apptainer container definition)")
+    By default, ejects both container files and Slurm scripts.
+    Use --scripts or --container to eject only one category.
 
-    # Write Dockerfile from template
-    with open('Dockerfile', 'w') as f:
-        f.write(DOCKERFILE_TEMPLATE)
-    click.echo("  Created file: Dockerfile (Docker container definition)")
+    Examples:
 
-    # Write .dockerignore from template
-    from .templates import DOCKERIGNORE
-    if not os.path.exists('.dockerignore') or click.confirm('.dockerignore already exists. Overwrite?'):
-        with open('.dockerignore', 'w') as f:
-            f.write(DOCKERIGNORE)
-        click.echo("  Created file: .dockerignore")
+        fairway eject                  # Eject everything
+        fairway eject --scripts        # Eject only scripts/
+        fairway eject --container      # Eject only container files
+        fairway eject -o custom/       # Eject to custom directory
+    """
+    from .templates import (
+        APPTAINER_DEF, DOCKERFILE_TEMPLATE, DOCKERIGNORE, MAKEFILE_TEMPLATE,
+        DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, SPARK_START_TEMPLATE, HPC_SCRIPT
+    )
+
+    # If neither flag is set, eject both
+    eject_scripts = scripts or not container
+    eject_container = container or not scripts
+
+    # Create output directory if needed
+    if output != '.':
+        os.makedirs(output, exist_ok=True)
+
+    def write_file(rel_path, content, executable=False):
+        """Write a file, handling existing files and permissions."""
+        full_path = os.path.join(output, rel_path)
+        dir_path = os.path.dirname(full_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        if os.path.exists(full_path) and not force:
+            click.echo(f"  Skipping (exists): {rel_path}")
+            return False
+
+        with open(full_path, 'w') as f:
+            f.write(content)
+
+        if executable:
+            os.chmod(full_path, 0o755)
+
+        click.echo(f"  Created: {rel_path}")
+        return True
+
+    created = []
+
+    if eject_container:
+        click.echo("Ejecting container files...")
+        if write_file('Apptainer.def', APPTAINER_DEF):
+            created.append('Apptainer.def')
+        if write_file('Dockerfile', DOCKERFILE_TEMPLATE):
+            created.append('Dockerfile')
+        if write_file('.dockerignore', DOCKERIGNORE):
+            created.append('.dockerignore')
+        if write_file('Makefile', MAKEFILE_TEMPLATE):
+            created.append('Makefile')
+
+    if eject_scripts:
+        click.echo("Ejecting Slurm/HPC scripts...")
+        if write_file('scripts/driver.sh', DRIVER_TEMPLATE, executable=True):
+            created.append('scripts/driver.sh')
+        if write_file('scripts/driver-schema.sh', DRIVER_SCHEMA_TEMPLATE, executable=True):
+            created.append('scripts/driver-schema.sh')
+        if write_file('scripts/fairway-spark-start.sh', SPARK_START_TEMPLATE, executable=True):
+            created.append('scripts/fairway-spark-start.sh')
+        if write_file('scripts/fairway-hpc.sh', HPC_SCRIPT, executable=True):
+            created.append('scripts/fairway-hpc.sh')
+
+    if created:
+        click.echo(f"\nEjected {len(created)} files to {output}")
+    else:
+        click.echo("\nNo files created (all already exist). Use --force to overwrite.")
 
 
 @main.command()
@@ -1001,6 +1179,45 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
         config = discover_config()
         click.echo(f"Auto-discovered config: {config}")
 
+    # Load main config to get container settings
+    from fairway.config_loader import Config
+    main_cfg = Config(config)
+
+    # Read resource hints from first table's preprocess config
+    preprocess_resources = {}
+    for t in main_cfg.tables:
+        res = t.get('preprocess', {}).get('resources', {})
+        if res:
+            preprocess_resources = res
+            break
+
+    # Apply config defaults only when CLI used default values
+    ctx = click.get_current_context()
+    if ctx.get_parameter_source('cpus') != click.core.ParameterSource.COMMANDLINE:
+        cpus = preprocess_resources.get('cpus', cpus)
+    if ctx.get_parameter_source('mem') != click.core.ParameterSource.COMMANDLINE:
+        mem = preprocess_resources.get('memory', mem)
+
+    # Auto-detect bind paths from config (storage dirs, temp, table roots, explicit binds)
+    auto_binds = _get_apptainer_binds(main_cfg)
+    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+
+    # Check if running in Apptainer mode (fairway.sif exists)
+    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+    use_apptainer = os.path.exists(sif_path)
+
+    if use_apptainer and not apptainer_binds:
+        raise click.ClickException(
+            "Apptainer mode detected but no bind paths could be determined.\n"
+            "Add 'container.apptainer_binds' to your config file:\n\n"
+            "  container:\n"
+            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
+            "Or ensure storage paths exist so they can be auto-detected."
+        )
+
+    if use_apptainer:
+        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+
     # Load spark.yaml for defaults
     spark_yaml_path = 'config/spark.yaml'
     spark_defaults = {}
@@ -1008,8 +1225,12 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
         with open(spark_yaml_path, 'r') as f:
             spark_defaults = yaml.safe_load(f) or {}
 
-    # Apply defaults from spark.yaml if not specified
-    account = account or spark_defaults.get('account', 'borzekowski')
+    # Apply defaults from spark.yaml if not specified (no hardcoded defaults)
+    account = account or spark_defaults.get('account')
+    if not account:
+        raise click.ClickException(
+            "Slurm account is required. Set 'account' in config/spark.yaml or use --account"
+        )
 
     # Validate all parameters to prevent command injection
     time = _validate_slurm_time(time)
@@ -1045,7 +1266,7 @@ mkdir -p logs/slurm
 # 2. Local fairway.sif file
 USE_APPTAINER="no"
 FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
-FAIRWAY_BINDS="${{FAIRWAY_BINDS:-/vast}}"
+FAIRWAY_BINDS="{apptainer_binds}"
 
 if [ -f "$FAIRWAY_SIF" ]; then
     USE_APPTAINER="yes"
@@ -1122,6 +1343,16 @@ if [ "$USE_APPTAINER" = "yes" ]; then
         BIND_PATHS="${{BIND_PATHS}},${{SPARK_CONF_DIR}}"
     fi
     echo "Running inside Apptainer with binds: $BIND_PATHS"
+
+    # Ensure all bind-mount source directories exist on this node.
+    IFS=',' read -ra _bind_dirs <<< "$BIND_PATHS"
+    for _dir in "${{_bind_dirs[@]}}"; do
+        _dir="${{_dir%%:*}}"
+        _dir="$(echo "${{_dir}}" | xargs)"
+        [ -n "${{_dir}}" ] && mkdir -p "${{_dir}}" 2>/dev/null || true
+    done
+    unset _bind_dirs _dir
+
     apptainer exec --no-home \
         --bind "$BIND_PATHS" \
         --env SPARK_CONF_DIR="${{SPARK_CONF_DIR}}" \

@@ -142,6 +142,39 @@ fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
 fairway submit --with-spark --dry-run
 ```
 
+### `fairway summarize`
+
+Generate summary stats and reports for already-ingested data. Use this after running `fairway run --skip-summary` to generate summaries in a separate step (useful on HPC where ingestion and summarization have different resource needs).
+
+```bash
+fairway summarize [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--config TEXT` | Auto-discover | Path to config file |
+| `--spark-master TEXT` | None | Spark master URL |
+| `--slurm` | False | Submit as a Slurm job (loads Spark/Java modules) |
+| `--account TEXT` | From spark.yaml | Slurm account |
+| `--partition TEXT` | `day` | Slurm partition |
+| `--time TEXT` | `04:00:00` | Slurm time limit |
+| `--mem TEXT` | `32G` | Slurm memory |
+| `--cpus INTEGER` | `4` | Slurm CPUs per task |
+| `--log-file TEXT` | `logs/fairway.jsonl` | Path to JSONL log file |
+| `--log-level` | `INFO` | Log level |
+
+**Examples:**
+```bash
+# Run summarization locally
+fairway summarize
+
+# Submit as Slurm job
+fairway summarize --slurm
+
+# Submit with custom resources
+fairway summarize --slurm --mem 64G --time 08:00:00
+```
+
 ### `fairway cancel`
 
 Cancel Slurm jobs (wrapper around `scancel`).
@@ -170,13 +203,50 @@ Subcommands:
 
 ### `fairway eject`
 
-Eject container definitions for customization.
+Eject bundled scripts and container definitions for customization.
 
 ```bash
-fairway eject
+fairway eject [OPTIONS]
 ```
 
-Exports `Apptainer.def` and `Dockerfile` to project directory.
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--scripts` | False | Eject only Slurm/HPC scripts |
+| `--container` | False | Eject only container files (Apptainer.def, Dockerfile) |
+| `-o, --output TEXT` | `.` | Output directory |
+| `--force` | False | Overwrite existing files without prompting |
+
+**Examples:**
+```bash
+# Eject everything (container files + scripts)
+fairway eject
+
+# Eject only scripts to customize Slurm workflows
+fairway eject --scripts
+
+# Eject only container definitions
+fairway eject --container
+
+# Eject to a custom directory
+fairway eject --output custom/
+
+# Force overwrite existing files
+fairway eject --force
+```
+
+**Ejected Files:**
+
+Container files:
+- `Apptainer.def` - Apptainer container definition
+- `Dockerfile` - Docker container definition
+- `.dockerignore` - Docker ignore patterns
+- `Makefile` - Build and run commands
+
+Scripts:
+- `scripts/driver.sh` - Slurm driver job script
+- `scripts/driver-schema.sh` - Schema generation driver
+- `scripts/fairway-spark-start.sh` - Spark cluster startup
+- `scripts/fairway-hpc.sh` - HPC utilities
 
 ### `fairway shell`
 
@@ -257,10 +327,13 @@ Subcommands:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `FAIRWAY_BINDS` | Additional Apptainer bind paths (comma-separated) | Auto-detected from config |
 | `FAIRWAY_TEMP` | Temporary directory for large operations (archive extraction, scratch) | System temp |
 | `REDIVIS_API_TOKEN` | API token for Redivis data export | None (required for export) |
 | `SPARK_LOCAL_IP` | Spark driver bind address | Auto-detect |
 | `PYSPARK_SUBMIT_ARGS` | Additional Spark submit arguments | Auto-configured |
+
+**Note:** `FAIRWAY_BINDS` is useful when running on HPC clusters with different filesystem paths (e.g., `/scratch`, `/gpfs`, `/project`). Set this to your cluster's shared storage path if auto-detection doesn't find it.
 
 ## Exit Codes
 

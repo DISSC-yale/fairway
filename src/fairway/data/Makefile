@@ -52,8 +52,9 @@ shell-dev: ## Open shell with local src/ mounted (no rebuild needed)
 
 run-dev: ## Run pipeline with local src/ mounted (no rebuild needed)
 	@echo "Running with local source mounted..."
+	@# Set FAIRWAY_BINDS for additional bind paths (e.g., export FAIRWAY_BINDS=/scratch,/gpfs)
 	apptainer exec --no-home \
 		--bind src/fairway:/opt/venv/lib/python3.10/site-packages/fairway \
-		--bind $${PWD},/vast,$${HOME}/.spark-local,/tmp \
+		--bind $${PWD},$${HOME}/.spark-local,/tmp$${FAIRWAY_BINDS:+,$${FAIRWAY_BINDS}} \
 		$(FAIRWAY_SIF) fairway run
 

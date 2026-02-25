@@ -175,6 +175,12 @@ class DuckDBEngine:
 
         # Load and validate spec
         spec = load_spec(spec_path)
+
+        # Allow config-level min_line_length to override spec value
+        config_min_line_length = kwargs.pop('min_line_length', None)
+        if config_min_line_length is not None:
+            spec['min_line_length'] = config_min_line_length
+
         columns = spec['columns']
         line_length = spec['line_length']
 
@@ -190,10 +196,44 @@ class DuckDBEngine:
         # Step 1: Read file as single text column (no header, no delimiter parsing)
         # Use a delimiter that won't appear in fixed-width data (ASCII unit separator)
         self.con.execute(f"""
-            CREATE OR REPLACE TEMP VIEW raw_lines AS
+            CREATE OR REPLACE TEMP VIEW raw_lines_unfiltered AS
             SELECT column0 AS line
             FROM read_csv('{read_path}', header=false, sep=E'\\x1F', columns={{'column0': 'VARCHAR'}})
         """)
+
+        # Step 1b: Filter by record type if specified (for hierarchical fixed-width files)
+        # When filtering, materialize to TEMP TABLE to avoid re-evaluating filter on every access
+        record_filter = spec.get('record_type_filter')
+        if record_filter:
+            pos = int(record_filter['position']) + 1  # DuckDB substr is 1-indexed
+            length = int(record_filter['length'])
+            value = record_filter['value']
+            logger.info("Filtering to record_type='%s' at position %d (length %d)", value, record_filter['position'], length)
+            # Use TEMP TABLE to materialize filtered rows (filter applied once, not on every access)
+            self.con.execute("DROP TABLE IF EXISTS raw_lines")
+            self.con.execute(f"""
+                CREATE TEMP TABLE raw_lines AS
+                SELECT line FROM raw_lines_unfiltered
+                WHERE substr(line, {pos}, {length}) = '{value}'
+            """)
+        else:
+            self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines AS SELECT line FROM raw_lines_unfiltered")
+
+        # Step 1c: Filter out short/corrupted lines if min_line_length specified
+        min_line_length = spec.get('min_line_length')
+        if min_line_length:
+            logger.info("Filtering lines shorter than min_line_length=%d", min_line_length)
+            # Re-create raw_lines with additional length filter
+            # raw_lines could be a TABLE (with record_type_filter) or VIEW (without)
+            self.con.execute("DROP TABLE IF EXISTS raw_lines_filtered")
+            self.con.execute(f"""
+                CREATE TEMP TABLE raw_lines_filtered AS
+                SELECT line FROM raw_lines
+                WHERE length(line) >= {min_line_length}
+            """)
+            self.con.execute("DROP VIEW IF EXISTS raw_lines")
+            self.con.execute("DROP TABLE IF EXISTS raw_lines")
+            self.con.execute("ALTER TABLE raw_lines_filtered RENAME TO raw_lines")
 
         # Step 2: Validate line lengths (fail strict per RULE-115)
         validation_query = f"""
@@ -241,10 +281,8 @@ class DuckDBEngine:
             if trim:
                 extract_expr = f"trim({extract_expr})"
 
-            # Cast to target type
-            cast_expr = f"CAST({extract_expr} AS {col_type})"
-
-            select_parts.append(f"{cast_expr} AS {name}")
+            # Store as VARCHAR — casting happens in enforce_types() (curated layer)
+            select_parts.append(f"{extract_expr} AS {name}")
 
         select_clause = ", ".join(select_parts)
 
@@ -291,6 +329,66 @@ class DuckDBEngine:
             (FORMAT PARQUET{partition_clause}, OVERWRITE {overwrite_val})
         """)
         return True
+
+    def enforce_types(self, input_path, output_path, columns, on_fail='null',
+                      partition_by=None, write_mode='overwrite'):
+        """
+        Reads the STRING-preserved processed layer and writes a typed curated layer.
+
+        For each column declared with a non-string type:
+          - on_fail='null'   → TRY_CAST: non-castable values become NULL (default)
+          - on_fail='strict' → CAST: non-castable values raise an error
+
+        Per-column cast_mode='strict' overrides on_fail='null' for that column.
+
+        Args:
+            input_path:  Path to the processed (all-STRING) Parquet.
+            output_path: Path to write the typed curated Parquet.
+            columns:     List of column dicts with 'name', 'type', 'cast_mode' keys
+                         (from fixed_width_spec or built from schema config).
+            on_fail:     Global default: 'null' or 'strict'.
+            partition_by: Optional list of partition column names.
+            write_mode:  'overwrite' or 'append'.
+        """
+        ALLOWED_TYPES = {
+            'VARCHAR', 'STRING', 'INTEGER', 'INT', 'BIGINT', 'DOUBLE', 'FLOAT',
+            'DATE', 'TIMESTAMP', 'BOOLEAN', 'DECIMAL',
+        }
+
+        # Resolve the parquet source (file or directory glob)
+        if os.path.isdir(input_path):
+            parquet_source = os.path.join(input_path, '**', '*.parquet').replace('\\', '/')
+        else:
+            parquet_source = input_path
+
+        select_parts = []
+        for col in columns:
+            name = _validate_sql_identifier(col['name'])
+            col_type = col['type'].upper()
+            base_type = col_type.split('(')[0]
+            if base_type not in ALLOWED_TYPES:
+                raise ValueError(f"enforce_types: invalid column type '{col_type}'")
+
+            col_cast_mode = col.get('cast_mode', 'adaptive')
+            effective_strict = (on_fail == 'strict') or (col_cast_mode == 'strict')
+
+            if base_type in ('VARCHAR', 'STRING'):
+                select_parts.append(name)
+            elif effective_strict:
+                select_parts.append(f"CAST({name} AS {col_type}) AS {name}")
+            else:
+                select_parts.append(f"TRY_CAST({name} AS {col_type}) AS {name}")
+
+        select_clause = ', '.join(select_parts)
+
+        self.con.execute(f"""
+            CREATE OR REPLACE TEMP VIEW raw_data AS
+            SELECT {select_clause}
+            FROM read_parquet('{parquet_source}', union_by_name=true)
+        """)
+
+        return self._write_to_parquet(output_path, partition_by=partition_by,
+                                      write_mode=write_mode)
 
     def read_result(self, path):
         """

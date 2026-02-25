@@ -322,3 +322,58 @@ apptainer exec $SIF spark-class org.apache.spark.deploy.master.Master
 
 **Rationale:**
 When `start-master.sh` daemonizes the JVM via `nohup`/fork, the child process is orphaned outside the container's mount namespace when `apptainer exec` exits. The orphaned JVM loses access to `/opt/spark/jars/`, causing `ChannelInitializer` failures on every incoming connection. Running `spark-class` directly keeps the JVM inside the container.
+
+---
+
+### [RULE-123] Lazy Engine Initialization
+
+**Priority:** SHOULD
+**Category:** [ARC] Architectural Principles
+
+**Rule:**
+Engine instances (Spark, DuckDB) SHOULD be lazily initialized on first use, not at pipeline construction time. This prevents unnecessary cluster startup when only metadata operations are needed.
+
+**Example:**
+```python
+class IngestionPipeline:
+    def __init__(self, config_path):
+        self._engine = None  # Lazy-initialized
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            self._engine = self._get_engine()
+        return self._engine
+```
+
+**Rationale:**
+Spark cluster startup can take 30+ seconds. Operations like config validation, preprocessing cache checks, or manifest queries don't need the engine. Lazy initialization defers this cost until actual data processing begins.
+
+---
+
+### [RULE-124] Temp Directory Fallback Hierarchy
+
+**Priority:** MUST
+**Category:** [ARC] Architectural Principles
+
+**Rule:**
+Temporary/scratch directory resolution MUST follow this fallback hierarchy:
+1. `FAIRWAY_TEMP` environment variable
+2. `storage.temp` in config
+3. `storage.scratch_dir` in config (HPC fast-scratch)
+4. `$SCRATCH/fairway` (HPC convention)
+5. `/tmp/fairway_$USER` (system default)
+
+**Example:**
+```python
+temp_loc = (
+    os.environ.get('FAIRWAY_TEMP') or
+    config.storage.get('temp') or
+    config.storage.get('scratch_dir') or
+    (os.path.join(os.environ['SCRATCH'], 'fairway') if os.environ.get('SCRATCH') else None) or
+    os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}')
+)
+```
+
+**Rationale:**
+HPC environments often have fast local scratch storage (`$SCRATCH`) that performs better than shared filesystems for intermediate files. This hierarchy allows users to configure optimal storage while providing sensible defaults for both HPC and local development.

@@ -1,0 +1,23 @@
+# Fixed-width spec for coded-value test data
+# Layout (0-indexed):
+#   rectype : start=0, length=2  (INTEGER  – always numeric, strict)
+#   income  : start=2, length=7  (BIGINT   – may contain 'ZZZ' coded values)
+#   name    : start=9, length=10 (VARCHAR  – free text)
+columns:
+  - name: rectype
+    start: 0
+    length: 2
+    type: INTEGER
+    trim: true
+    cast_mode: strict   # rectype MUST always be numeric; fail hard if not
+  - name: income
+    start: 2
+    length: 7
+    type: BIGINT
+    trim: true
+    # cast_mode defaults to 'adaptive': non-castable values become NULL
+  - name: name
+    start: 9
+    length: 10
+    type: VARCHAR
+    trim: true

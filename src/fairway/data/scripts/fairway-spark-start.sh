@@ -12,7 +12,7 @@
 #
 # Environment Variables:
 #   FAIRWAY_SIF       - Path to Apptainer .sif file (enables container mode)
-#   FAIRWAY_BINDS     - Comma-separated bind paths for Apptainer (default: /vast)
+#   FAIRWAY_BINDS     - Comma-separated additional bind paths for Apptainer (optional)
 #   SPARK_HOME        - Path to Spark installation (set by container or module)
 #
 # Usage:
@@ -56,8 +56,22 @@ else
     echo "Bare-metal mode (no FAIRWAY_SIF set)"
 fi
 
-# Default bind paths for Apptainer
-FAIRWAY_BINDS="${FAIRWAY_BINDS:-/vast}"
+# Additional bind paths for Apptainer (set via config or environment)
+# Base paths (PWD, /tmp) are always included below
+FAIRWAY_BINDS="${FAIRWAY_BINDS:-}"
+
+# Ensure all bind-mount source directories exist on this node.
+# Apptainer FATAL-errors if a bind source path is missing.
+if [ -n "${FAIRWAY_BINDS}" ]; then
+    IFS=',' read -ra _bind_dirs <<< "${FAIRWAY_BINDS}"
+    for _dir in "${_bind_dirs[@]}"; do
+        # Strip whitespace and any :/dest suffix (bind syntax: src:dest)
+        _dir="${_dir%%:*}"
+        _dir="$(echo "${_dir}" | xargs)"
+        [ -n "${_dir}" ] && mkdir -p "${_dir}" 2>/dev/null || true
+    done
+    unset _bind_dirs _dir
+fi
 
 # -----------------------------------------------------------------------------
 # Validate Spark Installation
@@ -70,7 +84,12 @@ if [[ "${USE_CONTAINER}" == "yes" ]]; then
 
     # Use --no-home to prevent classpath pollution from user's home directory
     # This avoids ClassFormatError caused by corrupted files in ~/.ivy2 or similar
-    APPTAINER_BASE_OPTS="--no-home --bind ${FAIRWAY_BINDS},${PWD},/tmp"
+    # Build bind paths: always include PWD and /tmp, add FAIRWAY_BINDS if non-empty
+    if [ -n "${FAIRWAY_BINDS}" ]; then
+        APPTAINER_BASE_OPTS="--no-home --bind ${PWD},/tmp,${FAIRWAY_BINDS}"
+    else
+        APPTAINER_BASE_OPTS="--no-home --bind ${PWD},/tmp"
+    fi
 
     # Validate inside container
     if ! apptainer exec ${APPTAINER_BASE_OPTS} "${FAIRWAY_SIF}" test -x "${SPARK_HOME}/sbin/start-master.sh"; then
@@ -210,8 +229,13 @@ if [[ "${USE_CONTAINER}" == "yes" ]]; then
     # when apptainer exec exits. The orphaned JVM loses access to /opt/spark/jars/,
     # causing ChannelInitializer failures on every incoming connection.
     # Instead, run spark-class directly so the JVM stays inside the container.
+    # Build bind paths, handling empty FAIRWAY_BINDS
+    MASTER_BINDS="${HOME}/.spark-local,${SCRATCH},${PWD},/tmp"
+    if [ -n "${FAIRWAY_BINDS}" ]; then
+        MASTER_BINDS="${MASTER_BINDS},${FAIRWAY_BINDS}"
+    fi
     apptainer exec --no-home \
-        --bind "${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH},${PWD},/tmp" \
+        --bind "${MASTER_BINDS}" \
         --env SPARK_CONF_DIR="${SPARK_CONF_DIR}" \
         --env SPARK_LOG_DIR="${SPARK_LOG_DIR}" \
         --env SPARK_PID_DIR="${SPARK_PID_DIR}" \
@@ -267,6 +291,13 @@ if [[ "${USE_CONTAINER}" == "yes" ]]; then
     # Container mode: workers run inside Apptainer
     # Use --no-home to prevent classpath pollution from user's home directory
     # Note: spark-class doesn't read spark-defaults.conf, so we pass auth via SPARK_WORKER_OPTS
+
+    # Build worker bind paths, handling empty FAIRWAY_BINDS
+    WORKER_BIND_PATH="${HOME}/.spark-local,${SCRATCH},/tmp"
+    if [ -n "${FAIRWAY_BINDS}" ]; then
+        WORKER_BIND_PATH="${WORKER_BIND_PATH},${FAIRWAY_BINDS}"
+    fi
+
     cat > "${SPARK_CONF_DIR}/sparkworker.sh" <<EOF
 #!/bin/bash
 ulimit -u 16384 -n 16384
@@ -279,7 +310,7 @@ logf="${SPARK_LOG_DIR}/spark-worker-\$(hostname).out"
 
 # Run worker inside Apptainer container (--no-home prevents classpath pollution)
 exec apptainer exec --no-home \
-    --bind ${FAIRWAY_BINDS},${HOME}/.spark-local,${SCRATCH},/tmp \
+    --bind ${WORKER_BIND_PATH} \
     --env SPARK_CONF_DIR=${SPARK_CONF_DIR} \
     --env SPARK_WORKER_OPTS="\${SPARK_WORKER_OPTS}" \
     ${FAIRWAY_SIF} \
