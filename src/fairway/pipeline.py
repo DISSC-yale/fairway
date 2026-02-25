@@ -262,6 +262,24 @@ class IngestionPipeline:
             }
             include_pattern = format_to_ext.get(file_format)
 
+        # Compute batch_dir early (before cache check) so we can set
+        # _preprocess_root for manifest key generation even on cache hits.
+        # Without this, files with the same basename in different extraction
+        # subdirs get the same manifest key (basename-only fallback).
+        temp_loc = self.config.temp_dir
+        if not temp_loc:
+            scratch_base = os.environ.get('SCRATCH')
+            if scratch_base:
+                temp_loc = os.path.join(scratch_base, 'fairway')
+            else:
+                temp_loc = os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}')
+        safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
+        batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
+
+        # Store batch_dir on table dict so manifest recording uses it as
+        # table_root for preprocessed files (avoids basename key collisions)
+        table['_preprocess_root'] = batch_dir
+
         # Check preprocessing cache first
         table_manifest = self.manifest_store.get_table_manifest(table['name'])
         cached = table_manifest.get_preprocessed_path(
@@ -287,17 +305,6 @@ class IngestionPipeline:
                 preprocess_config['specs_dir'] = specs_dir
                 logger.debug("Derived specs_dir from fixed_width_spec: %s", specs_dir)
 
-        # Scratch directory for preprocessing output
-        # Priority: config.temp_dir (FAIRWAY_TEMP > storage.temp > storage.scratch_dir) > $SCRATCH/fairway > /tmp/fairway_$USER
-        temp_loc = self.config.temp_dir
-        if not temp_loc:
-            scratch_base = os.environ.get('SCRATCH')
-            if scratch_base:
-                temp_loc = os.path.join(scratch_base, 'fairway')
-            else:
-                temp_loc = os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}')
-        safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
-        batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
         os.makedirs(batch_dir, exist_ok=True)
         logger.info("Preprocessing scratch dir: %s", batch_dir)
         
@@ -520,6 +527,13 @@ class IngestionPipeline:
         # Store all matched files for the engine to process
         table['_extracted_files'] = all_matched_files
 
+        # Store common parent of extracted dirs so manifest recording uses
+        # unique relative-path keys (avoids basename collision across archives)
+        if len(all_extracted_dirs) > 1:
+            table['_preprocess_root'] = os.path.commonpath(all_extracted_dirs)
+        else:
+            table['_preprocess_root'] = all_extracted_dirs[0]
+
         # Return path pattern for the extracted files
         if len(all_extracted_dirs) == 1:
             return os.path.join(all_extracted_dirs[0], files_pattern)
@@ -561,7 +575,9 @@ class IngestionPipeline:
             return
 
         # Filter through manifest -> pending files only
-        pending = table_manifest.get_pending_files(all_files, table.get('root'))
+        # Use _preprocess_root for files in scratch space (avoids basename key collision)
+        effective_root = table.get('_preprocess_root', table.get('root'))
+        pending = table_manifest.get_pending_files(all_files, effective_root)
         if not pending:
             logger.info("Skipping %s - all %d files already processed", table_name, len(all_files))
             return
@@ -640,7 +656,7 @@ class IngestionPipeline:
                             table_manifest.update_file(
                                 f, status="success",
                                 metadata={"partition": subpath},
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 batch_id=batch_id
                             )
                     success_count += 1
@@ -651,7 +667,7 @@ class IngestionPipeline:
                             table_manifest.update_file(
                                 f, status="failed",
                                 metadata={"partition": subpath, "error": "ingestion_failed"},
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 batch_id=batch_id
                             )
                     failed_count += 1
@@ -887,6 +903,9 @@ class IngestionPipeline:
             else:
                 discovered_files = [input_path] if os.path.exists(input_path) else []
 
+            # Use _preprocess_root for files in scratch space (avoids basename key collision)
+            effective_root = table.get('_preprocess_root', table.get('root'))
+
             # Calculate hashes for tracking
             file_hashes = {
                 f: _get_file_hash_static(f, fast_check=True)
@@ -1074,7 +1093,7 @@ class IngestionPipeline:
                                     "config_path": getattr(self.config, 'config_path', 'unknown'),
                                     "table_name": table['name'],
                                 },
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 computed_hash=file_hashes.get(file_path)
                             )
                     # Also record table-level entry for backward compatibility
@@ -1094,7 +1113,7 @@ class IngestionPipeline:
                                 file_path,
                                 status="failed",
                                 metadata={"errors": errors},
-                                table_root=table.get('root'),
+                                table_root=effective_root,
                                 computed_hash=file_hashes.get(file_path)
                             )
                     table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
