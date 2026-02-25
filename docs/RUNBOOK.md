@@ -279,6 +279,21 @@ FATAL: container creation failed: mount hook function failure: mount /vast->/vas
    fairway build --docker
    ```
 
+### Issue: Preprocessed Files Not All Ingested
+
+**Cause:** When multiple archives contain files with the same basename, older versions of Fairway could lose track of some files in the manifest.
+
+**Solution:**
+1. Clear the table manifest to force reprocessing:
+   ```bash
+   rm manifest/<table_name>.json
+   ```
+2. Verify all extracted files exist in the preprocessing scratch dir:
+   ```bash
+   ls -R /path/to/scratch/fairway/<table_name>_v1/
+   ```
+3. Re-run the pipeline — Fairway now uses the preprocessing output directory as the manifest root, producing unique keys for files from different archives.
+
 ### Issue: Slow Pipeline Performance
 
 **Cause:** Data skew, suboptimal file sizes, or insufficient resources.

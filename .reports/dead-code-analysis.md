@@ -1,13 +1,13 @@
 # Dead Code Analysis Report
 
-**Generated:** 2026-02-16
+**Generated:** 2026-02-24 (Updated)
 **Project:** fairway-1
 
 ## Summary
 
 | Category | Count | Status |
 |----------|-------|--------|
-| SAFE to remove | 8 | 7 FIXED |
+| SAFE to remove | 10 | 9 FIXED |
 | CAUTION (review needed) | 1 | KEPT |
 | BUGS discovered | 2 | 2 FIXED |
 
@@ -68,6 +68,20 @@
 
 ## Test Results
 
-- **Passed:** 248
-- **Failed:** 23 (all PySpark-related, pre-existing)
+- **Passed:** 312
+- **Failed:** 21 (PySpark-related, pre-existing)
 - **Skipped:** 1
+
+---
+
+## NEW FINDINGS (2026-02-24)
+
+### 9. ✅ Unused import `F` in test file - REMOVED
+- **File:** `tests/test_pyspark_salting.py:3`
+- **Code:** `import pyspark.sql.functions as F`
+- **Status:** FIXED
+
+### 10. ✅ Unused import `PropertyMock` in test file - REMOVED
+- **File:** `tests/test_pipeline_lifecycle.py:12`
+- **Code:** `from unittest.mock import patch, MagicMock, PropertyMock, call`
+- **Status:** FIXED

@@ -96,6 +96,18 @@ rm -rf manifest/
 rm manifest/_global.json
 ```
 
+## File Key Generation
+
+Manifest entries are keyed by relative file path. When files are under the configured `root` directory, the key is the relative path from that root (e.g., `2023/data.csv`).
+
+For preprocessed files (extracted from archives to a scratch directory), Fairway uses the preprocessing output directory (`batch_dir`) as the root for key generation. This ensures files with the same basename but from different archives get distinct keys:
+
+```
+# Two zips both contain "data.dat"
+batch_dir/yale_1950a_xxx/data.dat  →  key: "yale_1950a_xxx/data.dat"
+batch_dir/yale_1950b_xxx/data.dat  →  key: "yale_1950b_xxx/data.dat"
+```
+
 ## Schema Tracking
 
 When using `fairway discover-schema`, schema staleness is tracked per-table. A schema is considered stale when:
