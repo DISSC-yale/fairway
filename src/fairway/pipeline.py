@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import shutil
 import zipfile
 import tarfile
 import hashlib
@@ -130,7 +131,6 @@ class ArchiveCache:
                 tf.extractall(dest_dir)
         elif archive_path.endswith('.gz') and not archive_path.endswith('.tar.gz'):
             import gzip
-            import shutil
             output_name = os.path.basename(archive_path)[:-3]
             # Validate output path
             output_file = self._safe_extract_path(dest_dir, output_name)
@@ -856,269 +856,314 @@ class IngestionPipeline:
                 except Exception as e:
                     logger.error("Distributed hash check failed: %s. Falling back to driver check.", e)
 
+        failed_tables = []
         for table in self.config.tables:
-            # Get per-table manifest for this table
-            table_manifest = self.manifest_store.get_table_manifest(table['name'])
+            try:
+                # Get per-table manifest for this table
+                table_manifest = self.manifest_store.get_table_manifest(table['name'])
 
-            # 0. Preprocessing
-            # Preprocess returns a modified path (e.g. to temp unzipped files)
-            # Table dict is unmodified, we just change the variable we use for input
-            original_path = table['path']
+                # 0. Preprocessing
+                # Preprocess returns a modified path (e.g. to temp unzipped files)
+                # Table dict is unmodified, we just change the variable we use for input
+                original_path = table['path']
 
-            # Use pre-computed preprocessing result if available, otherwise run now
-            def get_preprocessed_path():
-                if table['name'] in preprocessed_paths:
-                    return preprocessed_paths[table['name']]
-                return self._preprocess(table)
+                # Use pre-computed preprocessing result if available, otherwise run now
+                def get_preprocessed_path():
+                    if table['name'] in preprocessed_paths:
+                        return preprocessed_paths[table['name']]
+                    return self._preprocess(table)
 
-            # Partition-aware batching: skip whole-table manifest check,
-            # do per-file checking instead in _run_partition_aware()
-            if table.get('batch_strategy') == 'partition_aware':
+                # Partition-aware batching: skip whole-table manifest check,
+                # do per-file checking instead in _run_partition_aware()
+                if table.get('batch_strategy') == 'partition_aware':
+                    input_path = get_preprocessed_path()
+                    if input_path != original_path:
+                        logger.info("Preprocessing complete. Ingesting from: %s", input_path)
+                    self._run_partition_aware(table, input_path, table_manifest)
+                    continue
+
+                # --- Bulk mode (default) ---
+                # Check manifest BEFORE preprocessing to avoid expensive work (unzipping) if table hasn't changed
+                # Using fsspec for URI-aware existance check would be better,
+                # for now keeping it simple but URI-ready in engines
+
+                computed_hash = self._hash_cache.get(original_path)
+                if not table_manifest.should_process(original_path, table_root=table.get('root'), computed_hash=computed_hash):
+                     # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
+                     logger.info("Skipping %s (already processed and hash matches)", table['name'])
+                     continue
+
                 input_path = get_preprocessed_path()
+
                 if input_path != original_path:
                     logger.info("Preprocessing complete. Ingesting from: %s", input_path)
-                self._run_partition_aware(table, input_path, table_manifest)
-                continue
 
-            # --- Bulk mode (default) ---
-            # Check manifest BEFORE preprocessing to avoid expensive work (unzipping) if table hasn't changed
-            # Using fsspec for URI-aware existance check would be better,
-            # for now keeping it simple but URI-ready in engines
-
-            computed_hash = self._hash_cache.get(original_path)
-            if not table_manifest.should_process(original_path, table_root=table.get('root'), computed_hash=computed_hash):
-                 # Check against ORIGINAL path for manifest, as preprocessed path changes/is temp
-                 logger.info("Skipping %s (already processed and hash matches)", table['name'])
-                 continue
-
-            input_path = get_preprocessed_path()
-
-            if input_path != original_path:
-                logger.info("Preprocessing complete. Ingesting from: %s", input_path)
-
-            # Discover individual files for manifest tracking (reusing schema_pipeline pattern)
-            if '*' in str(input_path):
-                discovered_files = sorted(glob.glob(str(input_path), recursive=True))
-                discovered_files = [f for f in discovered_files if os.path.isfile(f)]
-            else:
-                discovered_files = [input_path] if os.path.exists(input_path) else []
-
-            # Use _preprocess_root for files in scratch space (avoids basename key collision)
-            effective_root = table.get('_preprocess_root', table.get('root'))
-
-            # Calculate hashes for tracking
-            file_hashes = {
-                f: _get_file_hash_static(f, fast_check=True)
-                for f in discovered_files
-            }
-            logger.debug("Discovered %d files for ingestion", len(discovered_files))
-
-            logger.info("Processing %s...", table['name'])
-
-            output_name = os.path.splitext(table['name'])[0]
-            intermediate_dir = self.config.processed_dir
-            output_path = os.path.join(intermediate_dir, output_name)
-
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
-            partition_by = table.get('partition_by') or self.config.partition_by
-            
-            if partition_by:
-                output_basename = output_name
-            else:
-                # Use configured output format extension (parquet or delta? Delta is usually a directory, so no extension or .delta?)
-                # Delta tables are directories without extensions, others use format extension
-                if self.config.output_format == 'delta':
-                     output_basename = output_name
+                # Discover individual files for manifest tracking (reusing schema_pipeline pattern)
+                if '*' in str(input_path):
+                    discovered_files = sorted(glob.glob(str(input_path), recursive=True))
+                    discovered_files = [f for f in discovered_files if os.path.isfile(f)]
                 else:
-                     output_basename = f"{output_name}.{self.config.output_format}"
-                
-            output_path = os.path.join(intermediate_dir, output_basename)
-            metadata = table.get('metadata', {})
-            naming_pattern = table.get('naming_pattern')
-            table_format = table.get('format', 'csv')
-            hive_partitioning = table.get('hive_partitioning', False)
-            schema = table.get('schema')
-            read_options = table.get('read_options', {})
-            write_mode = table.get('write_mode', 'overwrite')
-            fixed_width_spec = table.get('fixed_width_spec')
-            min_line_length = table.get('min_line_length')
+                    discovered_files = [input_path] if os.path.exists(input_path) else []
 
-            # For partitioning, DuckDB creates a directory.
-            logger.info("Starting ingestion for %s from %s to %s", table['name'], input_path, output_path)
-            success = self.engine.ingest(
-                input_path,
-                output_path,
-                format=table_format,
-                partition_by=partition_by,
-                balanced=self.config.salting,  # D.1: Use config value (default False)
-                metadata=metadata,
-                naming_pattern=naming_pattern,
-                target_rows=self.config.target_rows,
-                target_file_size_mb=self.config.target_file_size_mb,  # D.2: File size control
-                compression=self.config.compression,  # D.2: Compression (default snappy)
-                max_records_per_file=self.config.max_records_per_file,  # D.2: Direct control (optional)
-                hive_partitioning=hive_partitioning,
-                schema=schema,
-                write_mode=write_mode,
-                output_format=self.config.output_format,
-                fixed_width_spec=fixed_width_spec,
-                min_line_length=min_line_length,
-                **read_options
-            )
+                # Use _preprocess_root for files in scratch space (avoids basename key collision)
+                effective_root = table.get('_preprocess_root', table.get('root'))
+
+                # Calculate hashes for tracking
+                file_hashes = {
+                    f: _get_file_hash_static(f, fast_check=True)
+                    for f in discovered_files
+                }
+                logger.debug("Discovered %d files for ingestion", len(discovered_files))
+
+                logger.info("Processing %s...", table['name'])
+
+                output_name = os.path.splitext(table['name'])[0]
+                intermediate_dir = self.config.processed_dir
+                output_path = os.path.join(intermediate_dir, output_name)
+
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            if success:
-                # 2. Load for validation and enrichment
-                df = self.engine.read_result(output_path)
-                
-                is_spark = self.config.engine == 'pyspark'
-                
-                if not is_spark and hasattr(df, 'df'):
-                     df = df.df()
-
-                # 3. Enrichment
-                if self.config.enrichment.get('geocode'):
-                    logger.info("Enriching %s with geospatial data...", table['name'])
-                    if is_spark:
-                        df = Enricher.enrich_spark(df)
+                partition_by = table.get('partition_by') or self.config.partition_by
+            
+                if partition_by:
+                    output_basename = output_name
+                else:
+                    # Use configured output format extension (parquet or delta? Delta is usually a directory, so no extension or .delta?)
+                    # Delta tables are directories without extensions, others use format extension
+                    if self.config.output_format == 'delta':
+                         output_basename = output_name
                     else:
-                        df = Enricher.enrich_dataframe(df)
+                         output_basename = f"{output_name}.{self.config.output_format}"
                 
-                # 4. Custom Transformations (Per-Table > Global)
-                transform_script = table.get('transformation') or self.config.data.get('transformation')
+                output_path = os.path.join(intermediate_dir, output_basename)
+                metadata = table.get('metadata', {})
+                naming_pattern = table.get('naming_pattern')
+                table_format = table.get('format', 'csv')
+                hive_partitioning = table.get('hive_partitioning', False)
+                schema = table.get('schema')
+                read_options = table.get('read_options', {})
+                write_mode = table.get('write_mode', 'overwrite')
+                fixed_width_spec = table.get('fixed_width_spec')
+                min_line_length = table.get('min_line_length')
+
+                # For partitioning, DuckDB creates a directory.
+                logger.info("Starting ingestion for %s from %s to %s", table['name'], input_path, output_path)
+                success = self.engine.ingest(
+                    input_path,
+                    output_path,
+                    format=table_format,
+                    partition_by=partition_by,
+                    balanced=self.config.salting,  # D.1: Use config value (default False)
+                    metadata=metadata,
+                    naming_pattern=naming_pattern,
+                    target_rows=self.config.target_rows,
+                    target_file_size_mb=self.config.target_file_size_mb,  # D.2: File size control
+                    compression=self.config.compression,  # D.2: Compression (default snappy)
+                    max_records_per_file=self.config.max_records_per_file,  # D.2: Direct control (optional)
+                    hive_partitioning=hive_partitioning,
+                    schema=schema,
+                    write_mode=write_mode,
+                    output_format=self.config.output_format,
+                    fixed_width_spec=fixed_width_spec,
+                    min_line_length=min_line_length,
+                    **read_options
+                )
+            
+                if success:
+                    # 2. Load for validation and enrichment
+                    df = self.engine.read_result(output_path)
                 
-                validation_target_path = output_path
+                    is_spark = self.config.engine == 'pyspark'
                 
-                if transform_script:
-                    from .transformations.registry import load_transformer
-                    TransformerClass = load_transformer(transform_script)
-                    if TransformerClass:
-                        logger.info("Applying custom transformations from %s...", transform_script)
-                        df = TransformerClass(df).transform()
-                        
-                        if partition_by:
-                            processed_basename = f"{output_name}_processed"
-                        else:
-                            processed_basename = f"{output_name}_processed.parquet"
-                            
-                        processed_path = os.path.join(self.config.processed_dir, processed_basename)
-                        
+                    if not is_spark and hasattr(df, 'df'):
+                         df = df.df()
+
+                    # 3. Enrichment
+                    if self.config.enrichment.get('geocode'):
+                        logger.info("Enriching %s with geospatial data...", table['name'])
                         if is_spark:
-                             # Spark writes are actions.
-                             df.write.mode("overwrite").partitionBy(*partition_by) if partition_by else df.write.mode("overwrite").parquet(processed_path)
-                             # Reload for validation
-                             df = self.engine.read_result(processed_path)
+                            df = Enricher.enrich_spark(df)
                         else:
-                            # Pandas/DuckDB path
-                            import shutil
-                            if os.path.isdir(processed_path):
-                                shutil.rmtree(processed_path)
-                            elif os.path.exists(processed_path):
-                                os.remove(processed_path)
-                                
-                            os.makedirs(os.path.dirname(processed_path), exist_ok=True)
-                            df.to_parquet(processed_path, partition_cols=partition_by)
-                        
-                        validation_target_path = processed_path
-                        # NOTE: For incremental write_mode, we might want to also append this transformation result?
-                        # Current limitations: transformation result overwrite logic is simplified.
-                        # Assuming transformations are per-batch for now.
-
-                # 5. Validations
-                if is_spark:
-                    l1 = Validator.level1_check_spark(df, self.config.validations)
-                    l2 = Validator.level2_check_spark(df, self.config.validations)
-                else:
-                    l1 = Validator.level1_check(df, self.config.validations)
-                    l2 = Validator.level2_check(df, self.config.validations)
+                            df = Enricher.enrich_dataframe(df)
                 
-                if l1['passed'] and l2['passed']:
-                    logger.info("Validations passed for %s", table['name'])
-
-                    if partition_by:
-                        final_basename = output_name
-                    else:
-                        final_basename = f"{output_name}.parquet"
-
-                    final_output_path = os.path.join(self.config.curated_dir, final_basename)
-
-                    # If overwrite (default), we clear final.
-                    if write_mode == 'overwrite':
-                        if os.path.exists(final_output_path):
-                            import shutil
-                            if os.path.isdir(final_output_path):
-                                shutil.rmtree(final_output_path)
+                    # 4. Custom Transformations (Per-Table > Global)
+                    transform_script = table.get('transformation') or self.config.data.get('transformation')
+                
+                    validation_target_path = output_path
+                
+                    if transform_script:
+                        from .transformations.registry import load_transformer
+                        TransformerClass = load_transformer(transform_script)
+                        if TransformerClass:
+                            logger.info("Applying custom transformations from %s...", transform_script)
+                            df = TransformerClass(df).transform()
+                        
+                            if partition_by:
+                                processed_basename = f"{output_name}_processed"
                             else:
-                                os.remove(final_output_path)
+                                processed_basename = f"{output_name}_processed.parquet"
+                            
+                            processed_path = os.path.join(self.config.processed_dir, processed_basename)
+                        
+                            if is_spark:
+                                 # Spark writes are actions.
+                                 if partition_by:
+                                     df.write.mode("overwrite").partitionBy(*partition_by).parquet(processed_path)
+                                 else:
+                                     df.write.mode("overwrite").parquet(processed_path)
+                                 # Reload for validation
+                                 df = self.engine.read_result(processed_path)
+                            else:
+                                # Pandas/DuckDB path
+                                if os.path.isdir(processed_path):
+                                    shutil.rmtree(processed_path)
+                                elif os.path.exists(processed_path):
+                                    os.remove(processed_path)
+                                
+                                os.makedirs(os.path.dirname(processed_path), exist_ok=True)
+                                df.to_parquet(processed_path, partition_cols=partition_by)
+                        
+                            validation_target_path = processed_path
+                            # NOTE: For incremental write_mode, we might want to also append this transformation result?
+                            # Current limitations: transformation result overwrite logic is simplified.
+                            # Assuming transformations are per-batch for now.
 
-                    os.makedirs(os.path.dirname(final_output_path), exist_ok=True)
+                    # 5. Validations
+                    if is_spark:
+                        l1 = Validator.level1_check_spark(df, self.config.validations)
+                        l2 = Validator.level2_check_spark(df, self.config.validations)
+                    else:
+                        l1 = Validator.level1_check(df, self.config.validations)
+                        l2 = Validator.level2_check(df, self.config.validations)
+                
+                    if l1['passed'] and l2['passed']:
+                        logger.info("Validations passed for %s", table['name'])
 
-                    # Phase 1.5: Type enforcement — produce a typed curated layer.
-                    # The processed layer (validation_target_path) has all-STRING columns
-                    # for fixed-width tables. enforce_types() reads it and writes a typed
-                    # Parquet to final_output_path using TRY_CAST (or CAST for strict cols).
-                    enforcement_columns = _build_enforcement_schema(table, fixed_width_spec)
-                    if enforcement_columns:
-                        type_enforcement = table.get('type_enforcement', {})
-                        on_fail = type_enforcement.get('on_fail', 'null')
-                        logger.info(
-                            "Enforcing types for %s (on_fail=%s, %d typed columns)",
-                            table['name'], on_fail, len(enforcement_columns)
-                        )
-                        self.engine.enforce_types(
-                            validation_target_path,
-                            final_output_path,
-                            enforcement_columns,
-                            on_fail=on_fail,
-                            partition_by=partition_by,
-                            write_mode=write_mode,
+                        if partition_by:
+                            final_basename = output_name
+                        else:
+                            final_basename = f"{output_name}.parquet"
+
+                        final_output_path = os.path.join(self.config.curated_dir, final_basename)
+
+                        # Atomic write: write to temp location, then swap.
+                        # This prevents data loss if the write fails (disk full, OOM, etc.)
+                        temp_final = final_output_path + ".tmp_new"
+
+                        # Recovery: if a previous run was interrupted mid-swap,
+                        # restore curated data from the backup
+                        old_backup = final_output_path + ".tmp_old"
+                        if not os.path.exists(final_output_path) and os.path.exists(old_backup):
+                            os.rename(old_backup, final_output_path)
+                            logger.warning("Recovered curated data from interrupted swap: %s", final_output_path)
+
+                        # Clean up any leftover temp from a previous failed attempt
+                        for leftover in (temp_final, old_backup):
+                            if os.path.exists(leftover):
+                                if os.path.isdir(leftover):
+                                    shutil.rmtree(leftover)
+                                else:
+                                    os.remove(leftover)
+
+                        os.makedirs(os.path.dirname(temp_final), exist_ok=True)
+
+                        # Phase 1.5: Type enforcement — produce a typed curated layer.
+                        # The processed layer (validation_target_path) has all-STRING columns
+                        # for fixed-width tables. enforce_types() reads it and writes a typed
+                        # Parquet to temp_final using TRY_CAST (or CAST for strict cols).
+                        enforcement_columns = _build_enforcement_schema(table, fixed_width_spec)
+                        if enforcement_columns:
+                            type_enforcement = table.get('type_enforcement', {})
+                            on_fail = type_enforcement.get('on_fail', 'null')
+                            logger.info(
+                                "Enforcing types for %s (on_fail=%s, %d typed columns)",
+                                table['name'], on_fail, len(enforcement_columns)
+                            )
+                            self.engine.enforce_types(
+                                validation_target_path,
+                                temp_final,
+                                enforcement_columns,
+                                on_fail=on_fail,
+                                partition_by=partition_by,
+                                write_mode=write_mode,
+                            )
+                        else:
+                            # No type enforcement — copy processed → curated as-is.
+                            if os.path.isdir(validation_target_path):
+                                shutil.copytree(validation_target_path, temp_final)
+                            else:
+                                shutil.copy2(validation_target_path, temp_final)
+
+                        # Atomic swap: only remove old data after new data is written
+                        if write_mode == 'overwrite' and os.path.exists(final_output_path):
+                            os.rename(final_output_path, old_backup)
+                            os.rename(temp_final, final_output_path)
+                            if os.path.isdir(old_backup):
+                                shutil.rmtree(old_backup)
+                            else:
+                                os.remove(old_backup)
+                        else:
+                            os.rename(temp_final, final_output_path)
+
+                        logger.info("Data finalized at %s", final_output_path)
+
+                        # Record each individual file in manifest (like schema_pipeline does)
+                        with table_manifest.batch():
+                            for file_path in discovered_files:
+                                table_manifest.update_file(
+                                    file_path,
+                                    status="success",
+                                    metadata={
+                                        "config_path": getattr(self.config, 'config_path', 'unknown'),
+                                        "table_name": table['name'],
+                                    },
+                                    table_root=effective_root,
+                                    computed_hash=file_hashes.get(file_path)
+                                )
+                        # Also record table-level entry for backward compatibility
+                        table_manifest.update_file(
+                            original_path,
+                            status="success",
+                            metadata={"config_path": getattr(self.config, 'config_path', 'unknown')},
+                            table_root=table.get('root')
                         )
                     else:
-                        # No type enforcement — copy processed → curated as-is.
-                        import shutil
-                        if os.path.isdir(validation_target_path):
-                            shutil.copytree(validation_target_path, final_output_path, dirs_exist_ok=True)
-                        else:
-                            shutil.copy2(validation_target_path, final_output_path)
+                        errors = l1['errors'] + l2['errors']
+                        logger.error("Validations failed for %s: %s", table['name'], errors)
+                        # Record each file as failed
+                        with table_manifest.batch():
+                            for file_path in discovered_files:
+                                table_manifest.update_file(
+                                    file_path,
+                                    status="failed",
+                                    metadata={"errors": errors},
+                                    table_root=effective_root,
+                                    computed_hash=file_hashes.get(file_path)
+                                )
+                        table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
+                        # raise Exception(...) # Optional blocking
 
-                    logger.info("Data finalized at %s", final_output_path)
-
-                    # Record each individual file in manifest (like schema_pipeline does)
-                    with table_manifest.batch():
-                        for file_path in discovered_files:
-                            table_manifest.update_file(
-                                file_path,
-                                status="success",
-                                metadata={
-                                    "config_path": getattr(self.config, 'config_path', 'unknown'),
-                                    "table_name": table['name'],
-                                },
-                                table_root=effective_root,
-                                computed_hash=file_hashes.get(file_path)
-                            )
-                    # Also record table-level entry for backward compatibility
+            except Exception as e:
+                logger.error("Table '%s' failed: %s", table['name'], e, exc_info=True)
+                try:
+                    table_manifest = self.manifest_store.get_table_manifest(table['name'])
                     table_manifest.update_file(
-                        original_path,
-                        status="success",
-                        metadata={"config_path": getattr(self.config, 'config_path', 'unknown')},
+                        table['path'],
+                        status="failed",
+                        metadata={"error": str(e)},
                         table_root=table.get('root')
                     )
-                else:
-                    errors = l1['errors'] + l2['errors']
-                    logger.error("Validations failed for %s: %s", table['name'], errors)
-                    # Record each file as failed
-                    with table_manifest.batch():
-                        for file_path in discovered_files:
-                            table_manifest.update_file(
-                                file_path,
-                                status="failed",
-                                metadata={"errors": errors},
-                                table_root=effective_root,
-                                computed_hash=file_hashes.get(file_path)
-                            )
-                    table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
-                    # raise Exception(...) # Optional blocking
+                except Exception:
+                    logger.warning("Could not record failure in manifest for table '%s'", table['name'])
+                failed_tables.append(table['name'])
+                continue
 
-        # Run summarization unless skipped
+        # Run summarization unless skipped (even if some tables failed)
         if not skip_summary:
             self.summarize()
+
+        if failed_tables:
+            raise RuntimeError(
+                f"Pipeline completed with {len(failed_tables)} failed table(s): "
+                f"{', '.join(failed_tables)}"
+            )
