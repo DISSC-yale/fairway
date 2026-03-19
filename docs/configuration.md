@@ -129,20 +129,52 @@ The preprocessing script must define a `process_file(file_path, output_dir, **kw
 
 ## Validations
 
-fairway supports multi-level validations to ensure data quality.
+fairway provides built-in data quality checks. Validations can be set globally and overridden per-table.
 
 ```yaml
+# Global validations (inherited by all tables)
 validations:
-  level1:
-    min_rows: 100
-  level2:
-    check_nulls:
-      - "provider_id"
-      - "state"
+  min_rows: 100
+  check_nulls: ["person_id"]
+
+tables:
+  - name: demographics
+    path: "data/raw/demographics.csv"
+    format: csv
+    # Per-table override (shallow merge with global)
+    validations:
+      min_rows: 500
+      check_range:
+        year: { min: 1900, max: 2030 }
+      check_pattern:
+        fips_code: "^\\d{5}$"
+      check_values:
+        state: ["CT", "MA", "NY"]
 ```
 
-*   **Level 1**: Basic sanity checks (e.g., minimum row counts).
-*   **Level 2**: Schema and distribution checks (e.g., checking for nulls in mandatory columns).
+Available checks: `min_rows`, `max_rows`, `check_nulls`, `expected_columns`, `check_range`, `check_values`, `check_pattern`.
+
+See [Validations](validations.md) for full documentation of each check type, severity/threshold support, and cross-engine behavior.
+
+### output_layer
+
+Controls where a table's pipeline stops:
+
+```yaml
+tables:
+  - name: demographics
+    output_layer: curated       # default — full pipeline (validate → processed → transform → curated)
+
+  - name: reference_lookup
+    output_layer: processed     # validate → processed, stop. No transforms or curated write.
+```
+
+| Value | Behavior |
+| :--- | :--- |
+| `curated` (default) | Full pipeline: validate → processed → transform → type-enforce → curated |
+| `processed` | Validate → processed only. No transform/curated steps |
+
+**Note:** `output_layer: processed` with a `transformation` specified is a config error.
 
 ## Enrichment
 

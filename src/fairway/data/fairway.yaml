@@ -61,6 +61,18 @@ tables:
       year: "INTEGER"
       month: "INTEGER"
 
+    # Output layer — where the pipeline stops for this table
+    # Options: 'curated' (default, full pipeline), 'processed' (validate + convert only)
+    # Note: output_layer: processed cannot be used with transformation
+    # output_layer: "curated"
+
+    # Per-table validation overrides (shallow merge with global validations)
+    # validations:
+    #   min_rows: 500
+    #   check_nulls: ["id", "amount"]
+    #   check_range:
+    #     amount: { min: 0 }
+
     # Write mode for output
     # Options: 'overwrite' (default), 'append'
     # write_mode: "overwrite"
@@ -145,22 +157,38 @@ tables:
     #   environment: "production"
 
 # ─────────────────────────────────────────────────────────────
-# Validation Rules
+# Validation Rules (Global Defaults)
 # ─────────────────────────────────────────────────────────────
+# Global validations apply to all tables. Per-table validations
+# override global ones with shallow merge (see per-table example below).
 validations:
-  # Level 1: Basic Sanity Checks
-  level1:
-    min_rows: 1
-    # max_rows: 1000000
+  # Minimum row count — fail if dataset has fewer rows
+  min_rows: 1
+  # max_rows: 1000000
 
-  # Level 2: Schema and Data Quality Checks
-  level2:
-    # check_nulls:
-    #   - "id"
-    #   - "date"
-    #   - "amount"
-    # check_unique:
-    #   - "id"
+  # Columns that must not contain nulls
+  # check_nulls:
+  #   - "id"
+  #   - "date"
+
+  # Expected columns — fail if missing. Use strict: true to also fail on extras.
+  # expected_columns: ["id", "date", "amount"]
+  # expected_columns:
+  #   columns: ["id", "date", "amount"]
+  #   strict: true
+
+  # Range bounds for numeric columns (nulls excluded)
+  # check_range:
+  #   year: { min: 1900, max: 2030 }
+  #   age: { min: 0, max: 120 }
+
+  # Allowed values (enum check, nulls excluded)
+  # check_values:
+  #   state: ["CT", "MA", "NY"]
+
+  # Regex pattern (full-string match, nulls excluded)
+  # check_pattern:
+  #   fips_code: "^\\d{{5}}$"
 
 # ─────────────────────────────────────────────────────────────
 # Data Enrichment Configuration
