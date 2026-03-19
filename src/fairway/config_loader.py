@@ -134,6 +134,16 @@ class Config:
                 return data
         return schema_ref or {}
 
+    def _resolve_table_validations(self, tbl):
+        """Merge per-table validations with global defaults (shallow merge)."""
+        global_validations = self.data.get('validations', {})
+        table_validations = tbl.get('validations', {})
+        if not global_validations and not table_validations:
+            return {}
+        merged = dict(global_validations)
+        merged.update(table_validations)  # shallow: per-table key replaces global key
+        return merged
+
     def _expand_tables(self, raw_tables):
         """Discovers files and extracts metadata via regex if patterns are provided."""
         expanded = []
@@ -220,6 +230,8 @@ class Config:
                     'fixed_width_spec': fixed_width_spec,
                     'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                     'type_enforcement': tbl.get('type_enforcement', {}),
+                    'validations': self._resolve_table_validations(tbl),
+                    'output_layer': tbl.get('output_layer', 'curated'),
                 })
 
             else:
@@ -289,6 +301,8 @@ class Config:
                         'fixed_width_spec': fixed_width_spec,
                         'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                         'type_enforcement': tbl.get('type_enforcement', {}),
+                        'validations': self._resolve_table_validations(tbl),
+                        'output_layer': tbl.get('output_layer', 'curated'),
                     })
         return expanded
 
@@ -394,6 +408,17 @@ class Config:
                             errors.append(
                                 f"{prefix}: partition_by key '{key}' not found as named group in naming_pattern"
                             )
+
+            # output_layer validation
+            output_layer = table.get('output_layer', 'curated')
+            valid_layers = {'processed', 'curated'}
+            if output_layer not in valid_layers:
+                errors.append(f"{prefix}: Invalid output_layer '{output_layer}'. Must be one of {valid_layers}")
+            if output_layer == 'processed' and table.get('transformation'):
+                errors.append(
+                    f"{prefix}: output_layer 'processed' cannot be combined with transformation "
+                    f"(transformations only run for output_layer 'curated')"
+                )
 
             # Validate preprocess.resources
             preprocess = table.get('preprocess', {})

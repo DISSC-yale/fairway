@@ -1028,84 +1028,86 @@ class IngestionPipeline:
                             # Current limitations: transformation result overwrite logic is simplified.
                             # Assuming transformations are per-batch for now.
 
-                    # 5. Validations
-                    if is_spark:
-                        l1 = Validator.level1_check_spark(df, self.config.validations)
-                        l2 = Validator.level2_check_spark(df, self.config.validations)
-                    else:
-                        l1 = Validator.level1_check(df, self.config.validations)
-                        l2 = Validator.level2_check(df, self.config.validations)
-                
-                    if l1['passed'] and l2['passed']:
+                    # 5. Validations — use per-table config (merged with global in config_loader)
+                    table_validations = table['validations']  # merged with global in _expand_tables
+                    validation_result = Validator.run_all(df, table_validations, is_spark=is_spark)
+
+                    if validation_result.passed:
                         logger.info("Validations passed for %s", table['name'])
 
-                        if partition_by:
-                            final_basename = output_name
-                        else:
-                            final_basename = f"{output_name}.parquet"
+                        output_layer = table.get('output_layer', 'curated')
 
-                        final_output_path = os.path.join(self.config.curated_dir, final_basename)
+                        if output_layer == 'curated':
+                            if partition_by:
+                                final_basename = output_name
+                            else:
+                                final_basename = f"{output_name}.parquet"
 
-                        # Atomic write: write to temp location, then swap.
-                        # This prevents data loss if the write fails (disk full, OOM, etc.)
-                        temp_final = final_output_path + ".tmp_new"
+                            final_output_path = os.path.join(self.config.curated_dir, final_basename)
 
-                        # Recovery: if a previous run was interrupted mid-swap,
-                        # restore curated data from the backup
-                        old_backup = final_output_path + ".tmp_old"
-                        if not os.path.exists(final_output_path) and os.path.exists(old_backup):
-                            os.rename(old_backup, final_output_path)
-                            logger.warning("Recovered curated data from interrupted swap: %s", final_output_path)
+                            # Atomic write: write to temp location, then swap.
+                            # This prevents data loss if the write fails (disk full, OOM, etc.)
+                            temp_final = final_output_path + ".tmp_new"
 
-                        # Clean up any leftover temp from a previous failed attempt
-                        for leftover in (temp_final, old_backup):
-                            if os.path.exists(leftover):
-                                if os.path.isdir(leftover):
-                                    shutil.rmtree(leftover)
+                            # Recovery: if a previous run was interrupted mid-swap,
+                            # restore curated data from the backup
+                            old_backup = final_output_path + ".tmp_old"
+                            if not os.path.exists(final_output_path) and os.path.exists(old_backup):
+                                os.rename(old_backup, final_output_path)
+                                logger.warning("Recovered curated data from interrupted swap: %s", final_output_path)
+
+                            # Clean up any leftover temp from a previous failed attempt
+                            for leftover in (temp_final, old_backup):
+                                if os.path.exists(leftover):
+                                    if os.path.isdir(leftover):
+                                        shutil.rmtree(leftover)
+                                    else:
+                                        os.remove(leftover)
+
+                            os.makedirs(os.path.dirname(temp_final), exist_ok=True)
+
+                            # Phase 1.5: Type enforcement — produce a typed curated layer.
+                            # The processed layer (validation_target_path) has all-STRING columns
+                            # for fixed-width tables. enforce_types() reads it and writes a typed
+                            # Parquet to temp_final using TRY_CAST (or CAST for strict cols).
+                            enforcement_columns = _build_enforcement_schema(table, fixed_width_spec)
+                            if enforcement_columns:
+                                type_enforcement = table.get('type_enforcement', {})
+                                on_fail = type_enforcement.get('on_fail', 'null')
+                                logger.info(
+                                    "Enforcing types for %s (on_fail=%s, %d typed columns)",
+                                    table['name'], on_fail, len(enforcement_columns)
+                                )
+                                self.engine.enforce_types(
+                                    validation_target_path,
+                                    temp_final,
+                                    enforcement_columns,
+                                    on_fail=on_fail,
+                                    partition_by=partition_by,
+                                    write_mode=write_mode,
+                                )
+                            else:
+                                # No type enforcement — copy processed → curated as-is.
+                                if os.path.isdir(validation_target_path):
+                                    shutil.copytree(validation_target_path, temp_final)
                                 else:
-                                    os.remove(leftover)
+                                    shutil.copy2(validation_target_path, temp_final)
 
-                        os.makedirs(os.path.dirname(temp_final), exist_ok=True)
-
-                        # Phase 1.5: Type enforcement — produce a typed curated layer.
-                        # The processed layer (validation_target_path) has all-STRING columns
-                        # for fixed-width tables. enforce_types() reads it and writes a typed
-                        # Parquet to temp_final using TRY_CAST (or CAST for strict cols).
-                        enforcement_columns = _build_enforcement_schema(table, fixed_width_spec)
-                        if enforcement_columns:
-                            type_enforcement = table.get('type_enforcement', {})
-                            on_fail = type_enforcement.get('on_fail', 'null')
-                            logger.info(
-                                "Enforcing types for %s (on_fail=%s, %d typed columns)",
-                                table['name'], on_fail, len(enforcement_columns)
-                            )
-                            self.engine.enforce_types(
-                                validation_target_path,
-                                temp_final,
-                                enforcement_columns,
-                                on_fail=on_fail,
-                                partition_by=partition_by,
-                                write_mode=write_mode,
-                            )
-                        else:
-                            # No type enforcement — copy processed → curated as-is.
-                            if os.path.isdir(validation_target_path):
-                                shutil.copytree(validation_target_path, temp_final)
+                            # Atomic swap: only remove old data after new data is written
+                            if write_mode == 'overwrite' and os.path.exists(final_output_path):
+                                os.rename(final_output_path, old_backup)
+                                os.rename(temp_final, final_output_path)
+                                if os.path.isdir(old_backup):
+                                    shutil.rmtree(old_backup)
+                                else:
+                                    os.remove(old_backup)
                             else:
-                                shutil.copy2(validation_target_path, temp_final)
+                                os.rename(temp_final, final_output_path)
 
-                        # Atomic swap: only remove old data after new data is written
-                        if write_mode == 'overwrite' and os.path.exists(final_output_path):
-                            os.rename(final_output_path, old_backup)
-                            os.rename(temp_final, final_output_path)
-                            if os.path.isdir(old_backup):
-                                shutil.rmtree(old_backup)
-                            else:
-                                os.remove(old_backup)
+                            logger.info("Data finalized at %s", final_output_path)
                         else:
-                            os.rename(temp_final, final_output_path)
-
-                        logger.info("Data finalized at %s", final_output_path)
+                            # output_layer: processed — data stays in processed/, no curated write
+                            logger.info("Table '%s' output_layer=processed, skipping curated write", table['name'])
 
                         # Record each individual file in manifest (like schema_pipeline does)
                         with table_manifest.batch():
@@ -1128,7 +1130,7 @@ class IngestionPipeline:
                             table_root=table.get('root')
                         )
                     else:
-                        errors = l1['errors'] + l2['errors']
+                        errors = [e['message'] for e in validation_result.errors]
                         logger.error("Validations failed for %s: %s", table['name'], errors)
                         # Record each file as failed
                         with table_manifest.batch():
