@@ -54,8 +54,9 @@ class DuckDBEngine:
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
-        # Extract fixed_width_spec before stripping (needed by fixed_width handler)
+        # Extract format-specific kwargs before stripping (needed by handlers)
         fixed_width_spec = kwargs.pop('fixed_width_spec', None)
+        min_line_length = kwargs.pop('min_line_length', None)
 
         # Strip fairway-specific kwargs that shouldn't be passed to DuckDB read functions
         _fairway_keys = {'balanced', 'target_file_size_mb', 'compression',
@@ -76,6 +77,8 @@ class DuckDBEngine:
         elif format == 'parquet':
             return self._ingest_parquet(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
         elif format == 'fixed_width':
+            if min_line_length is not None:
+                kwargs['min_line_length'] = min_line_length
             return self._ingest_fixed_width(input_path, output_path, fixed_width_spec, partition_by, metadata, write_mode, **kwargs)
         else:
             raise ValueError(f"Unsupported format for DuckDB engine: {format}")
