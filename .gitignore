@@ -23,7 +23,4 @@ config/sales_schema.yaml
 # Coverage artifacts
 coverage.json
 config/census_1950.yaml
-.gitignore
-.gitignore
 .reports/security-analysis.md
-.gitignore
