@@ -5,14 +5,14 @@
 
 FROM python:3.11-slim
 
-# Java for PySpark
+# Java 21 (Debian trixie dropped openjdk-17-jdk; PySpark 4.x supports Java 17+)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    default-jdk \
+    openjdk-21-jdk \
     && rm -rf /var/lib/apt/lists/*
 
 # Heavy Python deps — rarely change, cached between rebuilds
 RUN pip install --no-cache-dir \
-    "pyspark==3.5.0" \
+    "pyspark==4.1.1" \
     duckdb \
     pytest \
     pytest-cov \
@@ -24,6 +24,7 @@ RUN pip install --no-cache-dir \
     numpy
 
 WORKDIR /app
+ENV FAIRWAY_TEST_ENV=docker
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
