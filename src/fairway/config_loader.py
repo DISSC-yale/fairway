@@ -160,6 +160,37 @@ class Config:
             if not path_pattern and not archives_pattern:
                 continue
 
+            # Archives-only tables (no path key) bypass path resolution entirely
+            if not path_pattern:
+                table_format = tbl.get('format', 'csv')
+                valid_formats = {'csv', 'tsv', 'tab', 'json', 'parquet', 'fixed_width'}
+                if table_format not in valid_formats:
+                    raise ValueError(f"Invalid format: '{table_format}'. Must be one of {valid_formats}")
+                preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
+                expanded.append({
+                    'name': tbl.get('name', 'unnamed'),
+                    'path': None,
+                    'format': table_format,
+                    'metadata': {},
+                    'naming_pattern': naming_pattern,
+                    'schema': self._load_schema(tbl.get('schema')),
+                    'transformation': self._resolve_path(tbl.get('transformation'), config_dir),
+                    'hive_partitioning': tbl.get('hive_partitioning', False),
+                    'partition_by': tbl.get('partition_by', []),
+                    'read_options': tbl.get('read_options', {}),
+                    'preprocess': preprocess,
+                    'write_mode': tbl.get('write_mode', 'overwrite'),
+                    'root': tbl.get('root'),
+                    'archives': archives_pattern,
+                    'files': files_pattern,
+                    'fixed_width_spec': self._resolve_path(tbl.get('fixed_width_spec'), config_dir),
+                    'batch_strategy': tbl.get('batch_strategy', 'bulk'),
+                    'type_enforcement': tbl.get('type_enforcement', {}),
+                    'validations': self._resolve_table_validations(tbl),
+                    'output_layer': tbl.get('output_layer', 'curated'),
+                })
+                continue
+
             # Resolve path relative to config file if it's not absolute
             # SKIP if 'root' is defined (let pipeline handle it)
             if not os.path.isabs(path_pattern) and not tbl.get('root'):
