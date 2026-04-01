@@ -110,6 +110,8 @@ Tests that use `engine.spark.createDataFrame()` directly (parquet_file_size, per
 
 Tests that already use `IngestionPipeline(config).run()` (ingestion_formats, schema_enforcement, write_behaviour, transformation, schema_merge) already test full pipeline. They should work once VARCHAR normalization is in place.
 
+**Additional fix:** `test_cli_spark_lifecycle.py::test_spark_start` fails because the test runs in an empty `isolated_filesystem()` and the `spark start` command calls `discover_config()` which requires a `config/` directory. Fix: create a minimal config dir in the test setup before invoking the CLI.
+
 ---
 
 ### 6. Documentation
