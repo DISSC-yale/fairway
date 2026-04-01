@@ -59,3 +59,24 @@ class TestSchemaEnforcement:
         assert df["missing_col"].isna().all(), (
             "Schema column absent from source should be all-null in output"
         )
+
+
+class TestVarcharNormalization:
+    """VARCHAR must be normalized to STRING for PySpark 4.x compatibility."""
+
+    def test_varchar_normalized_to_string_in_cast(self, pyspark_engine, tmp_path):
+        """PySpark 4.x rejects bare VARCHAR — engine must normalize to STRING."""
+        data = [{"id": 1, "name": "alice"}, {"id": 2, "name": "bob"}]
+        df = pyspark_engine.spark.createDataFrame(data)
+        input_path = str(tmp_path / "input")
+        df.write.mode("overwrite").parquet(input_path)
+
+        output_path = str(tmp_path / "output")
+        pyspark_engine.ingest(
+            input_path, output_path, format="parquet",
+            schema={"id": "INTEGER", "name": "VARCHAR"},
+        )
+
+        result = pyspark_engine.spark.read.parquet(output_path)
+        assert result.count() == 2
+        assert "name" in result.columns

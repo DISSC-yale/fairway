@@ -12,6 +12,18 @@ import logging
 logger = logging.getLogger("fairway.engines.pyspark")
 
 
+def _normalize_spark_type(type_str):
+    """Normalize type strings for PySpark 4.x compatibility.
+
+    PySpark 4.x rejects bare 'VARCHAR' — requires 'VARCHAR(n)' or 'STRING'.
+    This normalizes 'VARCHAR' (without length) to 'STRING' so user configs
+    work across engine versions. VARCHAR(n) is left unchanged.
+    """
+    if type_str.upper() == 'VARCHAR':
+        return 'STRING'
+    return type_str
+
+
 class PySparkEngine:
     def __init__(self, spark_master=None, spark_conf=None):
         if SparkSession is None:
@@ -247,13 +259,14 @@ class PySparkEngine:
             # Align and Fill Missing Columns
             select_exprs = []
             for col_name, col_type in schema.items():
+                spark_type = _normalize_spark_type(col_type)
                 if col_name in df.columns:
                     # Cast to Ensure Type Strictness?
                     # Ideally yes, let's cast to the configured type string
-                    select_exprs.append(F.col(col_name).cast(col_type))
+                    select_exprs.append(F.col(col_name).cast(spark_type))
                 else:
                     # Fill Missing as Null (Safe Evolution)
-                    select_exprs.append(F.lit(None).cast(col_type).alias(col_name))
+                    select_exprs.append(F.lit(None).cast(spark_type).alias(col_name))
 
             # Also include preserved columns that exist in the DataFrame but not in schema
             for col_name in preserved_columns:
