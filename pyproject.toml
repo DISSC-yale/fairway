@@ -67,6 +67,8 @@ include-package-data = true
 markers = [
     "hpc: requires SLURM cluster — skipped in local and container runs",
     "slow: takes >10 seconds",
+    "local: runs only in local (non-cluster) environments",
+    "spark: requires PySpark — skipped when Spark is unavailable",
 ]
 testpaths = ["tests"]
 addopts = "--cov=src/fairway --cov-report=term-missing --cov-fail-under=90"
