@@ -1,0 +1,32 @@
+# Dockerfile.dev — fairway development/test image
+# Heavy deps baked in. Fairway itself installed at launch from mounted source.
+# Build once: docker build -f Dockerfile.dev -t fairway-dev .
+# Run tests: docker run --rm -v $(pwd):/app fairway-dev pytest tests/ -m "not hpc"
+
+FROM python:3.11-slim
+
+# Java for PySpark
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    default-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Heavy Python deps — rarely change, cached between rebuilds
+RUN pip install --no-cache-dir \
+    "pyspark==3.5.0" \
+    duckdb \
+    pytest \
+    pytest-cov \
+    pandas \
+    pyarrow \
+    tabulate \
+    pyyaml \
+    click \
+    numpy
+
+WORKDIR /app
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["pytest", "tests/", "-m", "not hpc"]
