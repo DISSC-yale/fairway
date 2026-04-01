@@ -25,3 +25,4 @@ config/sales_schema.yaml
 coverage.json
 config/census_1950.yaml
 .reports/security-analysis.md
+.claude/worktrees/
