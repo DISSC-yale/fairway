@@ -14,7 +14,6 @@ from .batcher import PartitionBatcher
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
-from .exporters.redivis_exporter import RedivisExporter
 from .logging_config import BatchLogger
 
 logger = logging.getLogger("fairway.pipeline")
@@ -787,29 +786,6 @@ class IngestionPipeline:
             table_manifest.update_file(original_path, status="success", metadata=stats, table_root=table.get('root'))
 
             logger.info("Summary complete for %s: %s rows, report at %s", table_name, f"{row_count:,}", report_path)
-
-            # Redivis export (depends on stats)
-            if self.config.redivis:
-                try:
-                    logger.info("Exporting %s to Redivis...", table_name)
-                    exporter = RedivisExporter(self.config.redivis)
-
-                    # Combine stats and regex-extracted metadata
-                    rich_metadata = stats.copy()
-                    rich_metadata.update(table.get('metadata', {}))
-                    rich_metadata['input_path'] = original_path
-
-                    # Use final_path for Redivis export
-                    exporter.upload_table(
-                        table_name=table_name,
-                        file_path=final_path,
-                        metadata=rich_metadata,
-                        schema=table.get('schema')
-                    )
-                    # Sync dataset level metadata if available
-                    exporter.update_dataset_metadata(description=f"Dataset: {self.config.dataset_name}")
-                except Exception as e:
-                    logger.error("Redivis export failed for %s: %s", table_name, e)
 
         logger.info("Summarization complete for dataset: %s", self.config.dataset_name)
 

@@ -226,11 +226,3 @@ performance:
   # When enabled, adds a 'salt' column to distribute data evenly across partitions.
   # Only applies when partition_by is set.
   # salting: false
-
-# ─────────────────────────────────────────────────────────────
-# Redivis Export Configuration (Optional)
-# ─────────────────────────────────────────────────────────────
-# redivis:
-#   user: "username"
-#   dataset: "dataset_name"
-#   public_access_level: "none"  # Options: 'none', 'overview', 'metadata', 'data'
