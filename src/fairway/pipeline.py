@@ -459,11 +459,11 @@ class IngestionPipeline:
         file_glob = include_pattern if include_pattern else "*"
 
         if len(processed_paths) == 1:
-             # Single extraction directory - apply filter directly
-             if include_pattern:
-                 result_path = os.path.join(processed_paths[0], "**", file_glob)
-             else:
-                 result_path = processed_paths[0]
+             # Single extraction directory — return the directory itself.
+             # PySpark uses recursiveFileLookup=true to find files;
+             # DuckDB resolves globs internally. Embedding "**" in the path
+             # breaks Hadoop's file:// protocol which doesn't support "**".
+             result_path = processed_paths[0]
         else:
              # If multiple, return the common structure...
              if batch_dir:

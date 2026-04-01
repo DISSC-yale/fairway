@@ -38,8 +38,11 @@ class TestMaxRecordsPerFile:
     def test_target_file_size_mb_heuristic(self, pyspark_engine, tmp_path):
         """
         target_file_size_mb=1 → computed max = 1 * 8000 = 8000 rows/file.
-        16000 rows must produce exactly 2 parquet files.
+        Each output file must have at most 8000 rows and total rows preserved.
+        Note: file count depends on input partition count, not just total rows.
         """
+        import pyarrow.parquet as pq
+
         data = [{"id": i, "value": float(i)} for i in range(16_000)]
         df = pyspark_engine.spark.createDataFrame(data)
         df.write.mode("overwrite").parquet(str(tmp_path / "input"))
@@ -53,9 +56,16 @@ class TestMaxRecordsPerFile:
         )
 
         parquet_files = glob.glob(str(output / "**" / "*.parquet"), recursive=True)
-        assert len(parquet_files) == 2, (
-            f"Expected 2 files (16000 rows / 8000 rows-per-MB), got {len(parquet_files)}"
+        assert len(parquet_files) >= 2, (
+            f"Expected multiple files, got {len(parquet_files)}"
         )
+        # Verify each file respects maxRecordsPerFile (8000 rows)
+        total_rows = 0
+        for f in parquet_files:
+            rows = pq.read_metadata(f).num_rows
+            assert rows <= 8000, f"File {f} has {rows} rows, exceeds 8000 max"
+            total_rows += rows
+        assert total_rows == 16_000, f"Expected 16000 total rows, got {total_rows}"
 
     def test_explicit_max_records_overrides_heuristic(self, pyspark_engine, tmp_path):
         """
