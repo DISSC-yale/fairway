@@ -46,30 +46,43 @@ def read_output(output_path):
     Uses pyarrow directly — no DuckDB or PySpark dependency.
     """
     import pyarrow.parquet as pq
-    output_path = Path(output_path)
-
-    parquet_files = list(output_path.rglob("*.parquet"))
-    if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found under {output_path}")
-
-    tables = [pq.read_table(str(f)) for f in parquet_files]
     import pyarrow as pa
+    parquet_files = _find_parquet_files(output_path)
+    tables = [pq.read_table(str(f)) for f in parquet_files]
     combined = pa.concat_tables(tables, promote_options="default")
     return combined.to_pydict()
+
+
+def _find_parquet_files(output_path):
+    """
+    Find parquet files for a table output.
+    Handles both single-file (table.parquet) and directory (table/) layouts.
+    DuckDB writes single .parquet files; PySpark writes directories of part files.
+    """
+    output_path = Path(output_path)
+    # Case 1: output_path is a .parquet file directly
+    if output_path.suffix == ".parquet" and output_path.is_file():
+        return [output_path]
+    # Case 2: output_path is a directory containing parquet files
+    if output_path.is_dir():
+        files = list(output_path.rglob("*.parquet"))
+        if files:
+            return files
+    # Case 3: output_path is a base name; check for both single file and dir
+    single = output_path.with_suffix(".parquet")
+    if single.is_file():
+        return [single]
+    raise FileNotFoundError(f"No parquet output found at {output_path} (tried directory and .parquet suffix)")
 
 
 def read_as_df(output_path):
     """
     Read parquet output as a pandas DataFrame.
-    Useful for sorted/value assertions.
+    Handles both single-file and directory layouts.
     """
-    import pandas as pd
     import pyarrow.parquet as pq
-    output_path = Path(output_path)
-    parquet_files = list(output_path.rglob("*.parquet"))
-    if not parquet_files:
-        raise FileNotFoundError(f"No parquet files found under {output_path}")
     import pyarrow as pa
+    parquet_files = _find_parquet_files(output_path)
     tables = [pq.read_table(str(f)) for f in parquet_files]
     combined = pa.concat_tables(tables, promote_options="default")
     return combined.to_pandas()
@@ -88,8 +101,9 @@ def read_processed(tmp_path, table_name):
 def get_output_mtime(tmp_path, table_name, layer="curated"):
     """Return the max mtime of all parquet files in the named table output."""
     output_path = Path(tmp_path) / "data" / layer / table_name
-    parquet_files = list(output_path.rglob("*.parquet"))
-    if not parquet_files:
+    try:
+        parquet_files = _find_parquet_files(output_path)
+    except FileNotFoundError:
         return None
     return max(f.stat().st_mtime for f in parquet_files)
 

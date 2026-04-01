@@ -91,21 +91,22 @@ def pyspark_engine(spark_session):
 
 
 @pytest.fixture(params=["duckdb", "pyspark"])
-def engine(request, spark_session):
+def engine(request):
     """Parametrized fixture - tests run against both engines.
 
-    Automatically skips PySpark tests if not available.
-    Note: PySpark tests may fail with Java 17+ due to compatibility issues.
+    DuckDB runs always. PySpark skips if not available.
+    spark_session is lazy-loaded only when param == 'pyspark'.
     """
     if request.param == "duckdb":
         from fairway.engines.duckdb_engine import DuckDBEngine
         return DuckDBEngine()
     else:
         pytest.importorskip("pyspark")
+        spark = request.getfixturevalue("spark_session")
         from fairway.engines.pyspark_engine import PySparkEngine
-        engine = PySparkEngine.__new__(PySparkEngine)
-        engine.spark = spark_session
-        return engine
+        eng = PySparkEngine.__new__(PySparkEngine)
+        eng.spark = spark
+        return eng
 
 
 @pytest.fixture

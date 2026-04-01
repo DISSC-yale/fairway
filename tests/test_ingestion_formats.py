@@ -1,133 +1,245 @@
-import os
-import shutil
+"""
+Tests for format ingestion: CSV, TSV, JSON, JSONL, Parquet, fixed-width.
+Every test runs on both DuckDB and PySpark via the parametrized engine fixture.
+Every test loads real fixture files — no in-memory data construction.
+"""
 import pytest
-import pandas as pd
-import duckdb
 from pathlib import Path
-from fairway.engines.duckdb_engine import DuckDBEngine
-try:
-    from fairway.engines.pyspark_engine import PySparkEngine
-    SPARK_AVAILABLE = True
-except ImportError:
-    SPARK_AVAILABLE = False
+from tests.helpers import build_config, read_curated
 
-@pytest.fixture
-def sample_data():
-    # Use a local directory to avoid potential /var/folders issues with DuckDB
-    base_dir = os.path.abspath("test_temp_data")
-    if os.path.exists(base_dir):
-        shutil.rmtree(base_dir)
-    os.makedirs(base_dir)
-    
-    data = {"id": [1, 2, 3], "name": ["Alice", "Bob", "Charlie"], "score": [90, 85, 95]}
-    df = pd.DataFrame(data)
-    
-    csv_path = os.path.join(base_dir, "data.csv")
-    json_path = os.path.join(base_dir, "data.json")
-    parquet_path = os.path.join(base_dir, "data.parquet")
-    
-    df.to_csv(csv_path, index=False)
-    df.to_json(json_path, orient='records')
-    df.to_parquet(parquet_path)
-    
-    # Return absolute paths
-    yield {
-        "csv": csv_path,
-        "json": json_path,
-        "parquet": parquet_path,
-        "df": df
-    }
-    # Cleanup
-    if os.path.exists(base_dir):
-        shutil.rmtree(base_dir)
 
-def verify_output(engine, output_path, expected_df):
-    import glob
-    files = glob.glob(f"{output_path}/**/*.parquet", recursive=True)
-    if not files:
-        files = glob.glob(f"{output_path}")
+def engine_name(engine):
+    """Return 'duckdb' or 'pyspark' from engine fixture."""
+    return "pyspark" if hasattr(engine, "spark") else "duckdb"
 
-    if not files:
-        raise FileNotFoundError(f"No parquet files found in {output_path}")
 
-    # Use read_result which handles both file and directory paths
-    df_read = engine.read_result(output_path).df()
-    
-    df_read = df_read.sort_values("id").reset_index(drop=True)
-    expected_df = expected_df.sort_values("id").reset_index(drop=True)
-    
-    pd.testing.assert_frame_equal(df_read, expected_df, check_like=True)
+# ---------------------------------------------------------------------------
+# CSV
+# ---------------------------------------------------------------------------
 
-class TestDuckDBIngestion:
-    def test_ingest_csv(self, sample_data):
-        engine = DuckDBEngine()
-        output_path = os.path.join(os.path.dirname(sample_data['csv']), "output_csv.parquet")
-        
-        # Ensure path is string and absolute
-        input_p = str(Path(sample_data['csv']).resolve())
-        assert engine.ingest(input_p, output_path, format='csv')
-        verify_output(engine, output_path, sample_data['df'])
+class TestCSVIngestion:
 
-    def test_ingest_json(self, sample_data):
-        engine = DuckDBEngine()
-        output_path = os.path.join(os.path.dirname(sample_data['csv']), "output_json.parquet")
-        
-        input_p = str(Path(sample_data['json']).resolve())
-        assert engine.ingest(input_p, output_path, format='json')
-        verify_output(engine, output_path, sample_data['df'])
+    def test_csv_simple(self, engine, fixtures_dir, tmp_path):
+        """Simple CSV: 3 rows, id/name/value, first row id=1 name=alice value=100."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "simple",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "schema": {"id": "INTEGER", "name": "VARCHAR", "value": "INTEGER"},
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
 
-    def test_ingest_parquet(self, sample_data):
-        engine = DuckDBEngine()
-        output_path = os.path.join(os.path.dirname(sample_data['csv']), "output_parquet.parquet")
-        
-        input_p = str(Path(sample_data['parquet']).resolve())
-        assert engine.ingest(input_p, output_path, format='parquet')
-        verify_output(engine, output_path, sample_data['df'])
+        df = read_curated(tmp_path, "simple").sort_values("id").reset_index(drop=True)
+        assert len(df) == 3
+        assert list(df.columns) == ["id", "name", "value"]
+        assert df.iloc[0]["id"] == 1
+        assert df.iloc[0]["name"] == "alice"
+        assert df.iloc[0]["value"] == 100
 
-    def test_metadata_injection(self, sample_data):
-        engine = DuckDBEngine()
-        output_path = os.path.join(os.path.dirname(sample_data['csv']), "output_meta.parquet")
-        metadata = {'source': 'test_source'}
-        
-        input_p = str(Path(sample_data['csv']).resolve())
-        engine.ingest(input_p, output_path, format='csv', metadata=metadata)
+    def test_csv_missing_values_nulls_preserved(self, engine, fixtures_dir, tmp_path):
+        """missing_values.csv: 4 rows, 3 null values across id/name/value."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "missing",
+            "path": str(fixtures_dir / "formats" / "csv" / "missing_values.csv"),
+            "format": "csv",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
 
-        # Read the output using read_result
-        df_read = engine.read_result(output_path).df()
-        assert 'source' in df_read.columns
-        assert df_read['source'].unique()[0] == 'test_source'
+        df = read_curated(tmp_path, "missing")
+        assert len(df) == 4
+        assert df["id"].isna().sum() == 1    # row 2 has null id
+        assert df["name"].isna().sum() == 1  # row 3 has null name
+        assert df["value"].isna().sum() == 1 # row 4 has null value
 
-@pytest.mark.skipif(not SPARK_AVAILABLE, reason="PySpark not available")
-class TestPySparkIngestion:
-    @pytest.fixture
-    def engine(self, spark_session):
-        """Use the shared spark session from conftest."""
-        engine = PySparkEngine.__new__(PySparkEngine)
-        engine.spark = spark_session
-        return engine
+    def test_csv_empty_has_zero_rows(self, engine, fixtures_dir, tmp_path):
+        """empty.csv: headers only, must produce 0 rows in output."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "empty",
+            "path": str(fixtures_dir / "formats" / "csv" / "empty.csv"),
+            "format": "csv",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
 
-    def test_ingest_csv(self, sample_data, engine):
-        output_path = os.path.join(os.path.dirname(sample_data['csv']), "spark_output_csv")
+        df = read_curated(tmp_path, "empty")
+        assert len(df) == 0
+        assert "id" in df.columns
 
-        input_p = str(Path(sample_data['csv']).resolve())
-        assert engine.ingest(input_p, output_path, format='csv')
+    def test_csv_zipped_same_rows_as_unzipped(self, engine, fixtures_dir, tmp_path):
+        """csv_simple.zip must produce same row count as csv/simple.csv."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "zipped",
+            "path": str(fixtures_dir / "zipped" / "csv_simple.zip"),
+            "format": "csv",
+            "preprocess": {"action": "unzip", "scope": "per_file"},
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
 
-        # Verify output
-        result_df = engine.spark.read.parquet(output_path).toPandas()
-        result_df = result_df.sort_values("id").reset_index(drop=True)
-        expected_df = sample_data['df'].sort_values("id").reset_index(drop=True)
-        # check_dtype=False because Spark may infer int32 vs pandas int64
-        pd.testing.assert_frame_equal(result_df, expected_df, check_like=True, check_dtype=False)
+        df = read_curated(tmp_path, "zipped")
+        assert len(df) == 3  # same as csv/simple.csv
 
-    def test_ingest_json(self, sample_data, engine):
-        output_path = os.path.join(os.path.dirname(sample_data['json']), "spark_output_json")
+    def test_csv_with_headers_category_column_present(self, engine, fixtures_dir, tmp_path):
+        """with_headers.csv has 4 rows and a category column."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "with_headers",
+            "path": str(fixtures_dir / "formats" / "csv" / "with_headers.csv"),
+            "format": "csv",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
 
-        input_p = str(Path(sample_data['json']).resolve())
-        assert engine.ingest(input_p, output_path, format='json')
+        df = read_curated(tmp_path, "with_headers")
+        assert len(df) == 4
+        assert "category" in df.columns
+        assert set(df["category"].dropna().unique()) == {"A", "B", "C"}
 
-        # Verify output
-        result_df = engine.spark.read.parquet(output_path).toPandas()
-        result_df = result_df.sort_values("id").reset_index(drop=True)
-        expected_df = sample_data['df'].sort_values("id").reset_index(drop=True)
-        # check_dtype=False because Spark may infer int32 vs pandas int64
-        pd.testing.assert_frame_equal(result_df, expected_df, check_like=True, check_dtype=False)
+
+# ---------------------------------------------------------------------------
+# TSV
+# ---------------------------------------------------------------------------
+
+class TestTSVIngestion:
+
+    def test_tsv_simple(self, engine, fixtures_dir, tmp_path):
+        """TSV: same 3 rows as csv/simple.csv, tab-delimited."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "tsv_simple",
+            "path": str(fixtures_dir / "formats" / "tsv" / "simple.tsv"),
+            "format": "tsv",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "tsv_simple").sort_values("id").reset_index(drop=True)
+        assert len(df) == 3
+        assert df.iloc[0]["name"] == "alice"
+
+
+# ---------------------------------------------------------------------------
+# JSON
+# ---------------------------------------------------------------------------
+
+class TestJSONIngestion:
+
+    def test_json_records(self, engine, fixtures_dir, tmp_path):
+        """JSON records array: 3 rows, id/name/value."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "json_records",
+            "path": str(fixtures_dir / "formats" / "json" / "records.json"),
+            "format": "json",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "json_records").sort_values("id").reset_index(drop=True)
+        assert len(df) == 3
+        assert df.iloc[0]["id"] == 1
+        assert df.iloc[2]["name"] == "carol"
+
+    def test_json_lines(self, engine, fixtures_dir, tmp_path):
+        """JSONL: one JSON object per line, 3 rows."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "json_lines",
+            "path": str(fixtures_dir / "formats" / "json" / "lines.jsonl"),
+            "format": "json",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "json_lines")
+        assert len(df) == 3
+
+    def test_json_missing_values(self, engine, fixtures_dir, tmp_path):
+        """JSON with null fields: nulls must be preserved in output."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "json_nulls",
+            "path": str(fixtures_dir / "formats" / "json" / "missing_values.json"),
+            "format": "json",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "json_nulls")
+        assert len(df) == 3
+        assert df["id"].isna().sum() == 1
+
+
+# ---------------------------------------------------------------------------
+# Parquet
+# ---------------------------------------------------------------------------
+
+class TestParquetIngestion:
+
+    def test_parquet_simple_roundtrip(self, engine, fixtures_dir, tmp_path):
+        """Parquet roundtrip: read simple.parquet, write output, row count matches."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "parquet_in",
+            "path": str(fixtures_dir / "formats" / "parquet" / "simple.parquet"),
+            "format": "parquet",
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "parquet_in")
+        assert len(df) == 3
+        assert set(df.columns) >= {"id", "name", "value"}
+
+
+# ---------------------------------------------------------------------------
+# Fixed-width
+# ---------------------------------------------------------------------------
+
+class TestFixedWidthIngestion:
+
+    def test_fixed_width_simple_column_positions(self, engine, fixtures_dir, tmp_path):
+        """Fixed-width: columns must be extracted at correct positions per spec."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "fw_simple",
+            "path": str(fixtures_dir / "formats" / "fixed_width" / "simple.txt"),
+            "format": "fixed_width",
+            "fixed_width_spec": str(fixtures_dir / "formats" / "fixed_width" / "simple_spec.yaml"),
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "fw_simple").sort_values("id").reset_index(drop=True)
+        assert len(df) == 3
+        assert list(df.columns) == ["id", "name", "age"]
+        assert df.iloc[0]["id"] == 1
+        assert df.iloc[0]["name"] == "Alice"
+        assert df.iloc[0]["age"] == 30
+
+    def test_fixed_width_coded_values_null_for_non_castable(self, engine, fixtures_dir, tmp_path):
+        """coded_values.txt: 'ZZZ' income must become NULL (adaptive cast_mode)."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "fw_coded",
+            "path": str(fixtures_dir / "formats" / "fixed_width" / "coded_values.txt"),
+            "format": "fixed_width",
+            "fixed_width_spec": str(fixtures_dir / "formats" / "fixed_width" / "coded_values_spec.yaml"),
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "fw_coded").sort_values("rectype").reset_index(drop=True)
+        assert len(df) == 3
+        # Row with income=ZZZ must have null income
+        bob_row = df[df["name"] == "Bob"].iloc[0]
+        assert bob_row["income"] != bob_row["income"]  # NaN != NaN
+
+    def test_fixed_width_zipped(self, engine, fixtures_dir, tmp_path):
+        """fixed_width_simple.zip: same row count as unzipped version."""
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "fw_zipped",
+            "path": str(fixtures_dir / "zipped" / "fixed_width_simple.zip"),
+            "format": "fixed_width",
+            "fixed_width_spec": str(fixtures_dir / "formats" / "fixed_width" / "simple_spec.yaml"),
+            "preprocess": {"action": "unzip", "scope": "per_file"},
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "fw_zipped")
+        assert len(df) == 3
