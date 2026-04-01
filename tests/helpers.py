@@ -72,6 +72,11 @@ def _find_parquet_files(output_path):
     single = output_path.with_suffix(".parquet")
     if single.is_file():
         return [single]
+    # Case 4: output_path.parquet is a directory (DuckDB partitioned or transformed output)
+    if single.is_dir():
+        files = list(single.rglob("*.parquet"))
+        if files:
+            return files
     raise FileNotFoundError(f"No parquet output found at {output_path} (tried directory and .parquet suffix)")
 
 

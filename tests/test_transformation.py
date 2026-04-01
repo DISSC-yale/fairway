@@ -199,3 +199,71 @@ class TestExampleTransformer:
 
         assert transformer_cls is not None
         assert transformer_cls.__name__ == "ExampleTransformer"
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level transformation tests
+# ---------------------------------------------------------------------------
+
+class TestTransformationThroughPipeline:
+    """Transformation scripts must run via the pipeline and affect output data."""
+
+    def test_transform_adds_processed_column(self, engine, fixtures_dir, tmp_path):
+        """simple_transform.py adds processed=True column. Must appear in output."""
+        from tests.helpers import build_config, read_curated
+
+        def engine_name(e):
+            return "pyspark" if hasattr(e, "spark") else "duckdb"
+
+        # Write a class-based transformer to tmp_path (registry requires class ending in Transformer)
+        transform_script = tmp_path / "pipeline_transform.py"
+        transform_script.write_text(
+            "from fairway.transformations.base import BaseTransformer\n\n"
+            "class PipelineTransformer(BaseTransformer):\n"
+            "    def transform(self):\n"
+            "        self.df['processed'] = True\n"
+            "        return self.df\n"
+        )
+
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "transformed",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "transformation": str(transform_script),
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "transformed")
+        assert "processed" in df.columns, "Transform did not add 'processed' column"
+        assert len(df) == 3, "Transform must not change row count"
+        assert df["processed"].all(), "All rows must have processed=True"
+
+    def test_transform_row_count_unchanged_both_engines(self, engine, fixtures_dir, tmp_path):
+        """Transform must not filter or duplicate rows on either engine."""
+        from tests.helpers import build_config, read_curated
+
+        def engine_name(e):
+            return "pyspark" if hasattr(e, "spark") else "duckdb"
+
+        # Write a class-based transformer to tmp_path (registry requires class ending in Transformer)
+        transform_script = tmp_path / "count_transform.py"
+        transform_script.write_text(
+            "from fairway.transformations.base import BaseTransformer\n\n"
+            "class CountTransformer(BaseTransformer):\n"
+            "    def transform(self):\n"
+            "        self.df['processed'] = True\n"
+            "        return self.df\n"
+        )
+
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "count_check",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "transformation": str(transform_script),
+        })
+        from fairway.pipeline import IngestionPipeline
+        IngestionPipeline(config).run()
+
+        df = read_curated(tmp_path, "count_check")
+        assert len(df) == 3
