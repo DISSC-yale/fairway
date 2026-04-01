@@ -36,11 +36,6 @@ duckdb = [
     "numpy",
     "pyarrow",
 ]
-redivis = [
-    "redivis",
-    "numpy",
-    "pyarrow",
-]
 test-data-gen = [
     "numpy",
 ]
@@ -48,7 +43,6 @@ all = [
     "pyspark>=4.1.1",
     "delta-spark>=3.0.0",
     "duckdb",
-    "redivis",
     "numpy",
     "pyarrow",
 ]
