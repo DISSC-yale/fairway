@@ -13,6 +13,11 @@ def runner():
 def test_spark_start(runner):
     """Test fairway spark start command."""
     with runner.isolated_filesystem():
+        os.makedirs('config', exist_ok=True)
+        with open('config/fairway.yaml', 'w') as f:
+            f.write('dataset_name: test\nengine: pyspark\ntables: []\n')
+        with open('config/spark.yaml', 'w') as f:
+            f.write('account: test-account\nnodes: 2\n')
         with patch('fairway.engines.slurm_cluster.SlurmSparkManager') as MockManager:
             # Mock instance
             mock_instance = MockManager.return_value
