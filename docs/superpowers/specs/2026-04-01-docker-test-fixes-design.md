@@ -116,10 +116,36 @@ Tests that already use `IngestionPipeline(config).run()` (ingestion_formats, sch
 
 - **fairway.yaml** (template): Update schema comments to note `STRING` is preferred for Spark compatibility, `VARCHAR` is auto-converted. Change `VARCHAR` example to `STRING`.
 
+---
+
+### 7. PySpark Test Skip Policy
+
+**Problem:** `pytest.importorskip("pyspark")` silently skips 30+ tests when PySpark isn't installed. Locally this gives false confidence — everything looks green while an entire engine is untested. In Docker, if PySpark somehow fails to install, tests skip silently instead of failing.
+
+**Design:** Two complementary mechanisms:
+
+**B. Warn on skip:** Add a `conftest.py` hook that counts skipped PySpark tests and emits a pytest terminal summary warning:
+```
+WARNING: 30 PySpark tests skipped — run `make test-docker` for full coverage
+```
+Uses `pytest_terminal_summary` hook. Only fires when skips > 0.
+
+**C. Fail if in Docker:** Set `FAIRWAY_TEST_ENV=docker` in `Dockerfile.dev` (or `entrypoint.sh`). In `conftest.py`, add a fixture/hook that converts PySpark skips to failures when this env var is set. If PySpark is supposed to be available but isn't, that's a real error, not something to skip.
+
+Implementation: a `conftest.py` autouse fixture or `pytest_collection_modifyitems` hook that checks the env var and replaces `importorskip` skips with hard failures.
+
+---
+
 ## Rules Compliance
 
-- **RULE-103** (No collect on full datasets): Unchanged
-- **RULE-113** (Java environment): Handled by real `PySparkEngine.__init__()`
-- **RULE-115** (Data integrity): Unchanged
-- **RULE-118** (Salting default off): Unchanged
-- **RULE-123** (Lazy engine init): Pipeline tests still go through `IngestionPipeline`
+| Rule | Relevance | Status |
+|---|---|---|
+| **RULE-103** No collect/toPandas on full datasets | Tests use small synthetic data (100-1000 rows), not production paths | Compliant |
+| **RULE-106** Single source of truth for templates | Templates stay in `src/fairway/data/`, loaded via `_read_data_file`. Only substitution method changes | Compliant |
+| **RULE-112** Import isolation | `pytest.importorskip` preserved locally; Docker enforces availability via env var | Compliant |
+| **RULE-113** Java environment | Handled by real `PySparkEngine.__init__()` instead of hand-wired fixtures | Improved |
+| **RULE-114** Integration testing cleanliness | CLI init tests already use `runner.isolated_filesystem()` | Compliant |
+| **RULE-115** Data integrity | VARCHAR -> STRING is lossless widening (no length limit) | Compliant |
+| **RULE-117** Schema inference completeness | VARCHAR normalization applies only in casting/enforcement path, not schema inference | Must verify during implementation |
+| **RULE-118** Performance defaults conservative | Salting behavior unchanged; only test executor count changes (local[2] -> local[1]) | Compliant |
+| **RULE-123** Lazy engine init | Test fixtures use eager init (appropriate for tests); `IngestionPipeline` still lazy | Compliant |
