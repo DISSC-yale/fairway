@@ -11,22 +11,6 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "hpc: requires SLURM cluster")
 
 
-# ============ Auto-skip Spark if unavailable ============
-def pytest_collection_modifyitems(config, items):
-    """Auto-skip spark-marked tests if PySpark/Java not available."""
-    try:
-        from pyspark.sql import SparkSession
-        spark_ok = True
-    except ImportError:
-        spark_ok = False
-
-    if not spark_ok:
-        skip_spark = pytest.mark.skip(reason="PySpark/Java not available")
-        for item in items:
-            if "spark" in item.keywords:
-                item.add_marker(skip_spark)
-
-
 
 
 # ============ Path Fixtures ============
@@ -66,6 +50,22 @@ def spark_session():
         .config("spark.ui.enabled", "false")
         .getOrCreate())
 
+    yield spark
+    spark.stop()
+
+
+@pytest.fixture(scope="session")
+def spark_session_2():
+    """Two-executor Spark session — required for salting distribution tests."""
+    pytest.importorskip("pyspark")
+    from pyspark.sql import SparkSession
+    spark = (SparkSession.builder
+        .master("local[2]")
+        .appName("fairway-tests-salting")
+        .config("spark.driver.bindAddress", "127.0.0.1")
+        .config("spark.driver.host", "127.0.0.1")
+        .config("spark.ui.enabled", "false")
+        .getOrCreate())
     yield spark
     spark.stop()
 

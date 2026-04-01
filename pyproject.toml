@@ -46,6 +46,10 @@ all = [
     "numpy",
     "pyarrow",
 ]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
 docs = [
     "mkdocs-material",
 ]
@@ -61,11 +65,11 @@ include-package-data = true
 
 [tool.pytest.ini_options]
 markers = [
-    "local: runs without Spark (DuckDB only)",
-    "spark: requires PySpark + Java",
-    "hpc: requires SLURM cluster",
+    "hpc: requires SLURM cluster — skipped in local and container runs",
+    "slow: takes >10 seconds",
 ]
 testpaths = ["tests"]
+addopts = "--cov=src/fairway --cov-report=term-missing --cov-fail-under=90"
 
 [tool.setuptools.package-data]
 "fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]
