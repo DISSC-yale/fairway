@@ -174,3 +174,109 @@ class TestSparkValidation:
 
         assert result["passed"] is False
         assert "Null values" in result["errors"][0]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level validation tests
+# ---------------------------------------------------------------------------
+
+class TestValidationThroughPipeline:
+    """Validation failures must stop the pipeline. Valid data must pass through."""
+
+    def test_min_rows_fail_stops_pipeline(self, fixtures_dir, tmp_path):
+        """empty.csv (0 rows) with min_rows=1 must raise."""
+        from tests.helpers import build_config
+        from fairway.pipeline import IngestionPipeline
+
+        config = build_config(tmp_path, table={
+            "name": "empty_check",
+            "path": str(fixtures_dir / "formats" / "csv" / "empty.csv"),
+            "format": "csv",
+            "validations": {"min_rows": 1},
+        })
+        with pytest.raises(Exception, match="[Mm]in.?rows|[Rr]ow.?count"):
+            IngestionPipeline(config).run()
+
+    def test_min_rows_pass_allows_pipeline(self, fixtures_dir, tmp_path):
+        """simple.csv (3 rows) with min_rows=1 must succeed."""
+        from tests.helpers import build_config, read_curated
+        from fairway.pipeline import IngestionPipeline
+
+        config = build_config(tmp_path, table={
+            "name": "rows_ok",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "validations": {"min_rows": 1},
+        })
+        IngestionPipeline(config).run()
+        df = read_curated(tmp_path, "rows_ok")
+        assert len(df) == 3
+
+    def test_check_nulls_fail_stops_pipeline(self, fixtures_dir, tmp_path):
+        """missing_values.csv has null id. check_nulls: [id] must raise."""
+        from tests.helpers import build_config
+        from fairway.pipeline import IngestionPipeline
+
+        config = build_config(tmp_path, table={
+            "name": "null_check",
+            "path": str(fixtures_dir / "formats" / "csv" / "missing_values.csv"),
+            "format": "csv",
+            "validations": {"check_nulls": ["id"]},
+        })
+        with pytest.raises(Exception, match="[Nn]ull|id"):
+            IngestionPipeline(config).run()
+
+    def test_check_nulls_pass_on_clean_data(self, fixtures_dir, tmp_path):
+        """simple.csv has no nulls. check_nulls must not raise."""
+        from tests.helpers import build_config, read_curated
+        from fairway.pipeline import IngestionPipeline
+
+        config = build_config(tmp_path, table={
+            "name": "no_nulls",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "validations": {"check_nulls": ["id", "name", "value"]},
+        })
+        IngestionPipeline(config).run()
+        df = read_curated(tmp_path, "no_nulls")
+        assert len(df) == 3
+
+    def test_max_rows_fail_stops_pipeline(self, fixtures_dir, tmp_path):
+        """simple.csv (3 rows) with max_rows=2 must raise."""
+        from tests.helpers import build_config
+        from fairway.pipeline import IngestionPipeline
+
+        config = build_config(tmp_path, table={
+            "name": "max_rows_fail",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "validations": {"max_rows": 2},
+        })
+        with pytest.raises(Exception, match="[Mm]ax.?rows|[Rr]ow.?count"):
+            IngestionPipeline(config).run()
+
+    def test_output_layer_processed_no_transform(self, fixtures_dir, tmp_path):
+        """output_layer=processed writes to processed/, not curated/."""
+        from pathlib import Path
+        from tests.helpers import build_config, read_processed
+        from fairway.pipeline import IngestionPipeline
+
+        config = build_config(tmp_path, table={
+            "name": "early_stop",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "output_layer": "processed",
+        })
+        IngestionPipeline(config).run()
+
+        df = read_processed(tmp_path, "early_stop")
+        assert len(df) == 3
+
+        processed_path = Path(tmp_path) / "data" / "processed" / "early_stop"
+        curated_path = Path(tmp_path) / "data" / "curated" / "early_stop"
+        # One of these path patterns must exist (file or directory)
+        import os
+        processed_exists = processed_path.exists() or Path(str(processed_path) + ".parquet").exists()
+        curated_exists = curated_path.exists() or Path(str(curated_path) + ".parquet").exists()
+        assert processed_exists
+        assert not curated_exists
