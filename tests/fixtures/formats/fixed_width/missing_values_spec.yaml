@@ -1,0 +1,16 @@
+columns:
+  - name: id
+    start: 0
+    length: 3
+    type: INTEGER
+    trim: true
+  - name: name
+    start: 3
+    length: 20
+    type: VARCHAR
+    trim: true
+  - name: age
+    start: 23
+    length: 3
+    type: INTEGER
+    trim: true
