@@ -1,15 +1,35 @@
 """Shared pytest configuration and fixtures for Fairway tests."""
+import os
 import pytest
 from pathlib import Path
 
 
-# ============ Markers ============
-def pytest_configure(config):
-    """Register custom markers."""
-    config.addinivalue_line("markers", "hpc: requires SLURM cluster")
-    config.addinivalue_line("markers", "slow: marks tests as slow-running")
+# ============ PySpark Skip Policy (RULE-113) ============
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Warn when PySpark tests were skipped (local dev without Spark/Java)."""
+    skipped = terminalreporter.stats.get("skipped", [])
+    spark_skips = [s for s in skipped if "pyspark" in str(getattr(s, "longrepr", "")).lower()
+                   or "pyspark" in str(getattr(s, "keywords", "")).lower()]
+    if spark_skips:
+        terminalreporter.write_line(
+            f"WARNING: {len(spark_skips)} PySpark test(s) skipped "
+            f"— run `make test-docker` for full coverage",
+            yellow=True,
+        )
 
 
+def pytest_collection_modifyitems(config, items):
+    """In Docker (FAIRWAY_TEST_ENV=docker), convert PySpark skips to failures."""
+    if os.environ.get("FAIRWAY_TEST_ENV") != "docker":
+        return
+    for item in items:
+        for marker in item.iter_markers("skip"):
+            reason = marker.kwargs.get("reason", "")
+            if "pyspark" in reason.lower():
+                item.add_marker(pytest.mark.xfail(
+                    reason=f"FAIRWAY_TEST_ENV=docker: PySpark must be available ({reason})",
+                    strict=True,
+                ))
 
 
 # ============ Path Fixtures ============
@@ -36,84 +56,35 @@ def duckdb_engine():
 
 
 @pytest.fixture(scope="session")
-def spark_session():
-    """Shared Spark session for all tests. Properly configured for macOS/local dev."""
-    pytest.importorskip("pyspark")
-    from pyspark.sql import SparkSession
+def _pyspark_engine_shared():
+    """Session-scoped real PySpark engine — full __init__ with JVM flags, Delta, etc.
 
-    spark = (SparkSession.builder
-        .master("local[1]")
-        .appName("fairway-tests")
-        .config("spark.driver.bindAddress", "127.0.0.1")
-        .config("spark.driver.host", "127.0.0.1")
-        .config("spark.ui.enabled", "false")
-        .getOrCreate())
-
-    yield spark
-    spark.stop()
-
-
-@pytest.fixture(scope="session")
-def spark_session_2():
-    """Two-executor Spark session — required for salting distribution tests.
-
-    PySpark allows only one SparkContext per JVM. This fixture stops any
-    existing session and creates a fresh local[2] session for distribution tests.
-    Tests using this fixture must NOT run concurrently with tests using spark_session.
+    Skips entire session's PySpark tests if PySpark is unavailable.
     """
     pytest.importorskip("pyspark")
-    from pyspark.sql import SparkSession
-    from pyspark import SparkContext
-
-    # Stop any active SparkContext before creating a new one with different config
-    existing = SparkContext._active_spark_context
-    if existing is not None:
-        SparkSession.getActiveSession().stop()
-
-    spark = (SparkSession.builder
-        .master("local[2]")
-        .appName("fairway-tests-salting")
-        .config("spark.driver.bindAddress", "127.0.0.1")
-        .config("spark.driver.host", "127.0.0.1")
-        .config("spark.ui.enabled", "false")
-        .getOrCreate())
-    yield spark
-    spark.stop()
+    from fairway.engines.pyspark_engine import PySparkEngine
+    engine = PySparkEngine()
+    yield engine
+    engine.stop()
 
 
 @pytest.fixture
-def pyspark_engine(spark_session):
-    """PySpark engine using shared session. Skips if PySpark unavailable."""
-    from fairway.engines.pyspark_engine import PySparkEngine
-    engine = PySparkEngine.__new__(PySparkEngine)
-    engine.spark = spark_session
-    return engine
+def pyspark_engine(_pyspark_engine_shared):
+    """Per-test PySpark engine (shared session, real constructor)."""
+    return _pyspark_engine_shared
 
 
 @pytest.fixture(params=["duckdb", "pyspark"])
 def engine(request):
-    """Parametrized fixture - tests run against both engines.
+    """Parametrized fixture — tests run against both engines.
 
     DuckDB runs always. PySpark skips if not available.
-    spark_session is lazy-loaded only when param == 'pyspark'.
     """
     if request.param == "duckdb":
         from fairway.engines.duckdb_engine import DuckDBEngine
         return DuckDBEngine()
     else:
-        pytest.importorskip("pyspark")
-        spark = request.getfixturevalue("spark_session")
-        from fairway.engines.pyspark_engine import PySparkEngine
-        eng = PySparkEngine.__new__(PySparkEngine)
-        eng.spark = spark
-        return eng
-
-
-@pytest.fixture
-def duckdb_only_engine():
-    """DuckDB engine only - for tests that shouldn't run on PySpark."""
-    from fairway.engines.duckdb_engine import DuckDBEngine
-    return DuckDBEngine()
+        return request.getfixturevalue("pyspark_engine")
 
 
 # ============ CLI Fixtures ============
