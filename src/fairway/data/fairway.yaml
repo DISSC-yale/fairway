@@ -2,12 +2,12 @@
 # This file configures the data ingestion pipeline, including tables, schema, validation, and enrichment.
 
 # Name of the dataset being processed
-dataset_name: "{name}"
+dataset_name: "$name"
 
 # Execution Engine: 'duckdb' (local/single-node) or 'pyspark' (distributed)
 # Options: 'duckdb', 'pyspark'
 # Default is 'duckdb' if not specified.
-engine: "{engine_type}"
+engine: "$engine_type"
 
 # Storage Configuration (Medallion Layout)
 # Directories are derived from root: root/raw, root/processed, root/curated

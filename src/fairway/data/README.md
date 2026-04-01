@@ -1,8 +1,8 @@
-# {name}
+# $name
 
-Initialized by fairway on {timestamp}
+Initialized by fairway on $timestamp
 
-**Engine**: {engine}
+**Engine**: $engine
 
 ## Quick Start
 

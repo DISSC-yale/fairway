@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from datetime import datetime
+from string import Template
 from .generate_test_data import generate_test_data
 
 
@@ -134,7 +135,7 @@ def init(name, engine):
     # Create config.yaml
     engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
     from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
-    config_content = CONFIG_TEMPLATE.format(name=name, engine_type=engine_type)
+    config_content = Template(CONFIG_TEMPLATE).safe_substitute(name=name, engine_type=engine_type)
     
     with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
         f.write(config_content)
@@ -167,7 +168,7 @@ def init(name, engine):
 
     # Create README.md with usage examples
 
-    readme_content = README_TEMPLATE.format(
+    readme_content = Template(README_TEMPLATE).safe_substitute(
         name=name,
         timestamp=datetime.now().isoformat(),
         engine=engine
@@ -194,7 +195,7 @@ def init(name, engine):
     click.echo("  Created file: scripts/fairway-hpc.sh")
 
     # Create docs/getting-started.md
-    docs_content = DOCS_TEMPLATE.format(
+    docs_content = Template(DOCS_TEMPLATE).safe_substitute(
         name=name,
         engine_type=engine_type
     )
