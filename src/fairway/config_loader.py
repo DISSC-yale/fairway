@@ -37,7 +37,6 @@ class Config:
 
         # Medallion directory layout: raw / processed / curated
         self.output_root = self.storage.get('root', 'data')
-        self.raw_dir = self.storage.get('raw', os.path.join(self.output_root, 'raw'))
         self.processed_dir = self.storage.get('processed', os.path.join(self.output_root, 'processed'))
         self.curated_dir = self.storage.get('curated', os.path.join(self.output_root, 'curated'))
 
@@ -53,7 +52,6 @@ class Config:
 
         self.tables = self._expand_tables(raw_tables)
         self._validate()  # Fail fast on config errors
-        self.validations = self.data.get('validations', {})
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
         self.output_format = self.storage.get('format', 'parquet').lower()
