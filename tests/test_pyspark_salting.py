@@ -8,23 +8,19 @@ from pyspark.sql import functions as F
 class TestSaltingDistribution:
     """Salting must spread skewed data across multiple salt buckets."""
 
-    def test_salting_distributes_skewed_data(self, spark_session_2, tmp_path):
+    def test_salting_distributes_skewed_data(self, pyspark_engine, tmp_path):
         """
         950 rows with category=A, 50 with category=B.
         With target_rows=100, num_salts = 1000 // 100 = 10.
         Each category=A bucket must have <1000 rows (not all skewed data in one partition).
         """
-        from fairway.engines.pyspark_engine import PySparkEngine
-        engine = PySparkEngine.__new__(PySparkEngine)
-        engine.spark = spark_session_2
-
         data = [{"id": i, "category": "A"} for i in range(950)]
         data += [{"id": i + 1000, "category": "B"} for i in range(50)]
-        df = engine.spark.createDataFrame(data)
+        df = pyspark_engine.spark.createDataFrame(data)
         df.write.mode("overwrite").parquet(str(tmp_path / "input"))
 
         output = tmp_path / "output"
-        engine.ingest(
+        pyspark_engine.ingest(
             str(tmp_path / "input"),
             str(output),
             format="parquet",
@@ -33,7 +29,7 @@ class TestSaltingDistribution:
             target_rows=100,
         )
 
-        result = engine.spark.read.parquet(str(output))
+        result = pyspark_engine.spark.read.parquet(str(output))
 
         # 1. Row count preserved
         assert result.count() == 1000
@@ -62,18 +58,14 @@ class TestSaltingDistribution:
             f"category=A still confined to 1 salt bucket after salting"
         )
 
-    def test_salting_preserves_all_rows(self, spark_session_2, tmp_path):
+    def test_salting_preserves_all_rows(self, pyspark_engine, tmp_path):
         """Salting must never drop data."""
-        from fairway.engines.pyspark_engine import PySparkEngine
-        engine = PySparkEngine.__new__(PySparkEngine)
-        engine.spark = spark_session_2
-
         data = [{"id": i, "category": "A" if i % 10 != 0 else "B"} for i in range(500)]
-        df = engine.spark.createDataFrame(data)
+        df = pyspark_engine.spark.createDataFrame(data)
         df.write.mode("overwrite").parquet(str(tmp_path / "input"))
 
         output = tmp_path / "output"
-        engine.ingest(
+        pyspark_engine.ingest(
             str(tmp_path / "input"),
             str(output),
             format="parquet",
@@ -82,33 +74,29 @@ class TestSaltingDistribution:
             target_rows=50,
         )
 
-        result = engine.spark.read.parquet(str(output))
+        result = pyspark_engine.spark.read.parquet(str(output))
         assert result.count() == 500
 
-    def test_small_dataset_uses_single_salt(self, spark_session_2, tmp_path):
+    def test_small_dataset_uses_single_salt(self, pyspark_engine, tmp_path):
         """
         When total_rows < target_rows, num_salts=1 — no distribution needed.
         This is correct: small datasets shouldn't pay the salting overhead.
         """
-        from fairway.engines.pyspark_engine import PySparkEngine
-        engine = PySparkEngine.__new__(PySparkEngine)
-        engine.spark = spark_session_2
-
         data = [{"id": i, "category": "A"} for i in range(100)]
-        df = engine.spark.createDataFrame(data)
+        df = pyspark_engine.spark.createDataFrame(data)
         df.write.mode("overwrite").parquet(str(tmp_path / "input"))
 
         output = tmp_path / "output"
-        engine.ingest(
+        pyspark_engine.ingest(
             str(tmp_path / "input"),
             str(output),
             format="parquet",
             partition_by=["category"],
             balanced=True,
-            target_rows=500_000,  # num_salts = 100 // 500000 = 0 → max(1, 0) = 1
+            target_rows=500_000,  # num_salts = 100 // 500000 = 0 -> max(1, 0) = 1
         )
 
-        result = engine.spark.read.parquet(str(output))
+        result = pyspark_engine.spark.read.parquet(str(output))
         distinct_salts = result.select("salt").distinct().count()
         assert distinct_salts == 1, (
             f"Expected 1 salt for small dataset, got {distinct_salts}"
