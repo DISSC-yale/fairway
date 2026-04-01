@@ -6,9 +6,8 @@ from pathlib import Path
 # ============ Markers ============
 def pytest_configure(config):
     """Register custom markers."""
-    config.addinivalue_line("markers", "local: runs without Spark (DuckDB only)")
-    config.addinivalue_line("markers", "spark: requires PySpark + Java")
     config.addinivalue_line("markers", "hpc: requires SLURM cluster")
+    config.addinivalue_line("markers", "slow: marks tests as slow-running")
 
 
 
@@ -56,9 +55,21 @@ def spark_session():
 
 @pytest.fixture(scope="session")
 def spark_session_2():
-    """Two-executor Spark session — required for salting distribution tests."""
+    """Two-executor Spark session — required for salting distribution tests.
+
+    PySpark allows only one SparkContext per JVM. This fixture stops any
+    existing session and creates a fresh local[2] session for distribution tests.
+    Tests using this fixture must NOT run concurrently with tests using spark_session.
+    """
     pytest.importorskip("pyspark")
     from pyspark.sql import SparkSession
+    from pyspark import SparkContext
+
+    # Stop any active SparkContext before creating a new one with different config
+    existing = SparkContext._active_spark_context
+    if existing is not None:
+        SparkSession.getActiveSession().stop()
+
     spark = (SparkSession.builder
         .master("local[2]")
         .appName("fairway-tests-salting")
