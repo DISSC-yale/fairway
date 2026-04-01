@@ -8,8 +8,7 @@ from pathlib import Path
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Warn when PySpark tests were skipped (local dev without Spark/Java)."""
     skipped = terminalreporter.stats.get("skipped", [])
-    spark_skips = [s for s in skipped if "pyspark" in str(getattr(s, "longrepr", "")).lower()
-                   or "pyspark" in str(getattr(s, "keywords", "")).lower()]
+    spark_skips = [s for s in skipped if "pyspark" in str(getattr(s, "longrepr", "")).lower()]
     if spark_skips:
         terminalreporter.write_line(
             f"WARNING: {len(spark_skips)} PySpark test(s) skipped "
