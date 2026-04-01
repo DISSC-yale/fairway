@@ -498,3 +498,65 @@ class TestManifestStore:
         tables = store.list_tables()
         assert "sales" in tables
         assert "customers" in tables
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level manifest tests (incremental processing)
+# ---------------------------------------------------------------------------
+
+class TestManifestThroughPipeline:
+    """Pipeline must use the manifest to skip unchanged files on second run."""
+
+    def test_second_run_skips_unchanged_file(self, fixtures_dir, tmp_path, monkeypatch):
+        """Second run with same input must not rewrite output."""
+        import time
+        from tests.helpers import build_config, get_output_mtime
+        from fairway.pipeline import IngestionPipeline
+
+        monkeypatch.chdir(tmp_path)
+        config = build_config(tmp_path, table={
+            "name": "incremental",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+        })
+        pipeline = IngestionPipeline(config)
+        pipeline.run()
+        mtime_first = get_output_mtime(tmp_path, "incremental")
+
+        time.sleep(0.05)
+        pipeline.run()
+        mtime_second = get_output_mtime(tmp_path, "incremental")
+
+        assert mtime_first == mtime_second, (
+            "Output was rewritten on second run — manifest not preventing re-processing"
+        )
+
+    def test_modified_file_triggers_reprocess(self, tmp_path, monkeypatch):
+        """Appending a row to the source must cause reprocess on next run."""
+        from tests.helpers import build_config, read_curated
+        from fairway.pipeline import IngestionPipeline
+
+        monkeypatch.chdir(tmp_path)
+        # Write a local copy so we can modify it
+        source = tmp_path / "source.csv"
+        source.write_text("id,name,value\n1,alice,100\n2,bob,200\n")
+
+        config = build_config(tmp_path, table={
+            "name": "modified",
+            "path": str(source),
+            "format": "csv",
+            "write_mode": "overwrite",
+        })
+        pipeline = IngestionPipeline(config)
+        pipeline.run()
+        first_count = len(read_curated(tmp_path, "modified"))
+        assert first_count == 2
+
+        # Modify source file
+        source.write_text("id,name,value\n1,alice,100\n2,bob,200\n3,carol,300\n")
+
+        pipeline.run()
+        second_count = len(read_curated(tmp_path, "modified"))
+        assert second_count == 3, (
+            f"Expected 3 rows after reprocess, got {second_count}"
+        )
