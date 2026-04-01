@@ -21,7 +21,7 @@ class TestSchemaEnforcement:
             "name": "typed",
             "path": str(fixtures_dir / "formats" / "csv" / "bad_schema.csv"),
             "format": "csv",
-            "schema": {"id": "INTEGER", "name": "VARCHAR"},
+            "schema": {"id": "INTEGER", "name": "VARCHAR", "value": "STRING"},
             "type_enforcement": {"enabled": True},
         })
         from fairway.pipeline import IngestionPipeline
