@@ -30,12 +30,19 @@ ENGINE_ALIASES = {"spark": "pyspark"}
 def normalize_engine_name(engine):
     """Return the canonical engine name for an input string.
 
-    Accepts aliases (e.g. 'spark' -> 'pyspark'). Returns the input
-    unchanged if already canonical. Does NOT validate; callers are
-    expected to check membership in VALID_ENGINES afterwards.
+    Behavior:
+      - Alias lookup: 'spark' -> 'pyspark' (case-insensitive, whitespace-stripped)
+      - Canonical name ('duckdb', 'pyspark') passes through unchanged
+      - None and non-string input pass through unchanged so the caller can
+        reject with VALID_ENGINES membership instead of crashing here
+      - Whitespace-only strings collapse to "" (empty string, not the
+        original) — the caller treats empty as "missing"
+
+    Does NOT validate; callers are expected to check membership in
+    VALID_ENGINES afterwards.
     """
-    if not engine:
-        return engine
+    if engine is None:
+        return None
     if not isinstance(engine, str):
         return engine
     key = engine.strip().lower()

@@ -671,7 +671,7 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
 
         job_script = f'''#!/bin/bash
 #SBATCH --job-name=fairway_summary
-#SBATCH --output=logs/slurm/summary_%j.log
+#SBATCH --output={constants.DEFAULT_LOG_DIR}/summary_%j.log
 #SBATCH --time={slurm_time}
 #SBATCH --mem={mem}
 #SBATCH --cpus-per-task={cpus}
@@ -681,13 +681,13 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
 set -e
 
 # Ensure log directory exists
-mkdir -p logs/slurm
+mkdir -p {constants.DEFAULT_LOG_DIR}
 
 # =============================================================================
 # Apptainer Mode Detection
 # =============================================================================
 USE_APPTAINER="no"
-FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
+FAIRWAY_SIF="${{{constants.FAIRWAY_SIF_ENV_VAR}:-{constants.DEFAULT_SIF_NAME}}}"
 FAIRWAY_BINDS="{apptainer_binds}"
 
 if [ -f "$FAIRWAY_SIF" ]; then
@@ -1019,7 +1019,7 @@ def _get_dev_bind_path():
 
 @main.command()
 @click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
-@click.option('--image', default=None, help='Path to Apptainer image (default: checks local fairway.sif then pulls from registry).')
+@click.option('--image', default=None, help=f'Path to Apptainer image (default: checks local {constants.DEFAULT_SIF_NAME} then pulls from registry).')
 @click.option('--bind', multiple=True, help='Additional bind paths.')
 @click.option('--dev', is_flag=True, help='Dev mode: bind-mount local src/fairway over container package for rapid iteration.')
 def shell(config, image, bind, dev):
@@ -1254,7 +1254,7 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
     if with_spark:
         job_script = f'''#!/bin/bash
 #SBATCH --job-name=fairway_pipeline
-#SBATCH --output=logs/slurm/fairway_%j.log
+#SBATCH --output={constants.DEFAULT_LOG_DIR}/fairway_%j.log
 #SBATCH --time={time}
 #SBATCH --mem={mem}
 #SBATCH --cpus-per-task={cpus}
@@ -1264,16 +1264,16 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
 set -e
 
 # Ensure log directory exists
-mkdir -p logs/slurm
+mkdir -p {constants.DEFAULT_LOG_DIR}
 
 # =============================================================================
 # Apptainer Mode Detection
 # =============================================================================
 # Detect if we should use Apptainer mode based on:
-# 1. FAIRWAY_SIF environment variable
-# 2. Local fairway.sif file
+# 1. {constants.FAIRWAY_SIF_ENV_VAR} environment variable
+# 2. Local {constants.DEFAULT_SIF_NAME} file
 USE_APPTAINER="no"
-FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
+FAIRWAY_SIF="${{{constants.FAIRWAY_SIF_ENV_VAR}:-{constants.DEFAULT_SIF_NAME}}}"
 FAIRWAY_BINDS="{apptainer_binds}"
 
 if [ -f "$FAIRWAY_SIF" ]; then
@@ -1375,7 +1375,7 @@ echo "Pipeline completed successfully."
     else:
         job_script = f'''#!/bin/bash
 #SBATCH --job-name=fairway_pipeline
-#SBATCH --output=logs/slurm/fairway_%j.log
+#SBATCH --output={constants.DEFAULT_LOG_DIR}/fairway_%j.log
 #SBATCH --time={time}
 #SBATCH --mem={mem}
 #SBATCH --cpus-per-task={cpus}
@@ -1385,7 +1385,7 @@ echo "Pipeline completed successfully."
 set -e
 
 # Ensure log directory exists
-mkdir -p logs/slurm
+mkdir -p {constants.DEFAULT_LOG_DIR}
 
 # Run pipeline (no Spark cluster)
 echo "Running pipeline..."
