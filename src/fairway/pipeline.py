@@ -244,10 +244,12 @@ class IngestionPipeline:
         self._engine = value
 
     def _get_engine(self, spark_master=None, engine_override=None, spark_conf=None):
-        # CLI override takes precedence over config
-        engine_type = engine_override or (self.config.engine.lower() if self.config.engine else 'duckdb')
+        from .constants import VALID_ENGINES, normalize_engine_name
+        # CLI override takes precedence over config; normalize aliases ('spark' -> 'pyspark')
+        raw = engine_override or self.config.engine or 'duckdb'
+        engine_type = normalize_engine_name(raw)
 
-        if engine_type in ['pyspark', 'spark']:
+        if engine_type == 'pyspark':
             try:
                 from .engines.pyspark_engine import PySparkEngine
                 return PySparkEngine(spark_master, spark_conf=spark_conf)
@@ -257,7 +259,9 @@ class IngestionPipeline:
             from .engines.duckdb_engine import DuckDBEngine
             return DuckDBEngine()
         else:
-            raise ValueError(f"Unknown engine: {engine_type}. Supported engines: 'duckdb', 'spark'") 
+            raise ValueError(
+                f"Unknown engine: {engine_type}. Supported engines: {sorted(VALID_ENGINES)}"
+            )
 
     def _preprocess(self, table):
         """

@@ -1,4 +1,6 @@
 Bootstrap: docker
+# If bumping this base image, update constants.CONTAINER_PYTHON_VERSION
+# (the dev-mode bind path in cli.py reads that constant).
 From: python:3.10-slim-bookworm
 
 %labels

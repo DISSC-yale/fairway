@@ -435,7 +435,8 @@ class Config:
 
 
                     execution_mode = tbl.get('preprocess', {}).get('execution_mode', 'driver')
-                    if execution_mode == 'cluster' and self.engine not in ['pyspark', 'spark']:
+                    from fairway.constants import normalize_engine_name
+                    if execution_mode == 'cluster' and normalize_engine_name(self.engine) != 'pyspark':
                          raise ValueError(f"Configuration Error: 'execution_mode: cluster' is only available with 'engine: pyspark'. Table: {tbl.get('name')}")
 
                     # Resolve file paths relative to config dir

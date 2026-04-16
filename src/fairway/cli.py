@@ -7,6 +7,8 @@ import sys
 from datetime import datetime
 from string import Template
 from .generate_test_data import generate_test_data
+from . import constants
+from .constants import normalize_engine_name
 
 
 def _validate_slurm_param(value, param_name, pattern, max_length=64):
@@ -112,11 +114,11 @@ def main():
 
 @main.command()
 @click.argument('name')
-@click.option('--engine', type=click.Choice(['duckdb', 'spark']), required=True, help='Compute engine to use (duckdb or spark).')
+@click.option('--engine', type=click.Choice(['duckdb', 'spark', 'pyspark']), required=True, help='Compute engine to use (duckdb or spark).')
 def init(name, engine):
     """Initialize a new fairway project."""
     click.echo(f"Initializing new fairway project: {name} with engine: {engine}")
-    
+
     directories = [
         'config',
         'data/raw',
@@ -125,21 +127,21 @@ def init(name, engine):
         'src/transformations',
         'docs',
         'scripts',
-        'logs/slurm',
+        constants.DEFAULT_LOG_DIR,
     ]
-    
+
     for d in directories:
         os.makedirs(os.path.join(name, d), exist_ok=True)
         click.echo(f"  Created directory: {d}")
 
     # Create config.yaml
-    engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
+    engine_type = normalize_engine_name(engine)
     from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
     config_content = Template(CONFIG_TEMPLATE).safe_substitute(name=name, engine_type=engine_type)
     
-    with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
+    with open(os.path.join(name, constants.DEFAULT_CONFIG_PATH), 'w') as f:
         f.write(config_content)
-    click.echo("  Created file: config/fairway.yaml")
+    click.echo(f"  Created file: {constants.DEFAULT_CONFIG_PATH}")
     
     # Write .dockerignore
     from .templates import DOCKERIGNORE
@@ -275,12 +277,12 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, ac
         cfg = Config(config)
 
         # Determine engine: CLI flag > config > default (duckdb)
-        config_engine = cfg.engine.lower() if cfg.engine else 'duckdb'
-        effective_engine = engine if engine else config_engine
+        config_engine = cfg.engine if cfg.engine else 'duckdb'
+        effective_engine = normalize_engine_name(engine if engine else config_engine)
 
         click.echo(f"Using engine: {effective_engine}")
 
-        if effective_engine in ['pyspark', 'spark']:
+        if effective_engine == 'pyspark':
             # Use Spark - requires spark_master for distributed mode
             if spark_master:
                 click.echo(f"Spark master: {spark_master}")
@@ -453,7 +455,7 @@ def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
     apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
 
     # Check if running in Apptainer mode
-    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+    sif_path = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR, constants.DEFAULT_SIF_NAME)
     use_apptainer = os.path.exists(sif_path)
 
     if use_apptainer and not apptainer_binds:
@@ -469,7 +471,7 @@ def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
         click.echo(f"Auto-detected bind paths: {apptainer_binds}")
 
     # Load defaults from spark.yaml
-    spark_yaml_path = 'config/spark.yaml'
+    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
     spark_defaults = {}
     if os.path.exists(spark_yaml_path):
         with open(spark_yaml_path, 'r') as f:
@@ -550,7 +552,7 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
 
     # Load spark_conf from spark.yaml for executor settings
     spark_conf = None
-    spark_yaml_path = 'config/spark.yaml'
+    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
     if os.path.exists(spark_yaml_path):
         with open(spark_yaml_path, 'r') as f:
             spark_defaults = yaml.safe_load(f) or {}
@@ -631,7 +633,7 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
         apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
 
         # Check if running in Apptainer mode (fairway.sif exists)
-        sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+        sif_path = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR, constants.DEFAULT_SIF_NAME)
         use_apptainer = os.path.exists(sif_path)
 
         if use_apptainer and not apptainer_binds:
@@ -647,7 +649,7 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
             click.echo(f"Auto-detected bind paths: {apptainer_binds}")
 
         # Load spark.yaml for account default
-        spark_yaml_path = 'config/spark.yaml'
+        spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
         if os.path.exists(spark_yaml_path):
             with open(spark_yaml_path, 'r') as f:
                 spark_defaults = yaml.safe_load(f) or {}
@@ -740,7 +742,7 @@ echo "Summary generation completed successfully."
 '''
 
         # Ensure logs directory exists
-        os.makedirs('logs/slurm', exist_ok=True)
+        os.makedirs(constants.DEFAULT_LOG_DIR, exist_ok=True)
 
         # Write to temp file and submit
         with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
@@ -777,7 +779,7 @@ echo "Summary generation completed successfully."
 
     # Load spark_conf from spark.yaml for executor settings
     spark_conf = None
-    spark_yaml_path = 'config/spark.yaml'
+    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
     if os.path.exists(spark_yaml_path):
         with open(spark_yaml_path, 'r') as f:
             spark_defaults = yaml.safe_load(f) or {}
@@ -1009,8 +1011,8 @@ def _get_dev_bind_path():
         local_src = os.path.dirname(os.path.abspath(__file__))
 
     if os.path.isdir(local_src):
-        # Container's installed package location
-        container_pkg = "/opt/venv/lib/python3.10/site-packages/fairway"
+        # Container's installed package location — see constants.CONTAINER_PYTHON_VERSION
+        container_pkg = f"/opt/venv/lib/{constants.CONTAINER_PYTHON_VERSION}/site-packages/fairway"
         return f"{local_src}:{container_pkg}"
     return None
 
@@ -1209,7 +1211,7 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
     apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
 
     # Check if running in Apptainer mode (fairway.sif exists)
-    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
+    sif_path = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR, constants.DEFAULT_SIF_NAME)
     use_apptainer = os.path.exists(sif_path)
 
     if use_apptainer and not apptainer_binds:
@@ -1225,7 +1227,7 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
         click.echo(f"Auto-detected bind paths: {apptainer_binds}")
 
     # Load spark.yaml for defaults
-    spark_yaml_path = 'config/spark.yaml'
+    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
     spark_defaults = {}
     if os.path.exists(spark_yaml_path):
         with open(spark_yaml_path, 'r') as f:
@@ -1582,7 +1584,7 @@ def cache():
 @click.option('--force', is_flag=True, help='Skip confirmation prompt.')
 def clean(force):
     """Clear the archive extraction cache (.fairway_cache/)."""
-    cache_dir = '.fairway_cache'
+    cache_dir = constants.DEFAULT_CACHE_DIR
 
     if not os.path.exists(cache_dir):
         click.echo("No cache directory found.")

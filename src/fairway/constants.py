@@ -16,9 +16,28 @@ DEFAULT_CURATED_DIR = "curated"
 FAIRWAY_SIF_ENV_VAR = "FAIRWAY_SIF"
 DEFAULT_SIF_NAME = "fairway.sif"
 DEFAULT_CONTAINER_IMAGE = "docker://ghcr.io/dissc-yale/fairway:latest"
+# Python version shipped in the container. Used to construct the
+# site-packages bind path in dev mode. Must match FROM python:X.Y in
+# src/fairway/data/Dockerfile and the venv in src/fairway/data/Apptainer.def.
+CONTAINER_PYTHON_VERSION = "python3.10"
 
-# Engine names
+# Engine names. Canonical set; `ENGINE_ALIASES` maps user-facing aliases into
+# this set so the rest of the codebase sees a single name per engine.
 VALID_ENGINES = frozenset({"duckdb", "pyspark"})
+ENGINE_ALIASES = {"spark": "pyspark"}
+
+
+def normalize_engine_name(engine):
+    """Return the canonical engine name for an input string.
+
+    Accepts aliases (e.g. 'spark' -> 'pyspark'). Returns the input
+    unchanged if already canonical. Does NOT validate; callers are
+    expected to check membership in VALID_ENGINES afterwards.
+    """
+    if not engine:
+        return engine
+    key = engine.lower()
+    return ENGINE_ALIASES.get(key, key)
 
 # Slurm defaults (no personal account — must be set explicitly)
 DEFAULT_SLURM_PARTITION = "day"
