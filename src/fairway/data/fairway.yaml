@@ -2,12 +2,12 @@
 # This file configures the data ingestion pipeline, including tables, schema, validation, and enrichment.
 
 # Name of the dataset being processed
-dataset_name: "{name}"
+dataset_name: "$name"
 
 # Execution Engine: 'duckdb' (local/single-node) or 'pyspark' (distributed)
 # Options: 'duckdb', 'pyspark'
 # Default is 'duckdb' if not specified.
-engine: "{engine_type}"
+engine: "$engine_type"
 
 # Storage Configuration (Medallion Layout)
 # Directories are derived from root: root/raw, root/processed, root/curated
@@ -123,12 +123,12 @@ tables:
   #   #     - name: id
   #   #       start: 0      # 0-indexed character position
   #   #       length: 5     # Number of characters
-  #   #       type: INTEGER # Native engine type (INTEGER, VARCHAR, DOUBLE, etc.)
+  #   #       type: INTEGER # Native engine type (INTEGER, STRING, DOUBLE, etc.) — VARCHAR auto-converted to STRING for Spark compatibility
   #   #       trim: true    # Optional: strip whitespace (default: false)
   #   #     - name: description
   #   #       start: 5
   #   #       length: 30
-  #   #       type: VARCHAR
+  #   #       type: STRING
   #   #       trim: true
 
   # Example: Handling Zipped Data with Metadata in Filename (legacy preprocess approach)
@@ -226,11 +226,3 @@ performance:
   # When enabled, adds a 'salt' column to distribute data evenly across partitions.
   # Only applies when partition_by is set.
   # salting: false
-
-# ─────────────────────────────────────────────────────────────
-# Redivis Export Configuration (Optional)
-# ─────────────────────────────────────────────────────────────
-# redivis:
-#   user: "username"
-#   dataset: "dataset_name"
-#   public_access_level: "none"  # Options: 'none', 'overview', 'metadata', 'data'

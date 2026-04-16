@@ -8,7 +8,7 @@ This approach prioritizes data integrity and predictability. It ensures that all
 
 ### Logic
 - **Missing Columns**: If the source is missing a column defined in the schema, it is filled with `null`.
-- **Extra Columns**: If the source has columns NOT in the schema, the pipeline **FAILS** with a `Data Integrity Error` ([RULE-115]). This prevents silent data loss.
+- **Extra Columns**: If the source has columns NOT in the schema, the pipeline **FAILS** with a `Data Integrity Error`. This prevents silent data loss.
 - **Type Casting**: Columns are cast to the target types defined in the schema.
 
 ### Configuration
@@ -25,7 +25,9 @@ sources:
     # output_format defaults to 'parquet'
 ```
 
-## 2. Delta Lake Evolution (The "Lakehouse" Approach)
+## 2. Delta Lake Evolution (The "Lakehouse" Approach) *(Experimental)*
+
+> **Experimental:** Delta Lake support is under active development. APIs and behavior may change between releases.
 
 This approach leverages [Delta Lake](https://delta.io/) to manage schema evolution. The Delta transaction log tracks schema changes over time, allowing different Parquet files to have different schemas while presenting a unified view to readers.
 
@@ -54,7 +56,7 @@ sources:
 
 ## Comparison
 
-| Feature | Strict Schema (Parquet) | Delta Lake |
+| Feature | Strict Schema (Parquet) | Delta Lake *(Experimental)* |
 | :--- | :--- | :--- |
 | **Schema enforcement** | Strict (Fail on extra) | Flexible (Evolves) |
 | **Read Performance** | ⚡️ Fast | ⚡️ Fast (Metadata driven) |

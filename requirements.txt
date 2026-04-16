@@ -2,6 +2,7 @@ click
 pyyaml
 fsspec
 mkdocs-material
+mkdocs-coverage
 pandas
 pyspark
 duckdb

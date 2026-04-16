@@ -250,15 +250,9 @@ class TestPySparkFixedWidth:
             shutil.rmtree(base_dir)
 
     @pytest.fixture
-    def spark_engine(self, spark_session):
-        """Use the shared spark session from conftest."""
-        from fairway.engines.pyspark_engine import PySparkEngine
-        engine = PySparkEngine.__new__(PySparkEngine)
-        engine.spark = spark_session
-        yield engine
-        # Detach the shared session so that engine.__del__ does NOT call
-        # spark_session.stop(), which would break subsequent tests.
-        engine.spark = None
+    def spark_engine(self, pyspark_engine):
+        """Use the shared PySpark engine from conftest."""
+        return pyspark_engine
 
     def test_basic_read(self, output_dir, spark_engine):
         """Ingest simple.txt → processed layer has correct trimmed STRING values."""

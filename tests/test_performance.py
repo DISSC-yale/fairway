@@ -201,19 +201,11 @@ except ImportError:
 class TestPySparkPerformance:
     """Tests for PySpark performance improvements."""
 
-    @pytest.fixture
-    def engine(self, spark_session):
-        """Use the shared spark session from conftest."""
-        from fairway.engines.pyspark_engine import PySparkEngine
-        engine = PySparkEngine.__new__(PySparkEngine)
-        engine.spark = spark_session
-        return engine
-
-    def test_salting_disabled_by_default_in_engine(self, engine, tmp_path):
+    def test_salting_disabled_by_default_in_engine(self, pyspark_engine, tmp_path):
         """D.1: Engine should not add salt column when balanced=False (default)."""
         # Create test data
         data = [{"id": i, "category": "A"} for i in range(100)]
-        df = engine.spark.createDataFrame(data)
+        df = pyspark_engine.spark.createDataFrame(data)
 
         input_path = str(tmp_path / "input")
         output_path = str(tmp_path / "output")
@@ -221,7 +213,7 @@ class TestPySparkPerformance:
         df.write.parquet(input_path)
 
         # Ingest with default balanced=False
-        engine.ingest(
+        pyspark_engine.ingest(
             input_path,
             output_path,
             format='parquet',
@@ -230,14 +222,14 @@ class TestPySparkPerformance:
         )
 
         # Read back and check NO salt column
-        result_df = engine.spark.read.parquet(output_path)
+        result_df = pyspark_engine.spark.read.parquet(output_path)
         assert "salt" not in result_df.columns, \
             "Salt column should NOT be present when balanced=False (default)"
 
-    def test_salting_enabled_when_balanced_true(self, engine, tmp_path):
+    def test_salting_enabled_when_balanced_true(self, pyspark_engine, tmp_path):
         """D.1: Engine should add salt column when balanced=True."""
         data = [{"id": i, "category": "A"} for i in range(100)]
-        df = engine.spark.createDataFrame(data)
+        df = pyspark_engine.spark.createDataFrame(data)
 
         input_path = str(tmp_path / "input_salt")
         output_path = str(tmp_path / "output_salt")
@@ -245,7 +237,7 @@ class TestPySparkPerformance:
         df.write.parquet(input_path)
 
         # Ingest with balanced=True explicitly
-        engine.ingest(
+        pyspark_engine.ingest(
             input_path,
             output_path,
             format='parquet',
@@ -254,15 +246,15 @@ class TestPySparkPerformance:
             target_rows=10  # Small value to force multiple salts
         )
 
-        result_df = engine.spark.read.parquet(output_path)
+        result_df = pyspark_engine.spark.read.parquet(output_path)
         assert "salt" in result_df.columns, \
             "Salt column should be present when balanced=True"
 
-    def test_max_records_per_file_applied(self, engine, tmp_path):
+    def test_max_records_per_file_applied(self, pyspark_engine, tmp_path):
         """D.2: maxRecordsPerFile should be applied based on target_file_size_mb."""
         # Create test data - enough rows to potentially split
         data = [{"id": i, "value": f"data_{i}"} for i in range(1000)]
-        df = engine.spark.createDataFrame(data)
+        df = pyspark_engine.spark.createDataFrame(data)
 
         input_path = str(tmp_path / "input_size")
         output_path = str(tmp_path / "output_size")
@@ -273,7 +265,7 @@ class TestPySparkPerformance:
         # With estimated_rows_per_mb=2000 and target_file_size_mb=1,
         # maxRecordsPerFile = 1 * 2000 = 2000
         # But with 1000 rows, we should still get output
-        engine.ingest(
+        pyspark_engine.ingest(
             input_path,
             output_path,
             format='parquet',
@@ -281,13 +273,13 @@ class TestPySparkPerformance:
         )
 
         # Verify output was created
-        result_df = engine.spark.read.parquet(output_path)
+        result_df = pyspark_engine.spark.read.parquet(output_path)
         assert result_df.count() == 1000, "All rows should be written"
 
-    def test_compression_option_applied(self, engine, tmp_path):
+    def test_compression_option_applied(self, pyspark_engine, tmp_path):
         """Compression option should be passed to writer."""
         data = [{"id": i, "value": f"data_{i}"} for i in range(100)]
-        df = engine.spark.createDataFrame(data)
+        df = pyspark_engine.spark.createDataFrame(data)
 
         input_path = str(tmp_path / "input_compress")
         output_path = str(tmp_path / "output_compress")
@@ -295,7 +287,7 @@ class TestPySparkPerformance:
         df.write.parquet(input_path)
 
         # Ingest with gzip compression
-        engine.ingest(
+        pyspark_engine.ingest(
             input_path,
             output_path,
             format='parquet',
@@ -303,5 +295,5 @@ class TestPySparkPerformance:
         )
 
         # Verify output was created (compression is internal detail)
-        result_df = engine.spark.read.parquet(output_path)
+        result_df = pyspark_engine.spark.read.parquet(output_path)
         assert result_df.count() == 100, "All rows should be written with compression"

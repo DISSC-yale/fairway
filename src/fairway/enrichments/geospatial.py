@@ -1,3 +1,8 @@
+"""
+PLACEHOLDER: Geospatial enrichment module.
+This is a stub implementation. Not production-ready.
+Geocoding logic is not yet implemented.
+"""
 # Mock enrichment logic as requested in notes.md
 import random
 

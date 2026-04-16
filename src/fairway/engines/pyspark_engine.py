@@ -12,6 +12,18 @@ import logging
 logger = logging.getLogger("fairway.engines.pyspark")
 
 
+def _normalize_spark_type(type_str):
+    """Normalize type strings for PySpark 4.x compatibility.
+
+    PySpark 4.x rejects bare 'VARCHAR' — requires 'VARCHAR(n)' or 'STRING'.
+    This normalizes 'VARCHAR' (without length) to 'STRING' so user configs
+    work across engine versions. VARCHAR(n) is left unchanged.
+    """
+    if type_str.upper() == 'VARCHAR':
+        return 'STRING'
+    return type_str
+
+
 class PySparkEngine:
     def __init__(self, spark_master=None, spark_conf=None):
         if SparkSession is None:
@@ -102,10 +114,6 @@ class PySparkEngine:
             finally:
                 self.spark = None
 
-    def __del__(self):
-        """Cleanup on garbage collection."""
-        self.stop()
-
     def ingest(self, input_path, output_path, format='csv', partition_by=None, balanced=False, metadata=None, naming_pattern=None, target_rows=500000, hive_partitioning=False, target_rows_per_file=None, schema=None, write_mode='overwrite', target_file_size_mb=128, compression='snappy', max_records_per_file=None, **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
@@ -157,6 +165,15 @@ class PySparkEngine:
                  reader = reader.option("header", "true")
             # Use provided schema instead of inferring when available (reduces memory overhead)
             if schema:
+                # RULE-115: Detect extra columns BEFORE applying schema.
+                # When reader.schema() is set, PySpark silently drops columns not in
+                # the schema at read time, so the post-read RULE-115 check would miss them.
+                # Read headers only (limit 0) to discover all source columns cheaply.
+                header_reader = self.spark.read.format(format).option("header", "true")
+                if 'recursiveFileLookup' not in kwargs:
+                    header_reader = header_reader.option("recursiveFileLookup", "true")
+                source_columns = set(header_reader.load(input_path).columns)
+
                 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, LongType, DoubleType, FloatType, BooleanType, TimestampType, DateType
                 TYPE_MAP = {
                     'STRING': StringType(), 'VARCHAR': StringType(),
@@ -172,6 +189,24 @@ class PySparkEngine:
                 ])
                 reader = reader.schema(spark_schema)
                 logger.info("Using provided schema (%d columns) - skipping inferSchema", len(schema))
+
+                # Check for extra columns using pre-schema source columns
+                expected_columns = set(schema.keys())
+                preserved_columns = set()
+                if metadata:
+                    preserved_columns.update(metadata.keys())
+                if partition_by:
+                    preserved_columns.update(partition_by)
+                if naming_pattern:
+                    import re as _re
+                    preserved_columns.update(_re.findall(r'\?P<([^>]+)>', naming_pattern))
+                extra_cols = source_columns - expected_columns - preserved_columns
+                if extra_cols:
+                    raise ValueError(
+                        f"[RULE-115] Data Integrity Error: Source file contains "
+                        f"{len(extra_cols)} extra columns not in strict schema: "
+                        f"{extra_cols}. Ingestion aborted to prevent data dropping."
+                    )
             elif 'inferSchema' not in kwargs:
                  logger.debug("No schema provided, using inferSchema=true (adds memory overhead)")
                  reader = reader.option("inferSchema", "true")
@@ -251,13 +286,14 @@ class PySparkEngine:
             # Align and Fill Missing Columns
             select_exprs = []
             for col_name, col_type in schema.items():
+                spark_type = _normalize_spark_type(col_type)
                 if col_name in df.columns:
                     # Cast to Ensure Type Strictness?
                     # Ideally yes, let's cast to the configured type string
-                    select_exprs.append(F.col(col_name).cast(col_type))
+                    select_exprs.append(F.col(col_name).cast(spark_type))
                 else:
                     # Fill Missing as Null (Safe Evolution)
-                    select_exprs.append(F.lit(None).cast(col_type).alias(col_name))
+                    select_exprs.append(F.lit(None).cast(spark_type).alias(col_name))
 
             # Also include preserved columns that exist in the DataFrame but not in schema
             for col_name in preserved_columns:

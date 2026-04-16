@@ -151,11 +151,16 @@ Ensure the pipeline remains importable even if optional dependencies (like DuckD
 
 ### [RULE-113] Test Environment Requirements
 
-**Priority:** MAY
+**Priority:** MUST
 **Category:** [PRO] Process & Workflow
 
 **Rule:**
-Some tests (e.g., PySpark) require a compatible Java environment. If testing locally on a machine without Spark/Java properly configured, these tests may fail or be skipped.
+PySpark tests require a compatible Java environment. Test skip policy depends on context:
+
+- **Docker/CI (`FAIRWAY_TEST_ENV=docker`):** PySpark tests MUST run. If PySpark is unavailable, tests MUST fail (not skip). A missing dependency in the container is a real error.
+- **Local development:** PySpark tests MAY be skipped when PySpark/Java is not installed, but pytest MUST emit a terminal summary warning reporting the number of skipped PySpark tests and directing the developer to `make test-docker` for full coverage.
+
+Test fixtures MUST use real engine constructors (`PySparkEngine()`) rather than bypassing initialization via `__new__`. This ensures tests exercise the same code path as production.
 
 ---
 

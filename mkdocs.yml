@@ -15,6 +15,9 @@ theme:
 
 plugins:
   - search
+  - coverage:
+      page_name: coverage
+      html_report_dir: htmlcov
 
 nav:
   - Welcome: index.md
@@ -38,6 +41,7 @@ nav:
     - Contributing: CONTRIB.md
     - Runbook: RUNBOOK.md
     - Release Notes: release.md
+    - Coverage Report: coverage.md
 
 markdown_extensions:
   - pymdownx.superfences:

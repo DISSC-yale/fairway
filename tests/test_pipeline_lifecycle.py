@@ -295,3 +295,67 @@ class TestCLIEngineCleanup:
         # For now, this test documents the current behavior.
         # If engine_init_count > 1, the finally block is triggering an extra init.
         # (The run itself may legitimately init the engine once for ingestion.)
+
+
+# ---------------------------------------------------------------------------
+# Import isolation: missing optional dependencies (merged from test_imports_isolation.py)
+# ---------------------------------------------------------------------------
+
+def test_missing_duckdb_import():
+    """
+    Test that we can import IngestionPipeline and initialize it with spark engine
+    even if duckdb module is completely missing from the environment.
+    """
+    import sys
+    import unittest.mock
+
+    # Mock duckdb as missing
+    with unittest.mock.patch.dict(sys.modules, {'duckdb': None}):
+        # Explicitly remove relevant modules from cache to force reload
+        for key in list(sys.modules.keys()):
+            if key.startswith('fairway'):
+                del sys.modules[key]
+
+        try:
+            from fairway.pipeline import IngestionPipeline
+        except ImportError as e:
+            pytest.fail(f"Failed to import IngestionPipeline when duckdb is missing: {e}")
+        except Exception as e:
+            pytest.fail(f"Unexpected error importing IngestionPipeline: {e}")
+
+        # If we configure for Spark, it should work (or fail with a pyspark-specific error).
+        with unittest.mock.patch('fairway.pipeline.Config') as MockConfig:
+            mock_config_instance = MockConfig.return_value
+            mock_config_instance.engine = 'pyspark'
+            mock_config_instance.dataset_name = 'test_dataset'
+
+            try:
+                pipeline = IngestionPipeline("dummy_config.yaml")
+            except SystemExit:
+                # Acceptable if pyspark is missing — proves we got past the duckdb import check.
+                pass
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Flexible ingestion: multiple source types (merged from test_flexible_ingestion.py)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.local
+def test_flexible_ingestion(tmp_path):
+    """Pipeline handles headerless, zipped, custom-script, and batch sources."""
+    import shutil
+
+    config_path = "tests/fairway_test_flexible.yaml"
+    if not os.path.exists(config_path):
+        pytest.skip("fairway_test_flexible.yaml fixture not present")
+
+    output_dir = tmp_path / "output"
+
+    from fairway.pipeline import IngestionPipeline
+    pipeline = IngestionPipeline(config_path)
+    try:
+        pipeline.run()
+    except Exception as e:
+        pytest.fail(f"Pipeline failed with error: {e}")

@@ -14,7 +14,6 @@ from .batcher import PartitionBatcher
 from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
-from .exporters.redivis_exporter import RedivisExporter
 from .logging_config import BatchLogger
 
 logger = logging.getLogger("fairway.pipeline")
@@ -190,7 +189,14 @@ class IngestionPipeline:
     def __init__(self, config_path, spark_master=None, engine_override=None, spark_conf=None):
         logger.debug("Loading local fairway.pipeline")
         self.config = Config(config_path)
-        self.manifest_store = ManifestStore()
+        # Use storage-root-based manifest dir when output_root is absolute (explicit config).
+        # Fall back to "manifest" (CWD-relative) when output_root is relative (default "data").
+        output_root = self.config.output_root
+        if os.path.isabs(output_root):
+            manifest_dir = os.path.join(output_root, "manifest")
+        else:
+            manifest_dir = "manifest"
+        self.manifest_store = ManifestStore(manifest_dir)
         self._engine = None  # Lazy-initialized; use self.engine property
         self._engine_args = (spark_master, engine_override, spark_conf)
         self._hash_cache = {}  # Cache for distributed hash results
@@ -453,11 +459,11 @@ class IngestionPipeline:
         file_glob = include_pattern if include_pattern else "*"
 
         if len(processed_paths) == 1:
-             # Single extraction directory - apply filter directly
-             if include_pattern:
-                 result_path = os.path.join(processed_paths[0], "**", file_glob)
-             else:
-                 result_path = processed_paths[0]
+             # Single extraction directory — return the directory itself.
+             # PySpark uses recursiveFileLookup=true to find files;
+             # DuckDB resolves globs internally. Embedding "**" in the path
+             # breaks Hadoop's file:// protocol which doesn't support "**".
+             result_path = processed_paths[0]
         else:
              # If multiple, return the common structure...
              if batch_dir:
@@ -783,33 +789,11 @@ class IngestionPipeline:
 
             # Update manifest with row_count
             table_manifest = self.manifest_store.get_table_manifest(table_name)
-            original_path = table['path']
-            table_manifest.update_file(original_path, status="success", metadata=stats, table_root=table.get('root'))
+            original_path = table.get('path') or table.get('archives')
+            if original_path:
+                table_manifest.update_file(original_path, status="success", metadata=stats, table_root=table.get('root'))
 
             logger.info("Summary complete for %s: %s rows, report at %s", table_name, f"{row_count:,}", report_path)
-
-            # Redivis export (depends on stats)
-            if self.config.redivis:
-                try:
-                    logger.info("Exporting %s to Redivis...", table_name)
-                    exporter = RedivisExporter(self.config.redivis)
-
-                    # Combine stats and regex-extracted metadata
-                    rich_metadata = stats.copy()
-                    rich_metadata.update(table.get('metadata', {}))
-                    rich_metadata['input_path'] = original_path
-
-                    # Use final_path for Redivis export
-                    exporter.upload_table(
-                        table_name=table_name,
-                        file_path=final_path,
-                        metadata=rich_metadata,
-                        schema=table.get('schema')
-                    )
-                    # Sync dataset level metadata if available
-                    exporter.update_dataset_metadata(description=f"Dataset: {self.config.dataset_name}")
-                except Exception as e:
-                    logger.error("Redivis export failed for %s: %s", table_name, e)
 
         logger.info("Summarization complete for dataset: %s", self.config.dataset_name)
 
@@ -857,6 +841,7 @@ class IngestionPipeline:
                     logger.error("Distributed hash check failed: %s. Falling back to driver check.", e)
 
         failed_tables = []
+        failed_table_errors = {}
         for table in self.config.tables:
             try:
                 # Get per-table manifest for this table
@@ -865,7 +850,8 @@ class IngestionPipeline:
                 # 0. Preprocessing
                 # Preprocess returns a modified path (e.g. to temp unzipped files)
                 # Table dict is unmodified, we just change the variable we use for input
-                original_path = table['path']
+                # For archives-only tables (no path key), use archives as the manifest key
+                original_path = table.get('path') or table.get('archives')
 
                 # Use pre-computed preprocessing result if available, otherwise run now
                 def get_preprocessed_path():
@@ -1143,7 +1129,7 @@ class IngestionPipeline:
                                     computed_hash=file_hashes.get(file_path)
                                 )
                         table_manifest.update_file(original_path, status="failed", metadata={"errors": errors}, table_root=table.get('root'))
-                        # raise Exception(...) # Optional blocking
+                        raise ValueError(f"Validation failed for {table['name']}: {'; '.join(errors)}")
 
             except Exception as e:
                 logger.error("Table '%s' failed: %s", table['name'], e, exc_info=True)
@@ -1158,6 +1144,7 @@ class IngestionPipeline:
                 except Exception:
                     logger.warning("Could not record failure in manifest for table '%s'", table['name'])
                 failed_tables.append(table['name'])
+                failed_table_errors[table['name']] = str(e)
                 continue
 
         # Run summarization unless skipped (even if some tables failed)
@@ -1165,7 +1152,11 @@ class IngestionPipeline:
             self.summarize()
 
         if failed_tables:
+            error_details = "; ".join(
+                f"{t}: {failed_table_errors[t]}" for t in failed_tables if t in failed_table_errors
+            )
             raise RuntimeError(
                 f"Pipeline completed with {len(failed_tables)} failed table(s): "
                 f"{', '.join(failed_tables)}"
+                + (f" -- {error_details}" if error_details else "")
             )

@@ -1,6 +1,6 @@
-# Getting Started with {name}
+# Getting Started with $name
 
-This project was initialized with the **{engine_type}** engine.
+This project was initialized with the **$engine_type** engine.
 
 ## Directory Structure
 
