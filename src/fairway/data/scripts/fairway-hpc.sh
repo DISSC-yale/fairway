@@ -20,7 +20,7 @@ set -e
 # -----------------------------------------------------------------------------
 # Configuration - Customize these for your HPC environment
 # -----------------------------------------------------------------------------
-DEFAULT_ACCOUNT="borzekowski"
+# DEFAULT_ACCOUNT=""  # Set your Slurm account in config/spark.yaml
 DEFAULT_PARTITION="day"
 DEFAULT_TIME="24:00:00"
 DEFAULT_NODES=2

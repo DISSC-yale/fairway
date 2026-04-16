@@ -651,7 +651,7 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
         if os.path.exists(spark_yaml_path):
             with open(spark_yaml_path, 'r') as f:
                 spark_defaults = yaml.safe_load(f) or {}
-                account = account or spark_defaults.get('account', 'borzekowski')
+                account = account or spark_defaults.get('account')
 
         # Validate parameters
         slurm_time = _validate_slurm_time(slurm_time)
