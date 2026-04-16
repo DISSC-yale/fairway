@@ -942,8 +942,16 @@ class IngestionPipeline:
                 if input_path != original_path:
                     logger.info("Preprocessing complete. Ingesting from: %s", input_path)
 
-                # Discover individual files for manifest tracking (reusing schema_pipeline pattern)
-                if '*' in str(input_path):
+                # Multi-archive: use the full extracted file list so all
+                # archives are ingested, not just the first one.
+                extracted_files = table.get('_extracted_files')
+                if extracted_files:
+                    discovered_files = sorted(extracted_files)
+                    # Pass the file list directly to the engine (DuckDB
+                    # accepts a list in read_csv_auto / read_parquet etc.)
+                    input_path = discovered_files
+                elif '*' in str(input_path):
+                    # Discover individual files for manifest tracking
                     discovered_files = sorted(glob.glob(str(input_path), recursive=True))
                     discovered_files = [f for f in discovered_files if os.path.isfile(f)]
                 else:
