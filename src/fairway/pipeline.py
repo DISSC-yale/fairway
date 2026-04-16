@@ -368,15 +368,21 @@ class IngestionPipeline:
                      if os.path.exists(output_dir) and os.listdir(output_dir):
                          return output_dir
                      with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                         for member in zip_ref.namelist():
+                         realpath_output_dir = os.path.realpath(output_dir)
+                         for member_info in zip_ref.infolist():
+                             # Block symlink entries (Unix attr bits 0xA000 = symlink)
+                             if (member_info.external_attr >> 16) & 0xFFFF == 0xA000:
+                                 raise ValueError(
+                                     f"Zip Slip blocked: {member_info.filename!r} is a symlink entry"
+                                 )
                              member_path = os.path.realpath(
-                                 os.path.join(output_dir, member)
+                                 os.path.join(output_dir, member_info.filename)
                              )
                              if not member_path.startswith(
-                                 os.path.realpath(output_dir) + os.sep
-                             ):
+                                 realpath_output_dir + os.sep
+                             ) and member_path != realpath_output_dir:
                                  raise ValueError(
-                                     f"Zip Slip blocked: {member!r} would extract "
+                                     f"Zip Slip blocked: {member_info.filename!r} would extract "
                                      f"outside {output_dir}"
                                  )
                          zip_ref.extractall(output_dir)
