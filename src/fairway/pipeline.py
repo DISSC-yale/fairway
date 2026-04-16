@@ -315,7 +315,8 @@ class IngestionPipeline:
         table_manifest = self.manifest_store.get_table_manifest(table['name'])
         cached = table_manifest.get_preprocessed_path(
             table['path'],
-            table.get('root')
+            table.get('root'),
+            action=action,
         )
         if cached:
             # Apply file filter to cached path if needed

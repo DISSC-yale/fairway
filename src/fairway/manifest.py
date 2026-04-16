@@ -1,8 +1,12 @@
+import copy
 import json
 import hashlib
+import logging
 import os
 from datetime import datetime
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 TABLE_MANIFEST_VERSION = "3.0"
 GLOBAL_MANIFEST_VERSION = "3.0"
@@ -34,8 +38,14 @@ class TableManifest:
 
     def _load(self):
         if os.path.exists(self.manifest_path):
-            with open(self.manifest_path, 'r') as f:
-                return json.load(f)
+            try:
+                with open(self.manifest_path, 'r') as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Manifest file corrupted, starting fresh: %s",
+                    self.manifest_path,
+                )
         return {
             "version": TABLE_MANIFEST_VERSION,
             "table_name": self.table_name,
@@ -56,11 +66,15 @@ class TableManifest:
     @contextmanager
     def batch(self):
         self._batch_mode = True
+        snapshot = copy.deepcopy(self.data)
         try:
             yield
-        finally:
             self._batch_mode = False
             self._save()
+        except Exception:
+            self.data = snapshot
+            self._batch_mode = False
+            raise
 
     def get_file_key(self, file_path, table_root=None):
         """Generate relative path key for file."""
@@ -173,11 +187,20 @@ class TableManifest:
         }
         self._save()
 
-    def get_preprocessed_path(self, original_path, table_root=None):
-        """Get cached preprocessed path if valid."""
+    def get_preprocessed_path(self, original_path, table_root=None, action=None):
+        """Get cached preprocessed path if valid.
+
+        Args:
+            original_path: Original file path to look up.
+            table_root: Root directory for relative path calculation.
+            action: Preprocessing action that must match the cached entry.
+                    If provided, a cache entry with a different action is stale.
+        """
         key = self.get_file_key(original_path, table_root)
         entry = self.data.get("preprocessing", {}).get(key)
         if not entry:
+            return None
+        if action is not None and entry.get("action", "") != action:
             return None
         current_hash = _get_file_hash_static(original_path, fast_check=True)
         if entry.get("file_hash") != current_hash:
