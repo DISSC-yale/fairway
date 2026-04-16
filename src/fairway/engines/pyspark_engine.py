@@ -316,17 +316,19 @@ class PySparkEngine:
         if balanced and partition_by:
             # Salting logic inspired by data_l2 to prevent skew.
             # RULE-103: avoid df.rdd.count(), which forces an RDD materialization
-            # even for Parquet inputs where df.count() reads only footer metadata.
-            # Users can override the derived bucket count via num_salts=N.
+            # on top of a full scan. df.count() here still triggers a scan
+            # because the preceding select() invalidates Parquet footer-only
+            # optimization — but it is strictly cheaper than .rdd.count().
+            # Callers with a known row estimate should pass num_salts=N to
+            # skip the count entirely.
             configured_num_salts = kwargs.get('num_salts')
             if configured_num_salts is not None:
                 num_salts = max(1, int(configured_num_salts))
             else:
                 if target_rows_per_file:
                     target_rows = target_rows_per_file
-                # df.count() uses parquet footers when available; only CSV /
-                # JSON pay a full scan, which is unavoidable if we need an
-                # exact row count to size the salt space.
+                if not target_rows or target_rows <= 0:
+                    target_rows = 500_000
                 total_rows_approx = df.count()
                 num_salts = max(1, total_rows_approx // target_rows)
 

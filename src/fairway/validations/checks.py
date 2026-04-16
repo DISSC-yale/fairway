@@ -253,7 +253,17 @@ class Validator:
                             })
             else:
                 for col_name in check_nulls:
-                    if col_name in df.columns and df[col_name].isnull().any():
+                    if col_name not in df.columns:
+                        result.add_finding({
+                            "column": col_name,
+                            "check": "check_nulls",
+                            "message": f"Column '{col_name}' not found, skipping nulls check",
+                            "severity": "warn",
+                            "failed_count": 0,
+                            "total_count": 0,
+                        })
+                        continue
+                    if df[col_name].isnull().any():
                         null_count = int(df[col_name].isnull().sum())
                         result.add_finding({
                             "column": col_name,
