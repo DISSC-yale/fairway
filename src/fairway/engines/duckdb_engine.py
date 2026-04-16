@@ -55,6 +55,21 @@ class DuckDBEngine:
         self.con.execute("INSTALL httpfs; LOAD httpfs;")
         self.con.execute("INSTALL aws; LOAD aws;") # Or gcs if needed
 
+    def stop(self):
+        """Close the underlying DuckDB connection.
+
+        Idempotent — safe to call multiple times. Must match the PySpark
+        engine's stop() so pipeline teardown doesn't need to know which
+        engine it holds.
+        """
+        con = getattr(self, 'con', None)
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+            self.con = None
+
     def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None, naming_pattern=None, hive_partitioning=False, target_rows=None, schema=None, write_mode='overwrite', **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
