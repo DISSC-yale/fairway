@@ -147,17 +147,24 @@ class Validator:
                 })
 
         # max_rows check
+        # RULE-103: avoid df.count() on the full frame when we only need to
+        # know whether it exceeds a threshold. df.limit(max_rows + 1).count()
+        # short-circuits as soon as one row over the limit is materialized.
         max_rows = flat.get("max_rows")
         if max_rows is not None:
             if is_spark:
-                row_count = df.count()
+                over_limit = df.limit(max_rows + 1).count()
+                exceeded = over_limit > max_rows
+                reported = f">{max_rows}" if exceeded else str(over_limit)
             else:
                 row_count = len(df)
-            if row_count > max_rows:
+                exceeded = row_count > max_rows
+                reported = str(row_count)
+            if exceeded:
                 result.add_finding({
                     "column": None,
                     "check": "max_rows",
-                    "message": f"Row count {row_count} exceeds maximum {max_rows}",
+                    "message": f"Row count {reported} exceeds maximum {max_rows}",
                     "severity": "error",
                     "failed_count": 1,
                     "total_count": 1,
@@ -197,15 +204,24 @@ class Validator:
                     })
 
         # check_nulls
+        # RULE-103: for Spark, combine per-column null counts plus the total
+        # row count into a single aggregation pass instead of (N + 1) full
+        # scans (one df.count() plus N df.filter(...).count() calls).
         check_nulls = flat.get("check_nulls")
         if check_nulls:
             if is_spark:
-                from pyspark.sql.functions import col as spark_col
-                total = df.count()
-            for col_name in check_nulls:
-                if is_spark:
-                    if col_name in df.columns:
-                        null_count = df.filter(spark_col(col_name).isNull()).count()
+                from pyspark.sql import functions as F
+                present_cols = [c for c in check_nulls if c in df.columns]
+                if present_cols:
+                    agg_exprs = [F.count(F.lit(1)).alias("_total_count")]
+                    for c in present_cols:
+                        agg_exprs.append(
+                            F.count(F.when(F.col(c).isNull(), 1)).alias(f"__null__{c}")
+                        )
+                    row = df.agg(*agg_exprs).collect()[0]
+                    total = row["_total_count"]
+                    for col_name in present_cols:
+                        null_count = row[f"__null__{col_name}"]
                         if null_count > 0:
                             result.add_finding({
                                 "column": col_name,
@@ -215,7 +231,8 @@ class Validator:
                                 "failed_count": null_count,
                                 "total_count": total,
                             })
-                else:
+            else:
+                for col_name in check_nulls:
                     if col_name in df.columns and df[col_name].isnull().any():
                         null_count = int(df[col_name].isnull().sum())
                         result.add_finding({

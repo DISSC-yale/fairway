@@ -74,6 +74,10 @@ class DuckDBEngine:
             finally:
                 self.con = None
 
+    def close(self):
+        """Alias for stop() — idiomatic for connection-style objects."""
+        self.stop()
+
     def _require_con(self):
         """Raise a clear error instead of a NoneType AttributeError post-stop()."""
         if self.con is None:

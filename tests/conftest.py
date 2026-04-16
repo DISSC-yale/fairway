@@ -53,9 +53,14 @@ def temp_output(tmp_path):
 # ============ Engine Fixtures ============
 @pytest.fixture
 def duckdb_engine():
-    """DuckDB engine instance."""
+    """DuckDB engine instance. Teardown releases the connection to avoid
+    accumulating in-memory DuckDB handles across the test session."""
     from fairway.engines.duckdb_engine import DuckDBEngine
-    return DuckDBEngine()
+    engine = DuckDBEngine()
+    try:
+        yield engine
+    finally:
+        engine.close()
 
 
 @pytest.fixture(scope="session")
@@ -67,8 +72,10 @@ def _pyspark_engine_shared():
     pytest.importorskip("pyspark")
     from fairway.engines.pyspark_engine import PySparkEngine
     engine = PySparkEngine()
-    yield engine
-    engine.stop()
+    try:
+        yield engine
+    finally:
+        engine.stop()
 
 
 @pytest.fixture
@@ -81,13 +88,19 @@ def pyspark_engine(_pyspark_engine_shared):
 def engine(request):
     """Parametrized fixture — tests run against both engines.
 
-    DuckDB runs always. PySpark skips if not available.
+    DuckDB runs always. PySpark skips if not available. Teardown only
+    fires for DuckDB; the PySpark engine is session-scoped and cleaned
+    up once in `_pyspark_engine_shared`.
     """
     if request.param == "duckdb":
         from fairway.engines.duckdb_engine import DuckDBEngine
-        return DuckDBEngine()
+        e = DuckDBEngine()
+        try:
+            yield e
+        finally:
+            e.close()
     else:
-        return request.getfixturevalue("pyspark_engine")
+        yield request.getfixturevalue("pyspark_engine")
 
 
 # ============ CLI Fixtures ============

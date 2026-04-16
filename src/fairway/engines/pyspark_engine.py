@@ -169,10 +169,19 @@ class PySparkEngine:
                 # When reader.schema() is set, PySpark silently drops columns not in
                 # the schema at read time, so the post-read RULE-115 check would miss them.
                 # Read headers only (limit 0) to discover all source columns cheaply.
-                header_reader = self.spark.read.format(format).option("header", "true")
-                if 'recursiveFileLookup' not in kwargs:
-                    header_reader = header_reader.option("recursiveFileLookup", "true")
-                source_columns = set(header_reader.load(input_path).columns)
+                is_header = str(kwargs.get('header', 'true')).lower() == 'true'
+                
+                source_columns = set()
+                if is_header:
+                    header_reader = self.spark.read.format(format)
+                    if kwargs:
+                        opts = {k: str(v) for k, v in kwargs.items() if v is not None}
+                        header_reader = header_reader.options(**opts)
+                    if 'header' not in kwargs:
+                        header_reader = header_reader.option("header", "true")
+                    if 'recursiveFileLookup' not in kwargs:
+                        header_reader = header_reader.option("recursiveFileLookup", "true")
+                    source_columns = set(header_reader.load(input_path).columns)
 
                 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, LongType, DoubleType, FloatType, BooleanType, TimestampType, DateType
                 TYPE_MAP = {
@@ -190,23 +199,24 @@ class PySparkEngine:
                 reader = reader.schema(spark_schema)
                 logger.info("Using provided schema (%d columns) - skipping inferSchema", len(schema))
 
-                # Check for extra columns using pre-schema source columns
-                expected_columns = set(schema.keys())
-                preserved_columns = set()
-                if metadata:
-                    preserved_columns.update(metadata.keys())
-                if partition_by:
-                    preserved_columns.update(partition_by)
-                if naming_pattern:
-                    import re as _re
-                    preserved_columns.update(_re.findall(r'\?P<([^>]+)>', naming_pattern))
-                extra_cols = source_columns - expected_columns - preserved_columns
-                if extra_cols:
-                    raise ValueError(
-                        f"[RULE-115] Data Integrity Error: Source file contains "
-                        f"{len(extra_cols)} extra columns not in strict schema: "
-                        f"{extra_cols}. Ingestion aborted to prevent data dropping."
-                    )
+                # Check for extra columns using pre-schema source columns (only if header is true)
+                if is_header:
+                    expected_columns = set(schema.keys())
+                    preserved_columns = set()
+                    if metadata:
+                        preserved_columns.update(metadata.keys())
+                    if partition_by:
+                        preserved_columns.update(partition_by)
+                    if naming_pattern:
+                        import re as _re
+                        preserved_columns.update(_re.findall(r'\?P<([^>]+)>', naming_pattern))
+                    extra_cols = source_columns - expected_columns - preserved_columns
+                    if extra_cols:
+                        raise ValueError(
+                            f"[RULE-115] Data Integrity Error: Source file contains "
+                            f"{len(extra_cols)} extra columns not in strict schema: "
+                            f"{extra_cols}. Ingestion aborted to prevent data dropping."
+                        )
             elif 'inferSchema' not in kwargs:
                  logger.debug("No schema provided, using inferSchema=true (adds memory overhead)")
                  reader = reader.option("inferSchema", "true")
@@ -304,14 +314,21 @@ class PySparkEngine:
             df = df.select(*select_exprs)
 
         if balanced and partition_by:
-            # Salting logic inspired by data_l2 to prevent skew
-            # Assuming ~500k rows per file is a good default, or user provided value
-            total_rows_approx = df.rdd.count() # Force count for salt calculation
-            if target_rows_per_file:
-                 target_rows = target_rows_per_file
-            
-            num_salts = max(1, total_rows_approx // target_rows)
-            
+            # Salting logic inspired by data_l2 to prevent skew.
+            # RULE-103: avoid df.rdd.count() on the full frame — it forces
+            # a full scan on a lazy DataFrame solely to pick a salt count.
+            # Accept a user-supplied `num_salts` (or `target_rows_per_file`
+            # with a data-size hint) instead; default to 10 buckets which
+            # is enough to break most pathological partition skew without
+            # materializing the whole dataset.
+            configured_num_salts = kwargs.get('num_salts')
+            if configured_num_salts is not None:
+                num_salts = max(1, int(configured_num_salts))
+            else:
+                if target_rows_per_file:
+                    target_rows = target_rows_per_file
+                num_salts = 10
+
             df = df.withColumn("salt", (F.rand() * num_salts).cast("int"))
             partition_cols = partition_by + ["salt"]
         else:
@@ -700,10 +717,11 @@ class PySparkEngine:
                     stats = os.stat(path)
                     file_hash = f"mtime:{stats.st_mtime}_size:{stats.st_size}"
                 else:
+                    sha256_hash = hashlib.sha256()
                     with open(path, "rb") as f:
                         for byte_block in iter(lambda: f.read(4096), b""):
                             sha256_hash.update(byte_block)
-                            
+
                     file_hash = sha256_hash.hexdigest()
                     
                 return {
