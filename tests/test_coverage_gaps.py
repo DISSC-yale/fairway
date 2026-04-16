@@ -94,6 +94,28 @@ class TestEnricherPandas:
         # Unchanged — no enrichment columns added
         assert list(out.columns) == ["id"]
 
+    def test_mock_geocode_is_deterministic(self):
+        """Same address must produce the same lat/lon across calls."""
+        a1 = Enricher.mock_geocode("742 Evergreen Terrace")
+        a2 = Enricher.mock_geocode("742 Evergreen Terrace")
+        assert a1 == a2, "mock_geocode must be deterministic for the same address"
+
+    def test_mock_geocode_differs_by_address(self):
+        """Different addresses must produce different lat/lon (overwhelmingly likely)."""
+        a = Enricher.mock_geocode("1 Main St")
+        b = Enricher.mock_geocode("2 Main St")
+        assert a != b, "mock_geocode must vary with address"
+
+    def test_mock_h3_index_uses_both_lat_and_lon(self):
+        """Two points with same lat but different lon must get different H3 indices."""
+        h1 = Enricher.mock_h3_index(40.0, -73.0)
+        h2 = Enricher.mock_h3_index(40.0, -74.0)
+        assert h1 != h2, "mock_h3_index must depend on lon, not just lat"
+
+    def test_mock_h3_index_is_deterministic(self):
+        """Same (lat, lon) must produce the same H3 index."""
+        assert Enricher.mock_h3_index(40.0, -73.0) == Enricher.mock_h3_index(40.0, -73.0)
+
 
 # ===========================================================================
 # Transformer registry security errors

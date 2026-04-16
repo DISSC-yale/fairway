@@ -995,12 +995,25 @@ class IngestionPipeline:
         if not is_spark and hasattr(df, 'df'):
             df = df.df()
 
+        df_modified = False
+
         if self.config.enrichment.get('geocode'):
-            logger.info("Enriching %s with geospatial data...", table['name'])
+            if not self.config.enrichment.get('allow_mock'):
+                raise ValueError(
+                    "enrichment.geocode is enabled but fairway only ships a MOCK geocoder "
+                    "(deterministic placeholder values, not real geospatial data). Set "
+                    "enrichment.allow_mock: true in your config to opt in to the mock, "
+                    "or plug in a real geocoder before enabling enrichment.geocode."
+                )
+            logger.warning(
+                "Enriching %s with MOCK geospatial data — not real geocoding",
+                table['name'],
+            )
             if is_spark:
                 df = Enricher.enrich_spark(df)
             else:
                 df = Enricher.enrich_dataframe(df)
+            df_modified = True
 
         transform_script = table.get('transformation') or self.config.data.get('transformation')
         validation_target_path = output_path
@@ -1017,29 +1030,31 @@ class IngestionPipeline:
                         f"returned None; transform() must return a DataFrame."
                     )
                 df = transformed
+                df_modified = True
 
-                processed_basename = (
-                    f"{output_name}_processed"
-                    if partition_by
-                    else f"{output_name}_processed.parquet"
-                )
-                processed_path = os.path.join(self.config.processed_dir, processed_basename)
+        if df_modified:
+            processed_basename = (
+                f"{output_name}_processed"
+                if partition_by
+                else f"{output_name}_processed.parquet"
+            )
+            processed_path = os.path.join(self.config.processed_dir, processed_basename)
 
-                if is_spark:
-                    if partition_by:
-                        df.write.mode("overwrite").partitionBy(*partition_by).parquet(processed_path)
-                    else:
-                        df.write.mode("overwrite").parquet(processed_path)
-                    df = self.engine.read_result(processed_path)
+            if is_spark:
+                if partition_by:
+                    df.write.mode("overwrite").partitionBy(*partition_by).parquet(processed_path)
                 else:
-                    if os.path.isdir(processed_path):
-                        shutil.rmtree(processed_path)
-                    elif os.path.exists(processed_path):
-                        os.remove(processed_path)
-                    os.makedirs(os.path.dirname(processed_path), exist_ok=True)
-                    df.to_parquet(processed_path, partition_cols=partition_by)
+                    df.write.mode("overwrite").parquet(processed_path)
+                df = self.engine.read_result(processed_path)
+            else:
+                if os.path.isdir(processed_path):
+                    shutil.rmtree(processed_path)
+                elif os.path.exists(processed_path):
+                    os.remove(processed_path)
+                os.makedirs(os.path.dirname(processed_path), exist_ok=True)
+                df.to_parquet(processed_path, partition_cols=partition_by)
 
-                validation_target_path = processed_path
+            validation_target_path = processed_path
 
         table_validations = table['validations']
         validation_result = Validator.run_all(df, table_validations, is_spark=is_spark)

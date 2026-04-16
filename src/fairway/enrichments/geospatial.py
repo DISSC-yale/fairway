@@ -1,43 +1,68 @@
+"""PLACEHOLDER geospatial enrichment.
+
+This module ships DETERMINISTIC MOCK values — not real geocoding. The mock
+is stable across runs (same address → same lat/lon → same h3 index) so
+downstream joins and tests don't flap, but the numbers are not meaningful
+geographically. A real geocoder must replace these functions before the
+enrichment can be used for analysis.
+
+Pipeline code must opt in via ``enrichment.allow_mock: true`` in config;
+otherwise ``IngestionPipeline`` refuses to run with geocode enrichment on,
+preventing mock data from silently reaching production tables.
 """
-PLACEHOLDER: Geospatial enrichment module.
-This is a stub implementation. Not production-ready.
-Geocoding logic is not yet implemented.
-"""
-# Mock enrichment logic as requested in notes.md
-import random
+import hashlib
+
+
+def _hash_uniform(seed: bytes, lo: float, hi: float) -> float:
+    """Deterministic value in [lo, hi) derived from ``seed`` via sha256."""
+    digest = hashlib.sha256(seed).digest()
+    frac = int.from_bytes(digest[:8], "big") / 2 ** 64
+    return lo + frac * (hi - lo)
+
+
+def _mock_lat_for(address) -> float:
+    return _hash_uniform(f"lat|{address}".encode("utf-8"), -90.0, 90.0)
+
+
+def _mock_lon_for(address) -> float:
+    return _hash_uniform(f"lon|{address}".encode("utf-8"), -180.0, 180.0)
+
+
+def _mock_h3_for(lat: float, lon: float, resolution: int = 9) -> str:
+    seed = f"h3|{lat:.10f}|{lon:.10f}|{resolution}".encode("utf-8")
+    return hashlib.sha256(seed).hexdigest()[:15]
+
 
 class Enricher:
     @staticmethod
     def mock_geocode(address):
-        """
-        Mock geocoding: returns random lat/lon.
-        """
-        return random.uniform(-90, 90), random.uniform(-180, 180)
+        """Return a deterministic (lat, lon) derived from ``address``."""
+        return _mock_lat_for(address), _mock_lon_for(address)
 
     @staticmethod
     def mock_h3_index(lat, lon, resolution=9):
-        """
-        Mock H3 indexing: returns a dummy hex string.
-        """
-        # H3 indices are usually 15-character hex strings
-        return hex(random.getrandbits(60))[2:].zfill(15)
+        """Return a deterministic 15-char hex mock H3 index derived from both lat and lon."""
+        return _mock_h3_for(lat, lon, resolution)
 
     @staticmethod
     def enrich_dataframe(df):
-        """
-        Adds mock lat, lon, and H3 index to the dataframe.
-        """
+        """Add mock lat, lon, and H3 index to the dataframe."""
         if 'address' in df.columns:
-            coords = df['address'].apply(lambda x: Enricher.mock_geocode(x))
+            coords = df['address'].apply(Enricher.mock_geocode)
             df['latitude'] = coords.apply(lambda x: x[0])
             df['longitude'] = coords.apply(lambda x: x[1])
-            df['h3_index'] = df.apply(lambda row: Enricher.mock_h3_index(row['latitude'], row['longitude']), axis=1)
+            df['h3_index'] = df.apply(
+                lambda row: Enricher.mock_h3_index(row['latitude'], row['longitude']),
+                axis=1,
+            )
         return df
 
     @staticmethod
     def enrich_spark(df):
-        """
-        Spark-native enrichment using Pandas UDFs for efficient distributed execution.
+        """Spark-native enrichment using pandas UDFs.
+
+        UDFs call into the same deterministic helpers used by the pandas path
+        so Spark and DuckDB produce identical mock values for the same input.
         """
         try:
             from pyspark.sql.functions import pandas_udf
@@ -45,37 +70,26 @@ class Enricher:
         except ImportError:
             raise ImportError("PySpark not installed")
 
-        # Define UDFs that wrapping the existing logic
-        # Note: In a real app we'd vectorizing this properly, but for mock parity we wrap the item-level func
-        
         import pandas as pd
-        
+
         @pandas_udf(DoubleType())
         def get_lat(address_series: pd.Series) -> pd.Series:
-            # Reusing mock_geocode logic locally
-            # In distributed context, this runs on workers
-            import random
-            def _mock_lat(_addr):
-                 # Deterministic mock based on hash or just random
-                 return random.uniform(-90, 90)
-            return address_series.apply(_mock_lat)
+            return address_series.apply(_mock_lat_for)
 
         @pandas_udf(DoubleType())
         def get_lon(address_series: pd.Series) -> pd.Series:
-            import random
-            def _mock_lon(_addr):
-                return random.uniform(-180, 180)
-            return address_series.apply(_mock_lon)
+            return address_series.apply(_mock_lon_for)
 
         @pandas_udf(StringType())
-        def get_h3(lat_series: pd.Series, _lon_series: pd.Series) -> pd.Series:
-            import random
-            # Just return a mock string
-            return lat_series.apply(lambda _x: hex(random.getrandbits(60))[2:].zfill(15))
+        def get_h3(lat_series: pd.Series, lon_series: pd.Series) -> pd.Series:
+            return pd.Series(
+                [_mock_h3_for(lat, lon) for lat, lon in zip(lat_series, lon_series)],
+                index=lat_series.index,
+            )
 
         if 'address' in df.columns:
             df = df.withColumn("latitude", get_lat(df['address']))
             df = df.withColumn("longitude", get_lon(df['address']))
             df = df.withColumn("h3_index", get_h3(df['latitude'], df['longitude']))
-            
+
         return df

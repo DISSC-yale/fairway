@@ -2,6 +2,7 @@
 
 manifest_corruption: a corrupted manifest JSON must not abort ingestion.
 transformer_collision: two scripts with the same basename must stay isolated.
+mock_enrichment_guard: pipeline must refuse geocode enrichment without explicit opt-in.
 """
 import yaml
 import pytest
@@ -86,3 +87,50 @@ def test_transformer_name_collision_uses_correct_module(tmp_path, monkeypatch):
     assert "from_scripts_a" in result_a.columns
     assert "from_scripts_b" in result_b.columns
     assert "from_scripts_a" not in result_b.columns, "Collision: A leaked into B"
+
+
+@pytest.mark.local
+def test_pipeline_refuses_mock_enrichment_without_opt_in(tmp_path, monkeypatch):
+    """enrichment.geocode without allow_mock must raise — prevents mock data in prod."""
+    monkeypatch.chdir(tmp_path)
+    csv_path = tmp_path / "raw" / "addresses.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("id,address\n1,1 A St\n2,2 B St\n")
+
+    config_path = tmp_path / "fairway.yaml"
+    config_path.write_text(yaml.dump({
+        "dataset_name": "mock_guard", "engine": "duckdb",
+        "storage": {"root": str(tmp_path / "data")},
+        "enrichment": {"geocode": True},
+        "tables": [{"name": "addresses", "path": str(csv_path), "format": "csv"}],
+    }))
+
+    from fairway.pipeline import IngestionPipeline
+    with pytest.raises((ValueError, RuntimeError), match="allow_mock"):
+        IngestionPipeline(str(config_path)).run(skip_summary=True)
+
+
+@pytest.mark.local
+def test_pipeline_allows_mock_enrichment_with_opt_in(tmp_path, monkeypatch):
+    """enrichment.geocode + allow_mock: true runs and produces deterministic columns."""
+    monkeypatch.chdir(tmp_path)
+    csv_path = tmp_path / "raw" / "addresses.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text("id,address\n1,1 A St\n2,2 B St\n")
+
+    config_path = tmp_path / "fairway.yaml"
+    config_path.write_text(yaml.dump({
+        "dataset_name": "mock_ok", "engine": "duckdb",
+        "storage": {"root": str(tmp_path / "data")},
+        "enrichment": {"geocode": True, "allow_mock": True},
+        "tables": [{"name": "addresses", "path": str(csv_path), "format": "csv"}],
+    }))
+
+    from fairway.pipeline import IngestionPipeline
+    IngestionPipeline(str(config_path)).run(skip_summary=True)
+
+    from tests.helpers import read_curated
+    df = read_curated(tmp_path, "addresses")
+    assert {"latitude", "longitude", "h3_index"}.issubset(df.columns)
+    assert ((df["latitude"] >= -90) & (df["latitude"] <= 90)).all()
+    assert ((df["longitude"] >= -180) & (df["longitude"] <= 180)).all()
