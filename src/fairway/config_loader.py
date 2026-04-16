@@ -31,7 +31,7 @@ class TableConfig:
     name: str = "unnamed"
     path: str | None = None
     format: str = "csv"
-    schema: dict = field(default_factory=dict)
+    schema: dict | None = field(default_factory=dict)
     partition_by: list = field(default_factory=list)
     write_mode: str = "overwrite"
     preprocess: dict | None = None
@@ -54,47 +54,52 @@ class TableConfig:
     _extra: dict = field(default_factory=dict, repr=False)
 
     @classmethod
+    def _field_names(cls) -> set:
+        return {f.name for f in fields(cls)} - {'_extra'}
+
+    @classmethod
     def from_dict(cls, d: dict) -> "TableConfig":
-        known = {f.name for f in fields(cls)}
+        known = cls._field_names()
         known_kwargs = {k: v for k, v in d.items() if k in known}
-        extra = {k: v for k, v in d.items() if k not in known}
+        extra = {k: v for k, v in d.items() if k not in known and k != '_extra'}
         obj = cls(**known_kwargs)
         obj._extra = extra
         return obj
 
     # Dict-protocol methods for backward compatibility
     def __getitem__(self, key: str) -> Any:
-        if hasattr(self, key) and key != '_extra':
+        if key in self._field_names():
             return getattr(self, key)
         return self._extra[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
-        if key in {f.name for f in fields(self)} and key != '_extra':
+        if key in self._field_names():
             object.__setattr__(self, key, value)
         else:
             self._extra[key] = value
 
     def __contains__(self, key: str) -> bool:
-        if key in {f.name for f in fields(self)} and key != '_extra':
-            return True
-        return key in self._extra
+        return key in self._field_names() or key in self._extra
 
     def get(self, key: str, default: Any = None) -> Any:
-        try:
-            return self[key]
-        except (KeyError, AttributeError):
-            return default
+        if key in self._field_names():
+            return getattr(self, key)
+        return self._extra.get(key, default)
 
-    def __iter__(self):
-        for f in fields(self):
-            if f.name != '_extra':
-                yield f.name
+    def keys(self):
+        for name in self._field_names():
+            yield name
         yield from self._extra
 
+    def __iter__(self):
+        return self.keys()
+
+    def __len__(self) -> int:
+        return len(self._field_names()) + len(self._extra)
+
     def items(self):
-        for f in fields(self):
-            if f.name != '_extra':
-                yield f.name, getattr(self, f.name)
+        for name in self._field_names():
+            yield name, getattr(self, name)
         yield from self._extra.items()
 
 
