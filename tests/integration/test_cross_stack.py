@@ -35,7 +35,18 @@ def test_manifest_corruption_graceful_recovery(tmp_path, monkeypatch):
 
 @pytest.mark.local
 def test_transformer_name_collision_uses_correct_module(tmp_path, monkeypatch):
-    """Two transformer scripts with same basename stay isolated (requires G1 fix)."""
+    """Two transformer scripts with same basename stay functionally isolated.
+
+    Note: Python binds `method.__globals__` at class-definition time, so
+    calling transform() reads the *original* module's globals even after
+    sys.modules["transform"] is overwritten by a second load with the same
+    basename. This test therefore passes regardless of the G1 fix — it
+    verifies method-call isolation, not sys.modules isolation.
+
+    The deeper G1 bug (pickle lookup, isinstance across loads, `inspect.getmodule`)
+    is validated by the fix itself, not by this smoke test. Kept as a
+    baseline regression guard for the common call-time path.
+    """
     monkeypatch.chdir(tmp_path)
 
     for subdir in ["scripts_a", "scripts_b"]:
@@ -43,10 +54,11 @@ def test_transformer_name_collision_uses_correct_module(tmp_path, monkeypatch):
         script_dir.mkdir()
         (script_dir / "transform.py").write_text(
             f"import pandas as pd\n"
+            f"MARKER = 'from_{subdir}'\n"
             f"class MyTransformer:\n"
             f"    def __init__(self, df): self.df = df\n"
             f"    def transform(self):\n"
-            f"        self.df['from_{subdir}'] = True\n"
+            f"        self.df[MARKER] = True\n"
             f"        return self.df\n"
         )
 
@@ -66,6 +78,7 @@ def test_transformer_name_collision_uses_correct_module(tmp_path, monkeypatch):
     result_a = t_a(pd.DataFrame({"id": [1]})).transform()
     result_b = t_b(pd.DataFrame({"id": [1]})).transform()
 
-    assert "from_scripts_a" in result_a.columns
+    assert "from_scripts_a" in result_a.columns, \
+        f"t_a leaked scripts_b's MARKER. Columns: {list(result_a.columns)}"
     assert "from_scripts_b" in result_b.columns
     assert "from_scripts_a" not in result_b.columns, "Collision: A leaked into B"

@@ -16,8 +16,6 @@ def simple_project(tmp_path):
     raw_dir.mkdir(parents=True)
     (tmp_path / "data" / "processed").mkdir(parents=True)
     (tmp_path / "data" / "curated").mkdir(parents=True)
-    (tmp_path / "manifest").mkdir()
-
     (raw_dir / "people.csv").write_text(
         "id,name,age\n1,alice,30\n2,bob,25\n3,carol,35\n"
     )
@@ -37,8 +35,6 @@ def partitioned_project(tmp_path):
     raw_dir.mkdir(parents=True)
     (tmp_path / "data" / "processed").mkdir(parents=True)
     (tmp_path / "data" / "curated").mkdir(parents=True)
-    (tmp_path / "manifest").mkdir()
-
     (raw_dir / "2023_01.csv").write_text(
         "id,amount,year,month\n1,100.0,2023,1\n2,200.0,2023,1\n"
     )
