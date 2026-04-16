@@ -83,3 +83,10 @@ def test_sbatch_newline_injection_blocked():
     from fairway.engines.slurm_cluster import _sanitize_sbatch_value
     with pytest.raises(ValueError, match="Newline injection"):
         _sanitize_sbatch_value("day\n#SBATCH --account=attacker")
+
+
+@pytest.mark.local
+def test_driver_job_id_injection_blocked():
+    from fairway.engines.slurm_cluster import _sanitize_job_id
+    with pytest.raises(ValueError, match="Unsafe job ID"):
+        _sanitize_job_id("12345; touch /tmp/pwned")

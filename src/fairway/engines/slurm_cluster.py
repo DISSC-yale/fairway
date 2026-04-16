@@ -5,6 +5,13 @@ import time
 import click
 
 
+def _sanitize_job_id(job_id: str) -> str:
+    """Validate a SLURM job ID for safe use in file paths and shell scripts."""
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', str(job_id)):
+        raise ValueError(f"Unsafe job ID rejected: {job_id!r}")
+    return str(job_id)
+
+
 def _sanitize_spark_conf_key(key: str) -> str:
     """Validate a spark conf key for safe embedding in a shell script.
 
@@ -131,6 +138,8 @@ class SlurmSparkManager:
 
     def __init__(self, config, driver_job_id=None):
         self.config = config
+        if driver_job_id is not None:
+            driver_job_id = _sanitize_job_id(driver_job_id)
         self.driver_job_id = driver_job_id
 
         if driver_job_id:
