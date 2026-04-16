@@ -852,12 +852,23 @@ class IngestionPipeline:
         # --- Phase 0: Run all preprocessing BEFORE engine startup ---
         # This avoids launching Spark (expensive) just for driver-mode preprocessing
         preprocessed_paths = {}
+        failed_tables = []
+        failed_table_errors = {}
         for table in self.config.tables:
             preprocess_config = table.get('preprocess')
             archives_pattern = table.get('archives')
             if preprocess_config or archives_pattern:
                 logger.info("Pre-run preprocessing for %s...", table['name'])
-                preprocessed_paths[table['name']] = self._preprocess(table)
+                try:
+                    preprocessed_paths[table['name']] = self._preprocess(table)
+                except Exception as exc:
+                    logger.error(
+                        "Phase 0 preprocessing failed for table '%s': %s",
+                        table['name'], exc
+                    )
+                    failed_tables.append(table['name'])
+                    failed_table_errors[table['name']] = str(exc)
+                    preprocessed_paths[table['name']] = None
 
         # --- Phase 1: Engine startup and ingestion ---
         # Optimize: Distributed Manifest Check for Cluster Mode
@@ -885,8 +896,6 @@ class IngestionPipeline:
                 except Exception as e:
                     logger.error("Distributed hash check failed: %s. Falling back to driver check.", e)
 
-        failed_tables = []
-        failed_table_errors = {}
         for table in self.config.tables:
             try:
                 # Get per-table manifest for this table
