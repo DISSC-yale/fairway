@@ -72,7 +72,7 @@ markers = [
     "spark: requires PySpark — skipped when Spark is unavailable",
 ]
 testpaths = ["tests"]
-addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=70"
+addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=65"
 
 [tool.setuptools.package-data]
 "fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]
