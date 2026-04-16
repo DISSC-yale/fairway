@@ -31,6 +31,11 @@ def _escape_sql_string(value):
     return value.replace("'", "''")
 
 
+def _sql_quote_str(s: str) -> str:
+    """Return a SQL single-quoted string literal with internal quotes escaped."""
+    return "'" + str(s).replace("'", "''") + "'"
+
+
 class DuckDBEngine:
     @staticmethod
     def _format_path_sql(input_path):
@@ -121,7 +126,7 @@ class DuckDBEngine:
                 val = f"'{escaped_v}'"
             elif isinstance(v, list):
                 # list -> ['a', 'b']
-                val = f"[{', '.join([f'{repr(x)}' for x in v])}]"
+                val = f"[{', '.join(_sql_quote_str(x) if isinstance(x, str) else str(x) for x in v)}]"
             else:
                 val = v
             options.append(f"{k}={val}")
@@ -374,6 +379,9 @@ class DuckDBEngine:
         for col in columns:
             name = _validate_sql_identifier(col['name'])
             col_type = col['type'].upper()
+            # Validate full col_type: allow TYPE, TYPE(N), TYPE(N,M), TYPE(N,M,K) only
+            if not re.match(r'^[A-Z][A-Z0-9_ ]*(\(\d+(?:,\d+)*\))?$', col_type):
+                raise ValueError(f"Unsafe column type rejected: {col_type!r}")
             base_type = col_type.split('(')[0]
             if base_type not in ALLOWED_TYPES:
                 raise ValueError(f"enforce_types: invalid column type '{col_type}'")
@@ -488,6 +496,8 @@ class DuckDBEngine:
             - Deterministic: files are sorted before processing
         """
         import glob as glob_module
+
+        rows_per_file = int(rows_per_file)
 
         # Normalize TSV/tab to CSV
         if format in ('tsv', 'tab'):
