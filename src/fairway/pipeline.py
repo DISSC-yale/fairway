@@ -58,8 +58,12 @@ def _is_preprocess_script_allowed(script_path):
         os.path.join(cwd, 'src', 'preprocess'),
         os.path.join(cwd, 'scripts'),
         os.path.join(cwd, 'transformations'),
-        os.path.join(cwd, 'tests', 'scripts'),
     ]
+    # Opt-in test hook: let test suites point preprocessing at fixtures under
+    # tests/scripts/ without relaxing the production allowlist. conftest.py
+    # sets this env var; production deployments do not.
+    if os.environ.get('FAIRWAY_ALLOW_TEST_SCRIPTS') == '1':
+        allowed_dirs.append(os.path.join(cwd, 'tests', 'scripts'))
 
     for allowed_dir in allowed_dirs:
         allowed_dir = os.path.realpath(allowed_dir)
@@ -508,10 +512,16 @@ class IngestionPipeline:
                  # Custom script returned a concrete file path — use directly.
                  result_path = single_path
              elif include_pattern:
-                 # Zip archives may preserve nested paths — use recursive glob
-                 # so DuckDB can find files at any depth under the extract dir.
-                 if action == 'unzip':
+                 # Zip archives may preserve nested paths. DuckDB resolves "**"
+                 # natively; PySpark uses recursiveFileLookup on bare paths and
+                 # its Hadoop file:// layer rejects "**". So only emit the
+                 # recursive glob when the active engine is DuckDB.
+                 engine_name = (self.config.engine or 'duckdb').lower()
+                 if action == 'unzip' and engine_name == 'duckdb':
                      result_path = os.path.join(single_path, "**", include_pattern)
+                 elif action == 'unzip':
+                     # PySpark: return the directory; engine sets recursiveFileLookup=true
+                     result_path = single_path
                  else:
                      result_path = os.path.join(single_path, include_pattern)
              else:

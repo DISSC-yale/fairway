@@ -13,22 +13,25 @@ logger = logging.getLogger("fairway.config")
 # Must start with letter or underscore, followed by letters, digits, or underscores
 VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
-# Validation keys that are recognised and implemented.
-VALID_VALIDATION_KEYS = frozenset({
-    "min_rows", "max_rows", "check_nulls", "expected_columns",
-    "check_range", "check_values", "check_pattern",
-})
+# Single source of truth for validation keys lives in validations/checks.py;
+# re-use it here so config-load validation and runtime-check validation can't drift.
+from fairway.validations.checks import KNOWN_VALIDATION_KEYS, LEGACY_LEVEL_KEYS
 
-# Validation keys that were documented/planned but not yet implemented.
-# These must fail loudly rather than silently no-op.
+# Keys declared in KNOWN_VALIDATION_KEYS but not yet implemented at runtime
+# (checks.py raises NotImplementedError). Caught at config load so users
+# get a file-name/line context instead of a mid-run stack trace.
 UNSUPPORTED_VALIDATION_KEYS = frozenset({"check_unique", "check_custom"})
 
 # Top-level config keys that are recognised. Anything else triggers a warning
-# so users catch typos before they cause silent misbehavior.
+# so users catch typos before they cause silent misbehavior. Audited against
+# every self.data.get('<key>') callsite plus external config.data consumers
+# in pipeline.py (transformation, target_rows at top level are tolerated for
+# legacy configs).
 KNOWN_TOP_LEVEL_KEYS = frozenset({
     "dataset_name", "engine", "storage", "tables", "data",
     "enrichment", "performance", "validations", "logging",
-    "partition_by", "container", "schema_pipeline", "version",
+    "partition_by", "container", "schema_pipeline",
+    "version", "transformation", "target_rows",
 })
 
 
@@ -159,16 +162,26 @@ class Config:
                         stacklevel=2,
                     )
 
-        # Alias deprecated 'data.sources' → 'data.tables'
+        # Alias deprecated 'data.sources' → 'data.tables'. If both are set,
+        # error out rather than silently dropping one — exactly the class of
+        # silent-drop bug C4 is meant to prevent.
         data_block = self.data.get('data') if isinstance(self.data, dict) else None
-        if isinstance(data_block, dict) and 'sources' in data_block and 'tables' not in data_block:
-            warnings.warn(
-                "Config uses 'data.sources' which is deprecated. "
-                "Rename to 'data.tables'.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            data_block['tables'] = data_block.pop('sources')
+        if isinstance(data_block, dict):
+            has_sources = 'sources' in data_block
+            has_tables = 'tables' in data_block
+            if has_sources and has_tables:
+                raise ConfigValidationError([
+                    "Config defines both 'data.sources' (deprecated) and "
+                    "'data.tables'. Use only 'data.tables'."
+                ])
+            if has_sources and not has_tables:
+                warnings.warn(
+                    "Config uses 'data.sources' which is deprecated. "
+                    "Rename to 'data.tables'.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                data_block['tables'] = data_block.pop('sources')
 
         # Support both root-level 'tables' and 'data: tables' structures
         raw_tables = self.data.get('tables')
@@ -538,9 +551,9 @@ class Config:
                 if not os.path.isdir(root_path):
                     errors.append(f"{prefix}: Root directory does not exist: {root}")
 
-            # Validation keys: reject unsupported, warn on unknown, reject
-            # nested dict under an unknown key (catches typos like
-            # `level1: {min_rows: 5}`).
+            # Validation keys: reject unsupported and shape-mismatched values,
+            # warn on unknown keys, allow legacy level1/level2 nesting which
+            # Validator._normalize_validation_config() handles at runtime.
             table_validations = table.get('validations', {})
             if isinstance(table_validations, dict):
                 for vkey, vval in table_validations.items():
@@ -549,10 +562,22 @@ class Config:
                             f"{prefix}: validation '{vkey}' is not yet implemented. "
                             f"Remove it from your config."
                         )
-                    elif vkey in VALID_VALIDATION_KEYS:
-                        # Known keys can have whatever value shape the check expects
-                        # (e.g., check_range takes a dict of col -> [min, max]).
+                    elif vkey in LEGACY_LEVEL_KEYS:
+                        # Legacy level1/level2 nesting is supported at runtime;
+                        # don't warn so existing configs load clean.
                         pass
+                    elif vkey in KNOWN_VALIDATION_KEYS:
+                        expected_type = KNOWN_VALIDATION_KEYS[vkey]
+                        if not isinstance(vval, expected_type):
+                            type_names = (
+                                ", ".join(t.__name__ for t in expected_type)
+                                if isinstance(expected_type, tuple)
+                                else expected_type.__name__
+                            )
+                            errors.append(
+                                f"{prefix}: validation '{vkey}' must be "
+                                f"{type_names}, got {type(vval).__name__}"
+                            )
                     elif isinstance(vval, dict):
                         errors.append(
                             f"{prefix}: validations must be flat — "

@@ -3,6 +3,10 @@ import os
 import pytest
 from pathlib import Path
 
+# Allow tests/scripts/* preprocessing scripts only during the test run.
+# Production code keeps the stricter src/scripts/transformations allowlist.
+os.environ.setdefault("FAIRWAY_ALLOW_TEST_SCRIPTS", "1")
+
 
 # ============ PySpark Skip Policy (RULE-113) ============
 def pytest_terminal_summary(terminalreporter, exitstatus, config):

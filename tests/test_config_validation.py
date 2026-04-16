@@ -337,17 +337,17 @@ class TestValidationHardening:
         return str(data_dir)
 
     def test_nested_validations_raises_error(self, tmp_path):
-        """validations: {level1: {min_rows: 1}} must raise, not silently no-op."""
+        """Nested dict under an unknown key must raise — catches typos like 'levl1: {min_rows:1}'."""
         data_dir = self._make_data_dir(tmp_path)
         path = self._write(tmp_path, {
             "dataset_name": "x", "engine": "duckdb",
             "storage": {"root": str(tmp_path / "out")},
             "tables": [{"name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
-                        "validations": {"level1": {"min_rows": 1}}}],
+                        "validations": {"levl1": {"min_rows": 1}}}],
         })
         with pytest.raises(ConfigValidationError) as exc_info:
             Config(path)
-        assert "nested" in str(exc_info.value).lower()
+        assert "flat" in str(exc_info.value).lower()
 
     def test_unknown_top_level_key_warns(self, tmp_path):
         path = self._write(tmp_path, {
@@ -407,3 +407,51 @@ class TestValidationHardening:
             Config(path)
         messages = [str(warning.message).lower() for warning in w]
         assert any("weird_made_up_check" in m for m in messages)
+
+    def test_both_sources_and_tables_raises(self, tmp_path):
+        """Both data.sources and data.tables — error, don't silently pick one."""
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "data": {
+                "sources": [{"name": "a", "path": f"{data_dir}/*.csv", "format": "csv"}],
+                "tables":  [{"name": "b", "path": f"{data_dir}/*.csv", "format": "csv"}],
+            },
+        })
+        with pytest.raises(ConfigValidationError, match="both 'data.sources'"):
+            Config(path)
+
+    def test_legacy_level1_nesting_does_not_error(self, tmp_path):
+        """Validator supports legacy level1/level2; config load must not reject it."""
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "tables": [{"name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
+                        "validations": {"level1": {"min_rows": 1}}}],
+        })
+        Config(path)  # must not raise
+
+    def test_known_key_wrong_shape_raises(self, tmp_path):
+        """min_rows must be int — a dict value should fail at load, not at validator runtime."""
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "tables": [{"name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
+                        "validations": {"min_rows": {"nested": 5}}}],
+        })
+        with pytest.raises(ConfigValidationError, match="min_rows"):
+            Config(path)
+
+    def test_check_range_accepts_dict_value(self, tmp_path):
+        """check_range legitimately takes dict of col -> [min, max] — must not trip shape check."""
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "tables": [{"name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
+                        "validations": {"check_range": {"age": [0, 120]}}}],
+        })
+        Config(path)  # must not raise
