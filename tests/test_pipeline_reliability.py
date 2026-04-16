@@ -22,6 +22,7 @@ def _write_config(tmp_path, tables, engine="duckdb"):
     config_path.write_text(yaml.dump({
         "dataset_name": "reliability_test",
         "engine": engine,
+        "storage": {"root": str(tmp_path / "data")},
         "tables": tables,
     }))
     return str(config_path)
@@ -45,52 +46,51 @@ def _make_pipeline(config_path):
 # Bug 1: Spark transformation write — partitioned .parquet() call
 # ---------------------------------------------------------------------------
 
-class TestSparkTransformationWrite:
-    """The Spark write path must call .parquet(path) for both
-    partitioned and non-partitioned writes."""
+class TestPartitionedWrite:
+    """Pipeline with partition_by must produce Hive-layout partition directories.
+
+    Uses real DuckDB engine. Asserts on physical filesystem output.
+    """
 
     @pytest.mark.local
-    def test_partitioned_spark_write_calls_parquet(self):
-        """When partition_by is set, the Spark write chain must end
-        with .parquet(processed_path), not just .partitionBy()."""
-        # Build a mock Spark DataFrame with a fluent write API
-        mock_df = MagicMock()
-        mock_writer = MagicMock()
-        mock_df.write = mock_writer
-        mock_writer.mode.return_value = mock_writer
-        mock_writer.partitionBy.return_value = mock_writer
+    def test_partitioned_write_creates_subdirectories(self, tmp_path):
+        """When partition_by=['region'], processed output must have region=<value>/ dirs."""
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
 
-        partition_by = ["state", "year"]
-        processed_path = "/tmp/test_output"
+        csv_path = _make_csv(
+            str(data_dir / "sales.csv"),
+            "id,amount,region\n1,100,north\n2,200,south\n3,150,north\n",
+        )
+        config_path = _write_config(tmp_path, [{
+            "name": "sales",
+            "path": csv_path,
+            "format": "csv",
+            "partition_by": ["region"],
+        }])
+        _make_pipeline(config_path).run(skip_summary=True)
 
-        # Execute the FIXED logic (should call .parquet)
-        if partition_by:
-            mock_df.write.mode("overwrite").partitionBy(*partition_by).parquet(processed_path)
-        else:
-            mock_df.write.mode("overwrite").parquet(processed_path)
-
-        # Assert .parquet() was called with the correct path
-        mock_writer.parquet.assert_called_once_with(processed_path)
-        mock_writer.partitionBy.assert_called_once_with("state", "year")
+        processed_dir = tmp_path / "data" / "processed" / "sales"
+        assert processed_dir.exists(), f"No processed dir at {processed_dir}"
+        subdirs = {p.name for p in processed_dir.iterdir() if p.is_dir()}
+        assert "region=north" in subdirs, f"Missing region=north. Got: {subdirs}"
+        assert "region=south" in subdirs, f"Missing region=south. Got: {subdirs}"
 
     @pytest.mark.local
-    def test_non_partitioned_spark_write_calls_parquet(self):
-        """When partition_by is empty, .parquet() is called without partitionBy."""
-        mock_df = MagicMock()
-        mock_writer = MagicMock()
-        mock_df.write = mock_writer
-        mock_writer.mode.return_value = mock_writer
+    def test_non_partitioned_write_produces_single_output(self, tmp_path):
+        """Without partition_by, processed output is a single parquet (no subdirs)."""
+        data_dir = tmp_path / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        csv_path = _make_csv(str(data_dir / "items.csv"))
+        config_path = _write_config(tmp_path, [{
+            "name": "items", "path": csv_path, "format": "csv",
+        }])
+        _make_pipeline(config_path).run(skip_summary=True)
 
-        partition_by = []
-        processed_path = "/tmp/test_output"
-
-        if partition_by:
-            mock_df.write.mode("overwrite").partitionBy(*partition_by).parquet(processed_path)
-        else:
-            mock_df.write.mode("overwrite").parquet(processed_path)
-
-        mock_writer.parquet.assert_called_once_with(processed_path)
-        mock_writer.partitionBy.assert_not_called()
+        processed_dir = tmp_path / "data" / "processed"
+        assert processed_dir.exists()
+        parquet_files = list(processed_dir.rglob("*.parquet"))
+        assert len(parquet_files) >= 1, "No parquet output produced"
 
 
 # ---------------------------------------------------------------------------
