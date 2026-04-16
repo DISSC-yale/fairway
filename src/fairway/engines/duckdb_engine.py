@@ -198,8 +198,10 @@ class DuckDBEngine:
         logger.info("DuckDB reading fixed-width file from %s", input_path)
         logger.info("Spec defines %d columns, expected line length: %d", len(columns), line_length)
 
-        # Handle glob patterns
-        if '*' not in input_path and os.path.isdir(input_path):
+        # Handle glob patterns and list input (multi-archive)
+        if isinstance(input_path, list):
+            read_path = input_path
+        elif '*' not in input_path and os.path.isdir(input_path):
             read_path = os.path.join(input_path, "**/*.txt")
         else:
             read_path = input_path

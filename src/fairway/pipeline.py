@@ -616,10 +616,14 @@ class IngestionPipeline:
         base_output = os.path.join(intermediate_dir, output_name)
 
         # ============================================================
-        # FETCH: Resolve all input files from glob
+        # FETCH: Resolve all input files from glob (or _extracted_files)
         # ============================================================
-        all_files = sorted(glob.glob(input_path, recursive=True))
-        all_files = [f for f in all_files if os.path.isfile(f)]
+        extracted_files = table.get('_extracted_files')
+        if extracted_files:
+            all_files = sorted(extracted_files)
+        else:
+            all_files = sorted(glob.glob(input_path, recursive=True))
+            all_files = [f for f in all_files if os.path.isfile(f)]
 
         if not all_files:
             logger.warning("No files found matching %s", input_path)
@@ -999,7 +1003,8 @@ class IngestionPipeline:
                 min_line_length = table.get('min_line_length')
 
                 # For partitioning, DuckDB creates a directory.
-                logger.info("Starting ingestion for %s from %s to %s", table['name'], input_path, output_path)
+                input_desc = f"{len(input_path)} files" if isinstance(input_path, list) else input_path
+                logger.info("Starting ingestion for %s from %s to %s", table['name'], input_desc, output_path)
                 success = self.engine.ingest(
                     input_path,
                     output_path,

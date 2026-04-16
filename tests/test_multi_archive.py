@@ -38,7 +38,9 @@ def test_multi_archive_all_files_ingested(tmp_path, monkeypatch):
     # Both rows (one from each archive) must be in the curated output
     output_path = str(tmp_path / "data" / "curated" / "combined.parquet")
     con = duckdb.connect()
-    count = con.execute(
-        f"SELECT COUNT(*) FROM read_parquet('{output_path}')"
-    ).fetchone()[0]
-    assert count == 2, f"Expected 2 rows from 2 archives, got {count}"
+    rows = con.execute(
+        f"SELECT id, val FROM read_parquet('{output_path}') ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2, f"Expected 2 rows from 2 archives, got {len(rows)}"
+    assert rows[0] == (1, "value_1"), f"Missing row from archive 1: {rows}"
+    assert rows[1] == (2, "value_2"), f"Missing row from archive 2: {rows}"
