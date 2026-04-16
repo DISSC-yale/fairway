@@ -653,6 +653,11 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
                 spark_defaults = yaml.safe_load(f) or {}
                 account = account or spark_defaults.get('account')
 
+        if not account:
+            raise click.ClickException(
+                "Slurm account is required. Set 'account' in config/spark.yaml or use --account"
+            )
+
         # Validate parameters
         slurm_time = _validate_slurm_time(slurm_time)
         mem = _validate_slurm_mem(mem)
