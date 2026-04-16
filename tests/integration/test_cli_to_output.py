@@ -111,6 +111,37 @@ class TestCLIInitCommand:
             "survived — init is merging rather than replacing."
         )
 
+    @pytest.mark.parametrize("dangerous_name", [".", "..", "/"])
+    def test_cli_init_force_refuses_dangerous_paths(
+        self, tmp_path, monkeypatch, dangerous_name
+    ):
+        """--force must not rmtree cwd, its ancestors, home, or filesystem root.
+
+        `fairway init . --force` on a populated cwd, or `init / --force`, would
+        silently wipe the user's work. The guard should refuse before touching
+        the filesystem.
+        """
+        monkeypatch.chdir(tmp_path)
+        # Put a file in cwd so that if the guard fails, we'd notice the rmtree.
+        sentinel = tmp_path / "sentinel.txt"
+        sentinel.write_text("must survive")
+
+        from fairway.cli import main
+        result = CliRunner().invoke(
+            main, ["init", dangerous_name, "--engine", "duckdb", "--force"]
+        )
+        assert result.exit_code != 0, (
+            f"init {dangerous_name!r} --force should have been refused, "
+            f"but exit_code={result.exit_code}. Output: {result.output}"
+        )
+        assert "refusing" in result.output.lower(), (
+            f"Expected a 'refusing' message, got: {result.output}"
+        )
+        assert sentinel.exists(), (
+            f"Sentinel file in cwd was removed when init {dangerous_name!r} --force "
+            f"was invoked — the guard failed."
+        )
+
 
 @pytest.mark.local
 class TestCLIManifestCommands:

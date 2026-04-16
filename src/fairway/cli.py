@@ -239,6 +239,22 @@ def init(name, engine, force):
                 f"Path '{name}' already exists. "
                 f"Re-run with --force to replace it."
             )
+        # Guard against --force blowing away the user's cwd, home, or root.
+        # `fairway init . --force` with an unthinking rmtree is a footgun.
+        target = os.path.realpath(name)
+        cwd = os.path.realpath(os.getcwd())
+        home = os.path.realpath(os.path.expanduser("~"))
+        if (
+            target in (os.path.realpath(os.sep), home)
+            or target == cwd
+            or cwd.startswith(target + os.sep)
+        ):
+            raise click.ClickException(
+                f"Refusing to --force-init {name!r}: resolved path {target!r} is "
+                f"the filesystem root, your home directory, your current working "
+                f"directory, or an ancestor of it. Pick a new subdirectory name "
+                f"or cd somewhere else first."
+            )
         import shutil
         if os.path.isdir(name):
             shutil.rmtree(name)
