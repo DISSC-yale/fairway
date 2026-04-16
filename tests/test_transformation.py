@@ -145,13 +145,14 @@ class DoubleTransformer(BaseTransformer):
         assert "doubled" in result.columns
         assert list(result["doubled"]) == [2, 4, 6]
 
-    def test_load_nonexistent_script(self, capsys):
-        """Test loading from nonexistent path returns None."""
-        result = load_transformer("/nonexistent/path.py")
+    def test_load_nonexistent_script(self, caplog):
+        """Test loading from nonexistent path returns None and logs error."""
+        import logging
+        with caplog.at_level(logging.ERROR, logger="fairway.transformations.registry"):
+            result = load_transformer("/nonexistent/path.py")
 
         assert result is None
-        captured = capsys.readouterr()
-        assert "not found" in captured.out
+        assert any("not found" in rec.getMessage() for rec in caplog.records)
 
     def test_load_script_without_transformer(self, tmp_path):
         """Test loading script without Transformer class returns None."""
