@@ -69,3 +69,17 @@ def test_spark_conf_shell_dangerous_chars_blocked():
     for injection in dangerous:
         with pytest.raises(ValueError, match="shell-unsafe"):
             _sanitize_spark_conf_value(injection)
+
+
+@pytest.mark.local
+def test_spark_conf_key_injection_blocked():
+    from fairway.engines.slurm_cluster import _sanitize_spark_conf_key
+    with pytest.raises(ValueError, match="Unsafe spark_conf key"):
+        _sanitize_spark_conf_key('spark.$(id)')
+
+
+@pytest.mark.local
+def test_sbatch_newline_injection_blocked():
+    from fairway.engines.slurm_cluster import _sanitize_sbatch_value
+    with pytest.raises(ValueError, match="Newline injection"):
+        _sanitize_sbatch_value("day\n#SBATCH --account=attacker")

@@ -5,6 +5,30 @@ import time
 import click
 
 
+def _sanitize_spark_conf_key(key: str) -> str:
+    """Validate a spark conf key for safe embedding in a shell script.
+
+    Spark conf keys are dot-separated identifiers like spark.executor.memory.
+    Only allow [a-zA-Z0-9._-] to prevent command injection via key names.
+
+    Raises ValueError for keys containing characters outside the allowed set.
+    """
+    if not re.match(r'^[a-zA-Z0-9._\-]+$', str(key)):
+        raise ValueError(f"Unsafe spark_conf key rejected: {key!r}")
+    return str(key)
+
+
+def _sanitize_sbatch_value(value) -> str:
+    """Sanitize a value for safe use in an #SBATCH directive."""
+    s = str(value)
+    if '\n' in s or '\r' in s:
+        raise ValueError(f"Newline injection in SBATCH value rejected: {value!r}")
+    # Also block shell-active chars that appear in SBATCH directives
+    if re.search(r'[`$"\\;|&<>]', s):
+        raise ValueError(f"Unsafe SBATCH value rejected: {value!r}")
+    return s
+
+
 def _sanitize_spark_conf_value(value: str) -> str:
     """Validate a spark conf value for safe embedding in a shell script.
 
@@ -204,6 +228,20 @@ class SlurmSparkManager:
         time_limit = self.config.get('slurm_time')
         partition = self.config.get('slurm_partition')
 
+        # Sanitize all SBATCH header values before interpolating into shell scripts
+        if nodes is not None:
+            nodes = _sanitize_sbatch_value(nodes)
+        if cpus is not None:
+            cpus = _sanitize_sbatch_value(cpus)
+        if mem is not None:
+            mem = _sanitize_sbatch_value(mem)
+        if account is not None:
+            account = _sanitize_sbatch_value(account)
+        if time_limit is not None:
+            time_limit = _sanitize_sbatch_value(time_limit)
+        if partition is not None:
+            partition = _sanitize_sbatch_value(partition)
+
         # Auto-compute executor defaults from SLURM resources
         computed_conf, computed_max, detail_lines = compute_executor_defaults(nodes, cpus, mem)
         if detail_lines:
@@ -229,13 +267,13 @@ class SlurmSparkManager:
 
         da_lines = []
         if dynamic_alloc.get('enabled') is not None:
-            da_lines.append(f'echo "spark.dynamicAllocation.enabled {dynamic_alloc["enabled"]}" >> $DEFAULTS_FILE')
+            da_lines.append(f'echo "spark.dynamicAllocation.enabled {bool(dynamic_alloc["enabled"])}" >> $DEFAULTS_FILE')
         if dynamic_alloc.get('min_executors') is not None:
-            da_lines.append(f'echo "spark.dynamicAllocation.minExecutors {dynamic_alloc["min_executors"]}" >> $DEFAULTS_FILE')
+            da_lines.append(f'echo "spark.dynamicAllocation.minExecutors {int(dynamic_alloc["min_executors"])}" >> $DEFAULTS_FILE')
         if dynamic_alloc.get('max_executors') is not None:
-            da_lines.append(f'echo "spark.dynamicAllocation.maxExecutors {dynamic_alloc["max_executors"]}" >> $DEFAULTS_FILE')
+            da_lines.append(f'echo "spark.dynamicAllocation.maxExecutors {int(dynamic_alloc["max_executors"])}" >> $DEFAULTS_FILE')
         if dynamic_alloc.get('initial_executors') is not None:
-            da_lines.append(f'echo "spark.dynamicAllocation.initialExecutors {dynamic_alloc["initial_executors"]}" >> $DEFAULTS_FILE')
+            da_lines.append(f'echo "spark.dynamicAllocation.initialExecutors {int(dynamic_alloc["initial_executors"])}" >> $DEFAULTS_FILE')
         dynamic_alloc_script = "\n".join(da_lines)
 
         click.echo("Effective spark_conf:")
@@ -243,12 +281,18 @@ class SlurmSparkManager:
             click.echo(f"  {k} = {v}")
 
         spark_conf_lines = "\n".join(
-            f'echo "{key} {_sanitize_spark_conf_value(value)}" >> $DEFAULTS_FILE'
+            f'echo "{_sanitize_spark_conf_key(key)} {_sanitize_spark_conf_value(value)}" >> $DEFAULTS_FILE'
             for key, value in spark_conf.items()
         )
 
         # Get bind paths for Apptainer (empty default - auto-detected from storage config)
         bind_paths = self.config.get('apptainer_binds', '')
+
+        # Sanitize container path values used in the script body
+        if sif_path is not None:
+            sif_path = _sanitize_sbatch_value(sif_path)
+        if bind_paths:
+            bind_paths = _sanitize_sbatch_value(bind_paths)
 
         if use_apptainer:
             sbatch_script = self._generate_apptainer_script(
