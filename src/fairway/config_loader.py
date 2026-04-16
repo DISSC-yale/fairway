@@ -3,6 +3,8 @@ import os
 import glob
 import re
 import logging
+from dataclasses import dataclass, field, fields
+from typing import Any
 
 logger = logging.getLogger("fairway.config")
 
@@ -17,6 +19,83 @@ class ConfigValidationError(Exception):
         self.errors = errors
         message = "Config validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
         super().__init__(message)
+
+
+@dataclass
+class TableConfig:
+    """Typed configuration for a single table.
+
+    Supports both attribute access (t.name) and dict-style access (t['name'])
+    for backward compatibility with code that treats tables as dicts.
+    """
+    name: str = "unnamed"
+    path: str | None = None
+    format: str = "csv"
+    schema: dict = field(default_factory=dict)
+    partition_by: list = field(default_factory=list)
+    write_mode: str = "overwrite"
+    preprocess: dict | None = None
+    validations: dict = field(default_factory=dict)
+    naming_pattern: str | None = None
+    enrichment: dict = field(default_factory=dict)
+    output_layer: str = "curated"
+    type_enforcement: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
+    hive_partitioning: bool = False
+    read_options: dict = field(default_factory=dict)
+    root: str | None = None
+    archives: str | None = None
+    files: str | None = None
+    fixed_width_spec: str | None = None
+    batch_strategy: str = "bulk"
+    transformation: str | None = None
+    min_line_length: int | None = None
+    # Runtime fields set by pipeline (not in config YAML)
+    _extra: dict = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TableConfig":
+        known = {f.name for f in fields(cls)}
+        known_kwargs = {k: v for k, v in d.items() if k in known}
+        extra = {k: v for k, v in d.items() if k not in known}
+        obj = cls(**known_kwargs)
+        obj._extra = extra
+        return obj
+
+    # Dict-protocol methods for backward compatibility
+    def __getitem__(self, key: str) -> Any:
+        if hasattr(self, key) and key != '_extra':
+            return getattr(self, key)
+        return self._extra[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key in {f.name for f in fields(self)} and key != '_extra':
+            object.__setattr__(self, key, value)
+        else:
+            self._extra[key] = value
+
+    def __contains__(self, key: str) -> bool:
+        if key in {f.name for f in fields(self)} and key != '_extra':
+            return True
+        return key in self._extra
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except (KeyError, AttributeError):
+            return default
+
+    def __iter__(self):
+        for f in fields(self):
+            if f.name != '_extra':
+                yield f.name
+        yield from self._extra
+
+    def items(self):
+        for f in fields(self):
+            if f.name != '_extra':
+                yield f.name, getattr(self, f.name)
+        yield from self._extra.items()
 
 
 class Config:
@@ -167,7 +246,7 @@ class Config:
                 if table_format not in valid_formats:
                     raise ValueError(f"Invalid format: '{table_format}'. Must be one of {valid_formats}")
                 preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
-                expanded.append({
+                expanded.append(TableConfig.from_dict({
                     'name': tbl.get('name', 'unnamed'),
                     'path': None,
                     'format': table_format,
@@ -188,7 +267,7 @@ class Config:
                     'type_enforcement': tbl.get('type_enforcement', {}),
                     'validations': self._resolve_table_validations(tbl),
                     'output_layer': tbl.get('output_layer', 'curated'),
-                })
+                }))
                 continue
 
             # Resolve path relative to config file if it's not absolute
@@ -240,7 +319,7 @@ class Config:
                  if preprocess.get('action', '').endswith('.py'):
                      preprocess['action'] = self._resolve_script_path(preprocess['action'], config_dir)
 
-                 expanded.append({
+                 expanded.append(TableConfig.from_dict({
                     'name': table_name,
                     'path': resolved_path,
                     'format': table_format,
@@ -261,7 +340,7 @@ class Config:
                     'type_enforcement': tbl.get('type_enforcement', {}),
                     'validations': self._resolve_table_validations(tbl),
                     'output_layer': tbl.get('output_layer', 'curated'),
-                })
+                 }))
 
             else:
                 # Glob discovery (Eager expansion)
@@ -311,7 +390,7 @@ class Config:
                     if preprocess.get('action', '').endswith('.py'):
                         preprocess['action'] = self._resolve_script_path(preprocess['action'], config_dir)
 
-                    expanded.append({
+                    expanded.append(TableConfig.from_dict({
                         'name': tbl.get('name', os.path.basename(f)),
                         'path': f,
                         'root': table_root,
@@ -332,7 +411,7 @@ class Config:
                         'type_enforcement': tbl.get('type_enforcement', {}),
                         'validations': self._resolve_table_validations(tbl),
                         'output_layer': tbl.get('output_layer', 'curated'),
-                    })
+                    }))
         return expanded
 
     def _validate(self):
