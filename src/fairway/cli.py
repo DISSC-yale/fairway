@@ -1245,6 +1245,29 @@ def pull():
 # MANIFEST COMMANDS
 # =============================================================================
 
+def _resolve_manifest_dir() -> str:
+    """Match IngestionPipeline's manifest dir resolution for CLI commands.
+
+    If a fairway config is auto-discoverable and its storage.root is absolute,
+    manifests live at <storage.root>/manifest. Otherwise fall back to cwd-relative.
+    """
+    try:
+        from .config_loader import Config
+    except ImportError:
+        return "manifest"
+    for candidate in ("config/fairway.yaml", "fairway.yaml"):
+        if os.path.exists(candidate):
+            try:
+                cfg = Config(candidate)
+                output_root = cfg.output_root
+                if os.path.isabs(output_root):
+                    return os.path.join(output_root, "manifest")
+            except Exception:
+                pass
+            break
+    return "manifest"
+
+
 @main.group()
 def manifest():
     """Inspect and query the file manifest."""
@@ -1257,7 +1280,7 @@ def manifest_list():
     from .manifest import ManifestStore
     from tabulate import tabulate
 
-    store = ManifestStore()
+    store = ManifestStore(_resolve_manifest_dir())
     tables = store.list_tables()
 
     if not tables:
@@ -1303,7 +1326,7 @@ def manifest_query(table, file_key, status, batch_id, json_output):
     from .manifest import ManifestStore
     from tabulate import tabulate
 
-    store = ManifestStore()
+    store = ManifestStore(_resolve_manifest_dir())
 
     # If no table specified, show error
     if not table:
