@@ -19,6 +19,31 @@ from .logging_config import BatchLogger
 logger = logging.getLogger("fairway.pipeline")
 
 
+def _recover_atomic_swap(final_output_path: str, old_backup: str, temp_final: str) -> None:
+    """Recover from an interrupted atomic swap.
+
+    Safe recovery order:
+    1. If final_output_path is missing AND old_backup exists → restore from backup.
+    2. Only delete old_backup after confirming final_output_path is valid.
+    3. Clean up temp_final only after old_backup is safely handled.
+    """
+    if not os.path.exists(final_output_path) and os.path.exists(old_backup):
+        os.rename(old_backup, final_output_path)
+        logger.warning("Recovered curated data from interrupted swap: %s", final_output_path)
+
+    if os.path.exists(old_backup) and os.path.exists(final_output_path):
+        if os.path.isdir(old_backup):
+            shutil.rmtree(old_backup)
+        else:
+            os.remove(old_backup)
+
+    if os.path.exists(temp_final):
+        if os.path.isdir(temp_final):
+            shutil.rmtree(temp_final)
+        else:
+            os.remove(temp_final)
+
+
 def _is_preprocess_script_allowed(script_path):
     """Check if preprocessing script path is within an allowed directory.
 
@@ -480,7 +505,10 @@ class IngestionPipeline:
              # PySpark uses recursiveFileLookup=true to find files;
              # DuckDB resolves globs internally. Embedding "**" in the path
              # breaks Hadoop's file:// protocol which doesn't support "**".
-             result_path = processed_paths[0]
+             if include_pattern:
+                 result_path = os.path.join(processed_paths[0], include_pattern)
+             else:
+                 result_path = processed_paths[0]
         else:
              # If multiple, return the common structure...
              if batch_dir:
@@ -494,7 +522,7 @@ class IngestionPipeline:
 
         # Record result for future reuse
         table_manifest.record_preprocessing(
-            original_path=table['path'],
+            original_path=table.get('path') or table.get('archives'),
             preprocessed_path=result_path,
             action=action,
             table_root=table.get('root')
@@ -1055,17 +1083,7 @@ class IngestionPipeline:
                             # Recovery: if a previous run was interrupted mid-swap,
                             # restore curated data from the backup
                             old_backup = final_output_path + ".tmp_old"
-                            if not os.path.exists(final_output_path) and os.path.exists(old_backup):
-                                os.rename(old_backup, final_output_path)
-                                logger.warning("Recovered curated data from interrupted swap: %s", final_output_path)
-
-                            # Clean up any leftover temp from a previous failed attempt
-                            for leftover in (temp_final, old_backup):
-                                if os.path.exists(leftover):
-                                    if os.path.isdir(leftover):
-                                        shutil.rmtree(leftover)
-                                    else:
-                                        os.remove(leftover)
+                            _recover_atomic_swap(final_output_path, old_backup, temp_final)
 
                             os.makedirs(os.path.dirname(temp_final), exist_ok=True)
 
@@ -1153,15 +1171,16 @@ class IngestionPipeline:
                 try:
                     table_manifest = self.manifest_store.get_table_manifest(table['name'])
                     table_manifest.update_file(
-                        table['path'],
+                        table.get('path') or table.get('archives'),
                         status="failed",
                         metadata={"error": str(e)},
                         table_root=table.get('root')
                     )
                 except Exception:
                     logger.warning("Could not record failure in manifest for table '%s'", table['name'])
-                failed_tables.append(table['name'])
-                failed_table_errors[table['name']] = str(e)
+                finally:
+                    failed_tables.append(table['name'])
+                    failed_table_errors[table['name']] = str(e)
                 continue
 
         # Run summarization unless skipped (even if some tables failed)
