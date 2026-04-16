@@ -40,7 +40,13 @@ class TableManifest:
         if os.path.exists(self.manifest_path):
             try:
                 with open(self.manifest_path, 'r') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+                logger.warning(
+                    "Manifest file has unexpected type (%s), starting fresh: %s",
+                    type(data).__name__, self.manifest_path,
+                )
             except json.JSONDecodeError:
                 logger.warning(
                     "Manifest file corrupted, starting fresh: %s",
@@ -245,8 +251,20 @@ class GlobalManifest:
 
     def _load(self):
         if os.path.exists(self.manifest_path):
-            with open(self.manifest_path, 'r') as f:
-                return json.load(f)
+            try:
+                with open(self.manifest_path, 'r') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+                logger.warning(
+                    "Global manifest has unexpected type (%s), starting fresh: %s",
+                    type(data).__name__, self.manifest_path,
+                )
+            except json.JSONDecodeError:
+                logger.warning(
+                    "Global manifest corrupted, starting fresh: %s",
+                    self.manifest_path,
+                )
         return {
             "version": GLOBAL_MANIFEST_VERSION,
             "extractions": {}
