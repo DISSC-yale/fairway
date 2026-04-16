@@ -107,6 +107,81 @@ def _get_apptainer_binds(cfg):
     return bind_paths
 
 
+def _load_spark_defaults(path=None):
+    """Load spark.yaml if present; return {} on missing file.
+
+    Always returns a dict so callers can do `.get(...)` without None-check
+    dance. `path` defaults to constants.DEFAULT_SPARK_CONFIG_PATH.
+    """
+    import yaml
+    if path is None:
+        path = constants.DEFAULT_SPARK_CONFIG_PATH
+    if not os.path.exists(path):
+        return {}
+    with open(path, 'r') as f:
+        return yaml.safe_load(f) or {}
+
+
+def _load_spark_conf(path=None):
+    """Return just the `spark_conf` sub-dict from spark.yaml (or {})."""
+    return _load_spark_defaults(path).get('spark_conf', {}) or {}
+
+
+def _detect_apptainer(main_cfg):
+    """Detect Apptainer mode and derive bind paths from config.
+
+    Returns a tuple (use_apptainer: bool, apptainer_binds: str). Raises
+    click.ClickException if Apptainer is detected but no binds can be
+    resolved. Echoes the derived bind paths when Apptainer is active.
+    """
+    auto_binds = _get_apptainer_binds(main_cfg)
+    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+
+    sif_path = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR, constants.DEFAULT_SIF_NAME)
+    use_apptainer = os.path.exists(sif_path)
+
+    if use_apptainer and not apptainer_binds:
+        raise click.ClickException(
+            "Apptainer mode detected but no bind paths could be determined.\n"
+            "Add 'container.apptainer_binds' to your config file:\n\n"
+            "  container:\n"
+            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
+            "Or ensure storage paths exist so they can be auto-detected."
+        )
+    if use_apptainer:
+        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+    return use_apptainer, apptainer_binds
+
+
+def _submit_slurm_job(job_script, submit_message):
+    """Write `job_script` to a temp file and submit via sbatch.
+
+    On success, echoes sbatch stdout and a "check status" hint. On
+    nonzero return or missing sbatch binary, echoes to stderr and calls
+    sys.exit(1). The temp script is always unlinked in a finally block.
+    """
+    os.makedirs(constants.DEFAULT_LOG_DIR, exist_ok=True)
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(job_script)
+        script_path = f.name
+
+    try:
+        click.echo(submit_message)
+        result = subprocess.run(['sbatch', script_path], capture_output=True, text=True)
+        if result.returncode == 0:
+            click.echo(result.stdout.strip())
+            click.echo("Job submitted. Check status with 'fairway status'.")
+        else:
+            click.echo(f"Error submitting job: {result.stderr}", err=True)
+            sys.exit(1)
+    except FileNotFoundError:
+        click.echo("Error: 'sbatch' command not found. Are you on a system with Slurm?", err=True)
+        sys.exit(1)
+    finally:
+        os.unlink(script_path)
+
+
 @click.group()
 def main():
     """fairway: A portable data ingestion framework."""
@@ -440,7 +515,6 @@ def spark():
 @click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
 def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
     """Start a Spark cluster on Slurm."""
-    import yaml
     from .config_loader import Config
 
     # Auto-discover main config for container settings
@@ -450,32 +524,9 @@ def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
     # Load main config for container settings
     main_cfg = Config(config)
 
-    # Auto-detect bind paths from config
-    auto_binds = _get_apptainer_binds(main_cfg)
-    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
+    _, apptainer_binds = _detect_apptainer(main_cfg)
 
-    # Check if running in Apptainer mode
-    sif_path = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR, constants.DEFAULT_SIF_NAME)
-    use_apptainer = os.path.exists(sif_path)
-
-    if use_apptainer and not apptainer_binds:
-        raise click.ClickException(
-            "Apptainer mode detected but no bind paths could be determined.\n"
-            "Add 'container.apptainer_binds' to your config file:\n\n"
-            "  container:\n"
-            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
-            "Or ensure storage paths exist so they can be auto-detected."
-        )
-
-    if use_apptainer:
-        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
-
-    # Load defaults from spark.yaml
-    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
-    spark_defaults = {}
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
+    spark_defaults = _load_spark_defaults()
 
     # effective resources (no hardcoded defaults)
     nodes = nodes or spark_defaults.get('nodes')
@@ -534,7 +585,6 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     This command executes the pipeline directly on the current machine.
     For HPC submission, use `fairway submit` instead.
     """
-    import yaml
     from .pipeline import IngestionPipeline
     from .logging_config import setup_logging
 
@@ -550,13 +600,7 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
         config = discover_config()
         click.echo(f"Auto-discovered config: {config}")
 
-    # Load spark_conf from spark.yaml for executor settings
-    spark_conf = None
-    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
-            spark_conf = spark_defaults.get('spark_conf', {})
+    spark_conf = _load_spark_conf() or None
 
     if dry_run:
         click.echo(f"DRY RUN - showing matched files for config: {config}\n")
@@ -611,8 +655,6 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
         # Submit with custom resources
         fairway summarize --slurm --mem 64G --time 08:00:00
     """
-    import yaml
-    import tempfile
     from .logging_config import setup_logging
 
     # Auto-discover config first (needed for both paths)
@@ -628,32 +670,10 @@ def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, 
         from fairway.config_loader import Config
         main_cfg = Config(config)
 
-        # Auto-detect bind paths from config
-        auto_binds = _get_apptainer_binds(main_cfg)
-        apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
-
-        # Check if running in Apptainer mode (fairway.sif exists)
-        sif_path = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR, constants.DEFAULT_SIF_NAME)
-        use_apptainer = os.path.exists(sif_path)
-
-        if use_apptainer and not apptainer_binds:
-            raise click.ClickException(
-                "Apptainer mode detected but no bind paths could be determined.\n"
-                "Add 'container.apptainer_binds' to your config file:\n\n"
-                "  container:\n"
-                "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
-                "Or ensure storage paths exist so they can be auto-detected."
-            )
-
-        if use_apptainer:
-            click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+        _, apptainer_binds = _detect_apptainer(main_cfg)
 
         # Load spark.yaml for account default
-        spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
-        if os.path.exists(spark_yaml_path):
-            with open(spark_yaml_path, 'r') as f:
-                spark_defaults = yaml.safe_load(f) or {}
-                account = account or spark_defaults.get('account')
+        account = account or _load_spark_defaults().get('account')
 
         if not account:
             raise click.ClickException(
@@ -741,28 +761,7 @@ fi
 echo "Summary generation completed successfully."
 '''
 
-        # Ensure logs directory exists
-        os.makedirs(constants.DEFAULT_LOG_DIR, exist_ok=True)
-
-        # Write to temp file and submit
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-            f.write(job_script)
-            script_path = f.name
-
-        try:
-            click.echo(f"Submitting summary job (config: {config})...")
-            result = subprocess.run(['sbatch', script_path], capture_output=True, text=True)
-            if result.returncode == 0:
-                click.echo(result.stdout.strip())
-                click.echo("Job submitted. Check status with 'fairway status'.")
-            else:
-                click.echo(f"Error submitting job: {result.stderr}", err=True)
-                sys.exit(1)
-        except FileNotFoundError:
-            click.echo("Error: 'sbatch' command not found. Are you on a system with Slurm?", err=True)
-            sys.exit(1)
-        finally:
-            os.unlink(script_path)
+        _submit_slurm_job(job_script, f"Submitting summary job (config: {config})...")
         return
 
     # ---------------------------------------------------------
@@ -777,13 +776,7 @@ echo "Summary generation completed successfully."
         console=True
     )
 
-    # Load spark_conf from spark.yaml for executor settings
-    spark_conf = None
-    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
-            spark_conf = spark_defaults.get('spark_conf', {})
+    spark_conf = _load_spark_conf() or None
 
     click.echo(f"Generating summaries for config: {config}")
     pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
@@ -1179,9 +1172,6 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
         # Preview the job script
         fairway submit --with-spark --dry-run
     """
-    import yaml
-    import tempfile
-
     # Auto-discover config
     if config is None:
         config = discover_config()
@@ -1207,31 +1197,10 @@ def submit(config, account, partition, time, mem, cpus, with_spark, with_summary
         mem = preprocess_resources.get('memory', mem)
 
     # Auto-detect bind paths from config (storage dirs, temp, table roots, explicit binds)
-    auto_binds = _get_apptainer_binds(main_cfg)
-    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
-
-    # Check if running in Apptainer mode (fairway.sif exists)
-    sif_path = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR, constants.DEFAULT_SIF_NAME)
-    use_apptainer = os.path.exists(sif_path)
-
-    if use_apptainer and not apptainer_binds:
-        raise click.ClickException(
-            "Apptainer mode detected but no bind paths could be determined.\n"
-            "Add 'container.apptainer_binds' to your config file:\n\n"
-            "  container:\n"
-            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
-            "Or ensure storage paths exist so they can be auto-detected."
-        )
-
-    if use_apptainer:
-        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
+    _, apptainer_binds = _detect_apptainer(main_cfg)
 
     # Load spark.yaml for defaults
-    spark_yaml_path = constants.DEFAULT_SPARK_CONFIG_PATH
-    spark_defaults = {}
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
+    spark_defaults = _load_spark_defaults()
 
     # Apply defaults from spark.yaml if not specified (no hardcoded defaults)
     account = account or spark_defaults.get('account')
@@ -1401,28 +1370,10 @@ echo "Pipeline completed successfully."
         click.echo("-" * 60)
         return
 
-    # Ensure logs directory exists
-    os.makedirs(constants.DEFAULT_LOG_DIR, exist_ok=True)
-
-    # Write to temp file and submit
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-        f.write(job_script)
-        script_path = f.name
-
-    try:
-        click.echo(f"Submitting job (config: {config}, with-spark: {with_spark})...")
-        result = subprocess.run(['sbatch', script_path], capture_output=True, text=True)
-        if result.returncode == 0:
-            click.echo(result.stdout.strip())
-            click.echo("Job submitted. Check status with 'fairway status'.")
-        else:
-            click.echo(f"Error submitting job: {result.stderr}", err=True)
-            sys.exit(1)
-    except FileNotFoundError:
-        click.echo("Error: 'sbatch' command not found. Are you on a system with Slurm?", err=True)
-        sys.exit(1)
-    finally:
-        os.unlink(script_path)
+    _submit_slurm_job(
+        job_script,
+        f"Submitting job (config: {config}, with-spark: {with_spark})...",
+    )
 
 
 @main.command()
