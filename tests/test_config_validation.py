@@ -1,8 +1,10 @@
 
+import warnings
+
 import pytest
 import yaml
 import os
-from fairway.config_loader import Config
+from fairway.config_loader import Config, ConfigValidationError
 
 def create_temp_config(filename, content):
     with open(filename, 'w') as f:
@@ -318,3 +320,90 @@ class TestIdentifierValidation:
         }])
         with pytest.raises(ConfigValidationError, match="Invalid naming_pattern group"):
             Config(config_path)
+
+
+class TestValidationHardening:
+    """C3 + C4: config validation hardening."""
+
+    def _write(self, tmp_path, data, name="fw.yaml"):
+        p = tmp_path / name
+        p.write_text(yaml.dump(data))
+        return str(p)
+
+    def _make_data_dir(self, tmp_path):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "t.csv").write_text("id\n1\n")
+        return str(data_dir)
+
+    def test_nested_validations_raises_error(self, tmp_path):
+        """validations: {level1: {min_rows: 1}} must raise, not silently no-op."""
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "tables": [{"name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
+                        "validations": {"level1": {"min_rows": 1}}}],
+        })
+        with pytest.raises(ConfigValidationError) as exc_info:
+            Config(path)
+        assert "nested" in str(exc_info.value).lower()
+
+    def test_unknown_top_level_key_warns(self, tmp_path):
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")}, "tables": [],
+            "unknown_key_xyz": "should warn",
+        })
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Config(path)
+        messages = [str(warning.message) for warning in w]
+        assert any("unknown_key_xyz" in m for m in messages), (
+            f"No warning emitted. Messages: {messages}"
+        )
+
+    def test_check_unique_raises_at_load(self, tmp_path):
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "tables": [{"name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
+                        "validations": {"check_unique": ["id"]}}],
+        })
+        with pytest.raises(ConfigValidationError) as exc_info:
+            Config(path)
+        assert "check_unique" in str(exc_info.value)
+
+    def test_data_sources_aliased_with_warning(self, tmp_path):
+        """data.sources should be aliased to data.tables with deprecation warning."""
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "data": {"sources": [{
+                "name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
+            }]},
+        })
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            config = Config(path)
+        assert len(config.tables) == 1, "data.sources was silently dropped"
+        messages = [str(warning.message).lower() for warning in w]
+        assert any("sources" in m for m in messages), (
+            f"No deprecation warning. Messages: {messages}"
+        )
+
+    def test_unknown_validation_key_warns(self, tmp_path):
+        data_dir = self._make_data_dir(tmp_path)
+        path = self._write(tmp_path, {
+            "dataset_name": "x", "engine": "duckdb",
+            "storage": {"root": str(tmp_path / "out")},
+            "tables": [{"name": "t", "path": f"{data_dir}/*.csv", "format": "csv",
+                        "validations": {"weird_made_up_check": True}}],
+        })
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Config(path)
+        messages = [str(warning.message).lower() for warning in w]
+        assert any("weird_made_up_check" in m for m in messages)

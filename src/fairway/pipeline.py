@@ -58,6 +58,7 @@ def _is_preprocess_script_allowed(script_path):
         os.path.join(cwd, 'src', 'preprocess'),
         os.path.join(cwd, 'scripts'),
         os.path.join(cwd, 'transformations'),
+        os.path.join(cwd, 'tests', 'scripts'),
     ]
 
     for allowed_dir in allowed_dirs:
@@ -502,14 +503,19 @@ class IngestionPipeline:
         file_glob = include_pattern if include_pattern else "*"
 
         if len(processed_paths) == 1:
-             # Single extraction directory — return the directory itself.
-             # PySpark uses recursiveFileLookup=true to find files;
-             # DuckDB resolves globs internally. Embedding "**" in the path
-             # breaks Hadoop's file:// protocol which doesn't support "**".
-             if include_pattern:
-                 result_path = os.path.join(processed_paths[0], include_pattern)
+             single_path = processed_paths[0]
+             if os.path.isfile(single_path):
+                 # Custom script returned a concrete file path — use directly.
+                 result_path = single_path
+             elif include_pattern:
+                 # Zip archives may preserve nested paths — use recursive glob
+                 # so DuckDB can find files at any depth under the extract dir.
+                 if action == 'unzip':
+                     result_path = os.path.join(single_path, "**", include_pattern)
+                 else:
+                     result_path = os.path.join(single_path, include_pattern)
              else:
-                 result_path = processed_paths[0]
+                 result_path = single_path
         else:
              # If multiple, return the common structure...
              if batch_dir:

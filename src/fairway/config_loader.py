@@ -3,6 +3,7 @@ import os
 import glob
 import re
 import logging
+import warnings
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -11,6 +12,24 @@ logger = logging.getLogger("fairway.config")
 # Valid SQL/column identifier pattern (RULE-119: prevent injection)
 # Must start with letter or underscore, followed by letters, digits, or underscores
 VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
+# Validation keys that are recognised and implemented.
+VALID_VALIDATION_KEYS = frozenset({
+    "min_rows", "max_rows", "check_nulls", "expected_columns",
+    "check_range", "check_values", "check_pattern",
+})
+
+# Validation keys that were documented/planned but not yet implemented.
+# These must fail loudly rather than silently no-op.
+UNSUPPORTED_VALIDATION_KEYS = frozenset({"check_unique", "check_custom"})
+
+# Top-level config keys that are recognised. Anything else triggers a warning
+# so users catch typos before they cause silent misbehavior.
+KNOWN_TOP_LEVEL_KEYS = frozenset({
+    "dataset_name", "engine", "storage", "tables", "data",
+    "enrichment", "performance", "validations", "logging",
+    "partition_by", "container", "schema_pipeline", "version",
+})
 
 
 class ConfigValidationError(Exception):
@@ -129,6 +148,27 @@ class Config:
         # scratch_dir is documented for HPC fast-scratch storage; treat as fallback for temp
         temp_raw = os.environ.get('FAIRWAY_TEMP') or self.storage.get('temp') or self.storage.get('scratch_dir')
         self.temp_dir = os.path.expandvars(temp_raw) if temp_raw else None
+
+        # Warn on unknown top-level keys (likely typos)
+        if isinstance(self.data, dict):
+            for key in self.data:
+                if key not in KNOWN_TOP_LEVEL_KEYS:
+                    warnings.warn(
+                        f"Unknown config key '{key}' — check for typos",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+
+        # Alias deprecated 'data.sources' → 'data.tables'
+        data_block = self.data.get('data') if isinstance(self.data, dict) else None
+        if isinstance(data_block, dict) and 'sources' in data_block and 'tables' not in data_block:
+            warnings.warn(
+                "Config uses 'data.sources' which is deprecated. "
+                "Rename to 'data.tables'.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            data_block['tables'] = data_block.pop('sources')
 
         # Support both root-level 'tables' and 'data: tables' structures
         raw_tables = self.data.get('tables')
@@ -422,13 +462,13 @@ class Config:
     def _validate(self):
         """Validate config and fail fast on errors."""
         errors = []
-        warnings = []
+        warn_messages = []
         config_dir = os.path.dirname(os.path.abspath(self.config_path)) if hasattr(self, 'config_path') else os.getcwd()
 
         # Check for empty tables
         if not self.tables:
             # This is a warning, not an error - user might be testing config
-            warnings.append("No tables defined in config")
+            warn_messages.append("No tables defined in config")
 
         table_names = set()
         for i, table in enumerate(self.tables):
@@ -497,6 +537,34 @@ class Config:
                 root_path = os.path.join(config_dir, root) if not os.path.isabs(root) else root
                 if not os.path.isdir(root_path):
                     errors.append(f"{prefix}: Root directory does not exist: {root}")
+
+            # Validation keys: reject unsupported, warn on unknown, reject
+            # nested dict under an unknown key (catches typos like
+            # `level1: {min_rows: 5}`).
+            table_validations = table.get('validations', {})
+            if isinstance(table_validations, dict):
+                for vkey, vval in table_validations.items():
+                    if vkey in UNSUPPORTED_VALIDATION_KEYS:
+                        errors.append(
+                            f"{prefix}: validation '{vkey}' is not yet implemented. "
+                            f"Remove it from your config."
+                        )
+                    elif vkey in VALID_VALIDATION_KEYS:
+                        # Known keys can have whatever value shape the check expects
+                        # (e.g., check_range takes a dict of col -> [min, max]).
+                        pass
+                    elif isinstance(vval, dict):
+                        errors.append(
+                            f"{prefix}: validations must be flat — "
+                            f"found nested dict under unknown key '{vkey}'. "
+                            f"Use e.g. 'min_rows: 5' not '{vkey}: {{min_rows: 5}}'."
+                        )
+                    else:
+                        warnings.warn(
+                            f"Unknown validation key '{vkey}' in {prefix}",
+                            UserWarning,
+                            stacklevel=2,
+                        )
 
             # batch_strategy validation
             batch_strategy = table.get('batch_strategy', 'bulk')
@@ -577,7 +645,7 @@ class Config:
                 errors.append(f"Global partition_by: Invalid column '{col}' - must be valid identifier")
 
         # Print warnings
-        for w in warnings:
+        for w in warn_messages:
             logger.warning("%s", w)
 
         # Raise on errors
