@@ -86,7 +86,12 @@ class TestCLIInitCommand:
         assert "USER EDIT" in config_file.read_text(), "User edit was clobbered"
 
     def test_cli_init_force_overwrites_existing_dir(self, tmp_path, monkeypatch):
-        """--force allows re-initialization of an existing directory."""
+        """--force replaces the existing directory, not merges into it.
+
+        Pins the behavior that stale files left in the project dir from a
+        previous init (or from the user's own additions) are removed, not
+        silently retained alongside freshly-rendered templates.
+        """
         monkeypatch.chdir(tmp_path)
         from fairway.cli import main
         runner = CliRunner()
@@ -94,10 +99,17 @@ class TestCLIInitCommand:
         first = runner.invoke(main, ["init", "myproject", "--engine", "duckdb"])
         assert first.exit_code == 0
 
+        stale = tmp_path / "myproject" / "stale_user_file.txt"
+        stale.write_text("should not survive --force")
+
         second = runner.invoke(
             main, ["init", "myproject", "--engine", "duckdb", "--force"]
         )
         assert second.exit_code == 0, f"--force init failed: {second.output}"
+        assert not stale.exists(), (
+            "--force should remove the old project dir, but stale_user_file.txt "
+            "survived — init is merging rather than replacing."
+        )
 
 
 @pytest.mark.local

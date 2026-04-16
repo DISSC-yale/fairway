@@ -34,18 +34,27 @@ def test_spark_start(runner):
             assert call_args['slurm_nodes'] == 4
             mock_instance.start_cluster.assert_called_once()
 
-def test_spark_start_rejects_placeholder_account(runner):
-    """spark start must refuse to run with an obvious placeholder account."""
+@pytest.mark.parametrize("account_value", [
+    "your-account",
+    "Your-Account",
+    " your-account ",
+    "CHANGEME",
+    "todo",
+])
+def test_spark_start_rejects_placeholder_account(runner, account_value):
+    """spark start must refuse to run with a placeholder account, regardless
+    of case or surrounding whitespace — YAML lets users paste " your-account "
+    with a stray space and we still need to catch it."""
     with runner.isolated_filesystem():
         os.makedirs('config', exist_ok=True)
         with open('config/fairway.yaml', 'w') as f:
             f.write('dataset_name: test\nengine: pyspark\ntables: []\n')
         with open('config/spark.yaml', 'w') as f:
-            f.write('account: your-account\nnodes: 2\n')
+            f.write(f'account: "{account_value}"\nnodes: 2\n')
         with patch('fairway.engines.slurm_cluster.SlurmSparkManager') as MockManager:
             result = runner.invoke(main, ['spark', 'start'])
-        assert result.exit_code != 0
-        assert "placeholder" in result.output.lower() or "your-account" in result.output
+        assert result.exit_code != 0, f"accepted placeholder {account_value!r}"
+        assert "placeholder" in result.output.lower() or account_value.strip() in result.output
         MockManager.assert_not_called()
 
 

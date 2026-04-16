@@ -38,9 +38,9 @@ def _validate_slurm_mem(mem_str):
 
 
 _PLACEHOLDER_SLURM_ACCOUNTS = frozenset({
-    "your-account", "YOUR_ACCOUNT", "your_account",
+    "your-account", "your_account",
     "myaccount", "my-account", "account-name",
-    "CHANGEME", "changeme", "TODO", "todo",
+    "changeme", "todo",
 })
 
 
@@ -48,9 +48,14 @@ def _validate_slurm_account(account):
     """Reject obvious placeholder account values left over from the shipped template.
 
     Catches the cases where a user runs `fairway init`, skims spark.yaml, and
-    jumps straight to `spark start` without editing the account line.
+    jumps straight to `spark start` without editing the account line. Strips
+    whitespace and lowercases before comparison so `"Your-Account "` and
+    `"your-account"` both hit.
     """
-    if account in _PLACEHOLDER_SLURM_ACCOUNTS:
+    if account is None:
+        return
+    normalized = str(account).strip().casefold()
+    if normalized in _PLACEHOLDER_SLURM_ACCOUNTS:
         raise click.ClickException(
             f"Slurm account {account!r} looks like a placeholder. Edit the 'account' "
             f"value in config/spark.yaml (or pass --account) with your real Slurm "
@@ -228,11 +233,18 @@ def main():
 @click.option('--force', is_flag=True, default=False, help='Overwrite an existing project directory.')
 def init(name, engine, force):
     """Initialize a new fairway project."""
-    if os.path.exists(name) and not force:
-        raise click.ClickException(
-            f"Directory '{name}' already exists. "
-            f"Re-run with --force to overwrite existing files."
-        )
+    if os.path.exists(name):
+        if not force:
+            raise click.ClickException(
+                f"Path '{name}' already exists. "
+                f"Re-run with --force to replace it."
+            )
+        import shutil
+        if os.path.isdir(name):
+            shutil.rmtree(name)
+        else:
+            os.remove(name)
+        click.echo(f"Removed existing path '{name}' before re-initialization.")
     click.echo(f"Initializing new fairway project: {name} with engine: {engine}")
 
     directories = [

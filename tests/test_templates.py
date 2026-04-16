@@ -69,6 +69,23 @@ class TestShippedTemplateValidity:
                     f"Invalid regex in table {table['name']!r}: {pattern!r} — {e}"
                 )
 
+    def test_no_double_brace_regex_escapes_anywhere_in_template(self):
+        """No `{{N}}` regex-quantifier-style double braces anywhere in the shipped yaml.
+
+        Broader than the naming_pattern scan: catches {{N}} in commented examples,
+        under validations.check_pattern, or any future field that carries a regex
+        value. The shipped template is what `fairway init` copies verbatim; if a
+        user uncomments a block containing {{N}} they get a broken regex, so the
+        whole file should be free of this pattern.
+        """
+        import re
+        template_str = templates._read_data_file("fairway.yaml")
+        bad = re.findall(r"\{\{\d+\}\}", template_str)
+        assert not bad, (
+            f"Found literal double-brace quantifiers in shipped fairway.yaml: {bad}. "
+            f"Use single braces for regex quantifiers."
+        )
+
 
 class TestTemplateConstants:
     """Verify all template constants are loaded."""

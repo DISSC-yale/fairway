@@ -15,8 +15,16 @@ def test_fairway_exposes_version():
 
 def test_fairway_version_matches_pyproject():
     import fairway
-    import tomllib
     from pathlib import Path
+
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:
+        try:
+            import tomli as tomllib  # backport for 3.10
+        except ImportError:
+            import pytest
+            pytest.skip("no tomllib/tomli available to parse pyproject.toml")
 
     project_root = Path(__file__).parent.parent
     with open(project_root / "pyproject.toml", "rb") as f:
