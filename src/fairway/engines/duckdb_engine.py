@@ -198,10 +198,11 @@ class DuckDBEngine:
 
         # Step 1: Read file as single text column (no header, no delimiter parsing)
         # Use a delimiter that won't appear in fixed-width data (ASCII unit separator)
+        path_sql = self._format_path_sql(read_path)
         self.con.execute(f"""
             CREATE OR REPLACE TEMP VIEW raw_lines_unfiltered AS
             SELECT column0 AS line
-            FROM read_csv('{read_path}', header=false, sep=E'\\x1F', columns={{'column0': 'VARCHAR'}})
+            FROM read_csv({path_sql}, header=false, sep=E'\\x1F', columns={{'column0': 'VARCHAR'}})
         """)
 
         # Step 1b: Filter by record type if specified (for hierarchical fixed-width files)
@@ -214,10 +215,11 @@ class DuckDBEngine:
             logger.info("Filtering to record_type='%s' at position %d (length %d)", value, record_filter['position'], length)
             # Use TEMP TABLE to materialize filtered rows (filter applied once, not on every access)
             self.con.execute("DROP TABLE IF EXISTS raw_lines")
+            safe_value = value.replace("'", "''")
             self.con.execute(f"""
                 CREATE TEMP TABLE raw_lines AS
                 SELECT line FROM raw_lines_unfiltered
-                WHERE substr(line, {pos}, {length}) = '{value}'
+                WHERE substr(line, {pos}, {length}) = '{safe_value}'
             """)
         else:
             self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines AS SELECT line FROM raw_lines_unfiltered")
@@ -384,10 +386,11 @@ class DuckDBEngine:
 
         select_clause = ', '.join(select_parts)
 
+        parquet_sql = self._format_path_sql(parquet_source)
         self.con.execute(f"""
             CREATE OR REPLACE TEMP VIEW raw_data AS
             SELECT {select_clause}
-            FROM read_parquet('{parquet_source}', union_by_name=true)
+            FROM read_parquet({parquet_sql}, union_by_name=true)
         """)
 
         return self._write_to_parquet(output_path, partition_by=partition_by,
@@ -408,12 +411,12 @@ class DuckDBEngine:
         """
         try:
             # Use LIMIT 0 to get schema without reading data
-            rel = self.con.sql(f"SELECT * FROM {read_func}('{file_path}') LIMIT 0")
+            rel = self.con.sql(f"SELECT * FROM {read_func}({self._format_path_sql(file_path)}) LIMIT 0")
             return set(rel.columns)
         except Exception:
             # Fallback: try with LIMIT 1 for formats that need at least one row
             try:
-                rel = self.con.sql(f"SELECT * FROM {read_func}('{file_path}') LIMIT 1")
+                rel = self.con.sql(f"SELECT * FROM {read_func}({self._format_path_sql(file_path)}) LIMIT 1")
                 return set(rel.columns)
             except Exception:
                 return set()
@@ -559,9 +562,9 @@ class DuckDBEngine:
 
         # Step 2c: Infer types from sampled files using UNION ALL BY NAME
         if len(sample) == 1:
-            query = f"SELECT * FROM {read_func}('{sample[0]}') LIMIT {rows_per_file}"
+            query = f"SELECT * FROM {read_func}({self._format_path_sql(sample[0])}) LIMIT {rows_per_file}"
         else:
-            subqueries = [f"SELECT * FROM {read_func}('{f}') LIMIT {rows_per_file}" for f in sample]
+            subqueries = [f"SELECT * FROM {read_func}({self._format_path_sql(f)}) LIMIT {rows_per_file}" for f in sample]
             query = " UNION ALL BY NAME ".join(subqueries)
 
         try:
@@ -577,7 +580,7 @@ class DuckDBEngine:
             column_types = {}
             for f in sample:
                 try:
-                    rel = self.con.sql(f"SELECT * FROM {read_func}('{f}') LIMIT {rows_per_file}")
+                    rel = self.con.sql(f"SELECT * FROM {read_func}({self._format_path_sql(f)}) LIMIT {rows_per_file}")
                     for col_name, col_type in zip(rel.columns, rel.types):
                         mapped_type = self._map_duckdb_type(col_type)
                         if col_name not in column_types:
