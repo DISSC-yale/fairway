@@ -1,0 +1,14 @@
+dataset_name: "integration_simple"
+engine: "duckdb"
+storage:
+  root: "PLACEHOLDER_ROOT"
+tables:
+  - name: "people"
+    path: "raw/people.csv"
+    format: "csv"
+    schema:
+      id: "BIGINT"
+      name: "VARCHAR"
+      age: "INTEGER"
+validations:
+  min_rows: 1
