@@ -897,6 +897,10 @@ class IngestionPipeline:
                     logger.error("Distributed hash check failed: %s. Falling back to driver check.", e)
 
         for table in self.config.tables:
+            if table['name'] in failed_tables:
+                logger.info("Skipping '%s' (failed in Phase 0 preprocessing)", table['name'])
+                continue
+
             try:
                 # Get per-table manifest for this table
                 table_manifest = self.manifest_store.get_table_manifest(table['name'])

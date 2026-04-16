@@ -1,9 +1,10 @@
 import pytest
 import yaml
+import os
 
 @pytest.mark.local
 def test_phase0_failure_in_one_table_does_not_abort_siblings(tmp_path, monkeypatch):
-    """A preprocessing failure for table 1 must not abort table 2's preprocessing."""
+    """A preprocessing failure for table 1 must not block table 2's full ingestion."""
     monkeypatch.chdir(tmp_path)
 
     good_csv = tmp_path / "raw" / "good.csv"
@@ -33,15 +34,17 @@ def test_phase0_failure_in_one_table_does_not_abort_siblings(tmp_path, monkeypat
     from fairway.pipeline import IngestionPipeline
     pipeline = IngestionPipeline(str(config_path))
 
-    # Run preprocessing for all tables; broken should fail, good should proceed
-    preprocessed = {}
-    for table in pipeline.config.tables:
-        try:
-            result = pipeline._preprocess(table)
-            preprocessed[table['name']] = result
-        except Exception:
-            preprocessed[table['name']] = None
+    # run() should complete (possibly raising RuntimeError listing failures)
+    # but the "good" table should be fully ingested regardless
+    try:
+        pipeline.run(skip_summary=True)
+    except RuntimeError as e:
+        # Expected — the "broken" table failed
+        assert "broken" in str(e)
 
-    assert preprocessed.get('good') is not None, (
-        "Phase 0 failure in 'broken' table aborted 'good' table preprocessing"
+    # Verify "good" table was successfully ingested
+    curated_path = tmp_path / "data" / "curated" / "good.parquet"
+    processed_path = tmp_path / "data" / "processed" / "good"
+    assert curated_path.exists() or processed_path.exists(), (
+        "Phase 0 failure in 'broken' table prevented 'good' table from being ingested"
     )
