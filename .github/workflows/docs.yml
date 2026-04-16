@@ -25,9 +25,8 @@ jobs:
           path: .cache
           restore-keys: |
             mkdocs-material-
-      - run: pip install mkdocs-material mkdocs-coverage
-      - run: pip install -e ".[dev]"
-      - run: pytest --cov=src/fairway --cov-report=xml --cov-report=html --cov-report=term-missing --no-cov-on-fail || true
+      - run: pip install -e ".[dev,docs]"
+      - run: pytest tests/ -m "not spark and not hpc" --no-cov-on-fail
       - run: mkdocs build
       - uses: actions/upload-pages-artifact@v3
         with:
