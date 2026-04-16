@@ -16,6 +16,7 @@ VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 # Single source of truth for validation keys lives in validations/checks.py;
 # re-use it here so config-load validation and runtime-check validation can't drift.
 from fairway.validations.checks import KNOWN_VALIDATION_KEYS, LEGACY_LEVEL_KEYS
+from fairway.constants import VALID_ENGINES, normalize_engine_name
 
 # Keys declared in KNOWN_VALIDATION_KEYS but not yet implemented at runtime
 # (checks.py raises NotImplementedError). Caught at config load so users
@@ -133,11 +134,13 @@ class Config:
         
         self.dataset_name = self.data.get('dataset_name')
         
-        # Engine Validation
-        self.engine = self.data.get('engine', 'duckdb')
-        valid_engines = {'duckdb', 'pyspark'}
-        if self.engine not in valid_engines:
-            raise ValueError(f"Invalid engine: '{self.engine}'. Must be one of {valid_engines}")
+        # Engine Validation — normalize aliases ('spark' -> 'pyspark') once at load
+        # so downstream code can compare against canonical names without per-callsite
+        # normalization.
+        raw_engine = self.data.get('engine', 'duckdb')
+        self.engine = normalize_engine_name(raw_engine)
+        if self.engine not in VALID_ENGINES:
+            raise ValueError(f"Invalid engine: '{raw_engine}'. Must be one of {sorted(VALID_ENGINES)}")
 
         self.storage = self.data.get('storage', {})
 
@@ -435,7 +438,6 @@ class Config:
 
 
                     execution_mode = tbl.get('preprocess', {}).get('execution_mode', 'driver')
-                    from fairway.constants import normalize_engine_name
                     if execution_mode == 'cluster' and normalize_engine_name(self.engine) != 'pyspark':
                          raise ValueError(f"Configuration Error: 'execution_mode: cluster' is only available with 'engine: pyspark'. Table: {tbl.get('name')}")
 

@@ -36,7 +36,11 @@ def normalize_engine_name(engine):
     """
     if not engine:
         return engine
-    key = engine.lower()
+    if not isinstance(engine, str):
+        return engine
+    key = engine.strip().lower()
+    if not key:
+        return key
     return ENGINE_ALIASES.get(key, key)
 
 # Slurm defaults (no personal account — must be set explicitly)

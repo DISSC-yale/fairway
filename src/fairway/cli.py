@@ -114,7 +114,7 @@ def main():
 
 @main.command()
 @click.argument('name')
-@click.option('--engine', type=click.Choice(['duckdb', 'spark', 'pyspark']), required=True, help='Compute engine to use (duckdb or spark).')
+@click.option('--engine', type=click.Choice(['duckdb', 'spark', 'pyspark']), required=True, help="Compute engine to use. 'spark' is an alias for 'pyspark'.")
 def init(name, engine):
     """Initialize a new fairway project."""
     click.echo(f"Initializing new fairway project: {name} with engine: {engine}")
@@ -966,18 +966,18 @@ def build(force):
     if os.path.exists('Apptainer.def'):
         click.echo("Found Apptainer.def. Building Apptainer image...")
 
-        if os.path.exists("fairway.sif"):
+        if os.path.exists(constants.DEFAULT_SIF_NAME):
             if force:
-                click.echo("Overwriting existing fairway.sif...")
-                os.remove("fairway.sif")
+                click.echo(f"Overwriting existing {constants.DEFAULT_SIF_NAME}...")
+                os.remove(constants.DEFAULT_SIF_NAME)
             else:
-                if not click.confirm("fairway.sif already exists. Overwrite?"):
+                if not click.confirm(f"{constants.DEFAULT_SIF_NAME} already exists. Overwrite?"):
                     return
 
-        cmd = ["apptainer", "build", "fairway.sif", "Apptainer.def"]
+        cmd = ["apptainer", "build", constants.DEFAULT_SIF_NAME, "Apptainer.def"]
         try:
             subprocess.run(cmd, check=True)
-            click.echo("\nBuild complete: fairway.sif")
+            click.echo(f"\nBuild complete: {constants.DEFAULT_SIF_NAME}")
             click.echo("For development, use: fairway shell --dev")
         except subprocess.CalledProcessError as e:
             raise click.ClickException(f"Apptainer build failed with exit code {e.returncode}")
@@ -1055,8 +1055,8 @@ def shell(config, image, bind, dev):
     # Determine image
     if image:
         container_image = image
-    elif os.path.exists("fairway.sif"):
-        container_image = "fairway.sif"
+    elif os.path.exists(constants.DEFAULT_SIF_NAME):
+        container_image = constants.DEFAULT_SIF_NAME
     else:
         # Default to latest from registry
         container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
@@ -1402,7 +1402,7 @@ echo "Pipeline completed successfully."
         return
 
     # Ensure logs directory exists
-    os.makedirs('logs/slurm', exist_ok=True)
+    os.makedirs(constants.DEFAULT_LOG_DIR, exist_ok=True)
 
     # Write to temp file and submit
     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
@@ -1428,7 +1428,7 @@ echo "Pipeline completed successfully."
 @main.command()
 def pull():
     """Pull (mirror) the Apptainer container from the registry."""
-    container_local = "fairway.sif"
+    container_local = constants.DEFAULT_SIF_NAME
     container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
     
     if os.path.exists(container_local):

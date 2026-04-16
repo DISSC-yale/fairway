@@ -8,6 +8,8 @@ import hashlib
 import importlib.util
 import logging
 import tempfile
+from . import constants
+from .constants import VALID_ENGINES, normalize_engine_name
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
@@ -123,8 +125,8 @@ class ArchiveCache:
         # Create short hash for directory name
         short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
 
-        # Use temp_dir from config, or default to .fairway_cache
-        base_dir = self.config.temp_dir or os.path.join(os.getcwd(), '.fairway_cache')
+        # Use temp_dir from config, or default to constants.DEFAULT_CACHE_DIR
+        base_dir = self.config.temp_dir or os.path.join(os.getcwd(), constants.DEFAULT_CACHE_DIR)
         return os.path.join(base_dir, 'archives', f"{archive_name}_{short_hash}")
 
     def _safe_extract_path(self, dest_dir, member_path):
@@ -244,7 +246,6 @@ class IngestionPipeline:
         self._engine = value
 
     def _get_engine(self, spark_master=None, engine_override=None, spark_conf=None):
-        from .constants import VALID_ENGINES, normalize_engine_name
         # CLI override takes precedence over config; normalize aliases ('spark' -> 'pyspark')
         raw = engine_override or self.config.engine or 'duckdb'
         engine_type = normalize_engine_name(raw)
