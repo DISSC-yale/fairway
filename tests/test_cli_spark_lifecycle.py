@@ -32,6 +32,7 @@ def test_spark_start(runner):
             MockManager.assert_called_once()
             call_args = MockManager.call_args[0][0]
             assert call_args['slurm_nodes'] == 4
+            mock_instance.start_cluster.assert_called_once()
 
 def test_spark_stop(runner):
     """Test fairway spark stop command."""

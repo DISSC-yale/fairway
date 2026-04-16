@@ -19,7 +19,7 @@ def test_build_apptainer(runner):
         with open('Apptainer.def', 'w') as f:
             f.write("Bootstrap: docker\nFrom: alpine")
             
-        with patch('subprocess.run') as mock_run:
+        with patch('fairway.cli.subprocess.run') as mock_run:
             result = runner.invoke(main, ['build'])
             
             assert result.exit_code == 0
@@ -36,7 +36,7 @@ def test_build_docker(runner):
         with open('Dockerfile', 'w') as f:
             f.write("FROM alpine")
             
-        with patch('subprocess.run') as mock_run:
+        with patch('fairway.cli.subprocess.run') as mock_run:
             result = runner.invoke(main, ['build'])
             
             assert result.exit_code == 0
@@ -55,7 +55,7 @@ def test_build_force_overwrite(runner):
         with open('fairway.sif', 'w') as f:
             f.write("fake image")
             
-        with patch('subprocess.run') as mock_run:
+        with patch('fairway.cli.subprocess.run') as mock_run:
             # 1. No force, decline overwrite
             result = runner.invoke(main, ['build'], input='n\n')
             assert result.exit_code == 0 # Aborted safely
