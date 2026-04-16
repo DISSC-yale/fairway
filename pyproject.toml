@@ -77,3 +77,4 @@ addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml --cov-re
 [tool.setuptools.package-data]
 "fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]
 "fairway.data.scripts" = ["*.sh", "*.py"]
+"fairway.slurm_templates" = ["*.sh"]
