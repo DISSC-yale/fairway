@@ -148,27 +148,34 @@ class Validator:
 
         # max_rows check
         # RULE-103: avoid df.count() on the full frame when we only need to
-        # know whether it exceeds a threshold. df.limit(max_rows + 1).count()
-        # short-circuits as soon as one row over the limit is materialized.
+        # know whether it exceeds a threshold. For Spark, df.limit(max_rows+1)
+        # short-circuits as soon as Spark materializes one row over the limit.
+        # Best-effort — Spark may still scan several partitions to get there,
+        # but that is bounded by the limit, not the dataset size.
         max_rows = flat.get("max_rows")
         if max_rows is not None:
             if is_spark:
                 over_limit = df.limit(max_rows + 1).count()
-                exceeded = over_limit > max_rows
-                reported = f">{max_rows}" if exceeded else str(over_limit)
+                if over_limit > max_rows:
+                    result.add_finding({
+                        "column": None,
+                        "check": "max_rows",
+                        "message": f"Row count >{max_rows} exceeds maximum {max_rows}",
+                        "severity": "error",
+                        "failed_count": 1,
+                        "total_count": 1,
+                    })
             else:
                 row_count = len(df)
-                exceeded = row_count > max_rows
-                reported = str(row_count)
-            if exceeded:
-                result.add_finding({
-                    "column": None,
-                    "check": "max_rows",
-                    "message": f"Row count {reported} exceeds maximum {max_rows}",
-                    "severity": "error",
-                    "failed_count": 1,
-                    "total_count": 1,
-                })
+                if row_count > max_rows:
+                    result.add_finding({
+                        "column": None,
+                        "check": "max_rows",
+                        "message": f"Row count {row_count} exceeds maximum {max_rows}",
+                        "severity": "error",
+                        "failed_count": 1,
+                        "total_count": 1,
+                    })
 
         # expected_columns check
         expected_columns = flat.get("expected_columns")
@@ -211,17 +218,30 @@ class Validator:
         if check_nulls:
             if is_spark:
                 from pyspark.sql import functions as F
-                present_cols = [c for c in check_nulls if c in df.columns]
+                # Surface missing columns as warnings (parity with check_range/values/pattern).
+                df_cols = set(df.columns)
+                present_cols = [c for c in check_nulls if c in df_cols]
+                for missing in (c for c in check_nulls if c not in df_cols):
+                    result.add_finding({
+                        "column": missing,
+                        "check": "check_nulls",
+                        "message": f"Column '{missing}' not found, skipping nulls check",
+                        "severity": "warn",
+                        "failed_count": 0,
+                        "total_count": 0,
+                    })
                 if present_cols:
-                    agg_exprs = [F.count(F.lit(1)).alias("_total_count")]
-                    for c in present_cols:
+                    # Positional aliases avoid collisions with user columns named like "__null__foo".
+                    # Slot 0 is the total count; slot i+1 is the null count for present_cols[i].
+                    agg_exprs = [F.count(F.lit(1)).alias("__fw_total__")]
+                    for i in range(len(present_cols)):
                         agg_exprs.append(
-                            F.count(F.when(F.col(c).isNull(), 1)).alias(f"__null__{c}")
+                            F.count(F.when(F.col(present_cols[i]).isNull(), 1)).alias(f"__fw_null_{i}__")
                         )
                     row = df.agg(*agg_exprs).collect()[0]
-                    total = row["_total_count"]
-                    for col_name in present_cols:
-                        null_count = row[f"__null__{col_name}"]
+                    total = row[0]
+                    for i, col_name in enumerate(present_cols):
+                        null_count = row[i + 1]
                         if null_count > 0:
                             result.add_finding({
                                 "column": col_name,

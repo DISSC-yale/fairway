@@ -31,17 +31,81 @@ def test_duckdb_engine_close_and_stop_are_interchangeable():
 def test_calculate_hashes_single_file_slow_path_initializes_sha256(tmp_path):
     """Regression for UnboundLocalError when a single (non-dir, non-glob) file
     path is hashed with fast_check=False. Previous code referenced
-    sha256_hash before assigning it in the slow-hash branch."""
-    # Verify the fix by inspecting the source — we can't run the worker on
-    # a real SparkSession without Java. Reading the file is adequate: the
-    # slow-path now explicitly assigns sha256_hash before the read loop.
+    sha256_hash before assigning it in the slow-hash branch.
+
+    Uses AST parsing rather than source-substring matching so the test is
+    robust to whitespace and unrelated edits in the surrounding function.
+    """
+    import ast
     import inspect
+    import textwrap
+
     pyspark_mod = pytest.importorskip("fairway.engines.pyspark_engine")
-    source = inspect.getsource(pyspark_mod.PySparkEngine.calculate_hashes)
-    # After the fix, the single-file slow branch begins with an assignment:
-    assert "sha256_hash = hashlib.sha256()\n                    with open(path" in source, (
-        "Single-file slow-hash branch is missing sha256_hash initialization "
-        "— UnboundLocalError regression"
+    source = textwrap.dedent(inspect.getsource(pyspark_mod.PySparkEngine.calculate_hashes))
+    tree = ast.parse(source)
+
+    def _is_sha256_update_loop(with_node):
+        """True if this With node is `with open(<arg>, "rb") as f: for ...: sha256_hash.update(...)`."""
+        if not isinstance(with_node, ast.With):
+            return False
+        if not any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Name)
+            and item.context_expr.func.id == "open"
+            for item in with_node.items
+        ):
+            return False
+        for sub in ast.walk(with_node):
+            if (
+                isinstance(sub, ast.Attribute)
+                and isinstance(sub.value, ast.Name)
+                and sub.value.id == "sha256_hash"
+                and sub.attr == "update"
+            ):
+                return True
+        return False
+
+    def _collect_with_update_statements(body, enclosing_assigns, results):
+        """Walk `body` in order. Track sha256_hash assignments seen before each
+        qualifying `with open(...)` that mutates sha256_hash. Recurse into
+        nested control-flow bodies, propagating the assignment state."""
+        for stmt in body:
+            if (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and stmt.targets[0].id == "sha256_hash"
+            ):
+                enclosing_assigns = True
+            elif isinstance(stmt, ast.With) and _is_sha256_update_loop(stmt):
+                results.append(enclosing_assigns)
+            elif isinstance(stmt, (ast.For, ast.While)):
+                _collect_with_update_statements(stmt.body, enclosing_assigns, results)
+                _collect_with_update_statements(stmt.orelse, enclosing_assigns, results)
+            elif isinstance(stmt, ast.If):
+                _collect_with_update_statements(stmt.body, enclosing_assigns, results)
+                _collect_with_update_statements(stmt.orelse, enclosing_assigns, results)
+            elif isinstance(stmt, ast.Try):
+                _collect_with_update_statements(stmt.body, enclosing_assigns, results)
+                for handler in stmt.handlers:
+                    _collect_with_update_statements(handler.body, enclosing_assigns, results)
+                _collect_with_update_statements(stmt.orelse, enclosing_assigns, results)
+                _collect_with_update_statements(stmt.finalbody, enclosing_assigns, results)
+            elif isinstance(stmt, ast.With):
+                _collect_with_update_statements(stmt.body, enclosing_assigns, results)
+
+    results = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            _collect_with_update_statements(node.body, False, results)
+
+    assert results, (
+        "AST walk did not find any `with open(...)` that updates sha256_hash — "
+        "test is not covering calculate_hashes"
+    )
+    assert all(results), (
+        "At least one slow-hash branch calls sha256_hash.update(...) without "
+        "first assigning `sha256_hash = hashlib.sha256()` — UnboundLocalError regression"
     )
 
     (tmp_path / "data.csv").write_text("id\n1\n")
