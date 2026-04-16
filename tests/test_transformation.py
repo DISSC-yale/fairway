@@ -169,6 +169,19 @@ class SomeOtherClass:
 
         assert result is None
 
+    def test_load_script_with_multiple_transformers_raises(self, tmp_path):
+        """Two Transformer classes in one script must raise, not silently pick one."""
+        script = tmp_path / "two_transformers.py"
+        script.write_text(
+            "from fairway.transformations.base import BaseTransformer\n"
+            "class AlphaTransformer(BaseTransformer):\n"
+            "    def transform(self): return self.df\n"
+            "class BetaTransformer(BaseTransformer):\n"
+            "    def transform(self): return self.df\n"
+        )
+        with pytest.raises(ValueError, match="exactly one Transformer class"):
+            load_transformer(str(script))
+
     def test_load_script_with_imported_base(self, tmp_path):
         """Test that imported BaseTransformer is not returned."""
         script = tmp_path / "import_only.py"

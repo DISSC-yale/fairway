@@ -4,10 +4,12 @@ import inspect
 import logging
 import os
 import sys
+import threading
 
 logger = logging.getLogger(__name__)
 
 _EXTRA_ALLOWED_DIRS = []
+_LOAD_LOCK = threading.Lock()
 
 
 def _get_allowed_transform_dirs():
@@ -48,10 +50,12 @@ def clear_allowed_directories():
 def load_transformer(script_path):
     """Dynamically load a transformer class from a file path.
 
-    Security: Only loads scripts from allowed project directories.
-    Isolation: uses the script's full real path hash as the sys.modules key,
-    so two scripts with the same basename in different directories don't
-    overwrite each other's module.
+    Security: only loads scripts from allowed project directories.
+    Isolation: keys sys.modules by sha256(realpath)[:12], so scripts with
+    the same basename in different directories do not collide.
+    Freshness: re-execs on every call so edits to the script between loads
+    are picked up. Load+exec is serialized via a lock to avoid a second
+    thread observing a partially-initialized module.
     """
     if not os.path.exists(script_path):
         logger.error("Transformation script not found: %s", script_path)
@@ -67,23 +71,40 @@ def load_transformer(script_path):
         raise ValueError(f"Security error: Transformation script must be a .py file: {script_path}")
 
     real_path = os.path.realpath(os.path.abspath(script_path))
-    module_key = f"fairway_transformer_{hashlib.md5(real_path.encode()).hexdigest()[:12]}"
+    module_key = f"fairway_transformer_{hashlib.sha256(real_path.encode()).hexdigest()[:12]}"
 
-    if module_key not in sys.modules:
+    with _LOAD_LOCK:
         spec = importlib.util.spec_from_file_location(module_key, real_path)
         if spec is None:
             logger.error("Could not create module spec for: %s", script_path)
             return None
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_key] = module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_key, None)
+            raise
 
-    module = sys.modules[module_key]
-    for name, obj in inspect.getmembers(module, inspect.isclass):
-        if (name.endswith('Transformer') or name == 'Transformer') \
-                and name != 'BaseTransformer' \
-                and obj.__module__ == module_key:
-            return obj
+    candidates = []
+    for name, obj in vars(module).items():
+        if not inspect.isclass(obj):
+            continue
+        if name == 'BaseTransformer':
+            continue
+        if not (name.endswith('Transformer') or name == 'Transformer'):
+            continue
+        if obj.__module__ != module_key:
+            continue
+        candidates.append(obj)
 
-    logger.error("No Transformer class found in: %s", script_path)
-    return None
+    if not candidates:
+        logger.error("No Transformer class found in: %s", script_path)
+        return None
+    if len(candidates) > 1:
+        names = ", ".join(c.__name__ for c in candidates)
+        raise ValueError(
+            f"Transformation script must define exactly one Transformer class; "
+            f"found {len(candidates)} ({names}) in {script_path}"
+        )
+    return candidates[0]
