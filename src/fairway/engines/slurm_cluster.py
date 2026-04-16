@@ -5,6 +5,29 @@ import time
 import click
 
 
+def _sanitize_spark_conf_value(value: str) -> str:
+    """Validate a spark conf value for safe embedding in a shell script.
+
+    The value is embedded inside a double-quoted bash string, e.g.:
+        echo "spark.key <value>" >> $DEFAULTS_FILE
+
+    Inside double quotes, the shell only interprets: $, `, ", and \\.
+    We also reject newlines and other control characters to prevent
+    multi-line injection.  Everything else (*, #, ;, &, |, >, <, (, ),
+    [, ]) is inert inside double quotes.
+
+    Raises ValueError for values containing shell-unsafe characters.
+    """
+    s = str(value)
+    # Reject any character that is dangerous inside a double-quoted shell string,
+    # or any control character (including newlines and null bytes).
+    if re.search(r'["\$`\\\x00-\x1f\x7f]', s):
+        raise ValueError(
+            f"Unsafe spark_conf value rejected (contains shell-unsafe characters): {value!r}"
+        )
+    return s
+
+
 def _parse_mem_to_gb(mem_str):
     """Parse a SLURM memory string (e.g. '200G', '1024M') to gigabytes (int)."""
     if not mem_str:
@@ -220,7 +243,7 @@ class SlurmSparkManager:
             click.echo(f"  {k} = {v}")
 
         spark_conf_lines = "\n".join(
-            f'echo "{key} {value}" >> $DEFAULTS_FILE'
+            f'echo "{key} {_sanitize_spark_conf_value(value)}" >> $DEFAULTS_FILE'
             for key, value in spark_conf.items()
         )
 
