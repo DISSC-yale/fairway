@@ -129,8 +129,15 @@ def test_pipeline_allows_mock_enrichment_with_opt_in(tmp_path, monkeypatch):
     from fairway.pipeline import IngestionPipeline
     IngestionPipeline(str(config_path)).run(skip_summary=True)
 
-    from tests.helpers import read_curated
+    from tests.helpers import read_as_df, read_curated
     df = read_curated(tmp_path, "addresses")
     assert {"latitude", "longitude", "h3_index"}.issubset(df.columns)
     assert ((df["latitude"] >= -90) & (df["latitude"] <= 90)).all()
     assert ((df["longitude"] >= -180) & (df["longitude"] <= 180)).all()
+
+    # Pin the enrichment-only persist fix: modified df must be written to
+    # the processed layer, not only surfaced via curated's atomic copy.
+    processed = tmp_path / "data" / "processed" / "addresses_processed.parquet"
+    assert processed.exists(), "Enrichment-only run did not persist to processed layer"
+    proc_df = read_as_df(processed)
+    assert {"latitude", "longitude", "h3_index"}.issubset(proc_df.columns)
