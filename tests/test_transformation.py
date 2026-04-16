@@ -17,89 +17,78 @@ def allow_tmp_path_for_transforms(tmp_path):
     clear_allowed_directories()
 
 
+class _IdentityTransformer(BaseTransformer):
+    """Concrete subclass used to exercise BaseTransformer helpers in tests."""
+
+    def transform(self) -> pd.DataFrame:
+        return self.df
+
+
 class TestBaseTransformer:
     """Tests for BaseTransformer functionality."""
 
-    def test_base_transformer_identity(self):
-        """Test base transformer returns unchanged dataframe."""
+    def test_base_transformer_is_abstract(self):
+        """Instantiating BaseTransformer without overriding transform() must fail."""
+        with pytest.raises(TypeError):
+            BaseTransformer(pd.DataFrame({"id": [1]}))
+
+    def test_subclass_identity(self):
+        """Concrete subclass with trivial transform returns unchanged dataframe."""
         df = pd.DataFrame({"id": [1, 2], "name": ["alice", "bob"]})
-        transformer = BaseTransformer(df)
-
-        result = transformer.transform()
-
+        result = _IdentityTransformer(df).transform()
         pd.testing.assert_frame_equal(result, df)
 
     def test_rename_columns(self):
-        """Test column renaming."""
         df = pd.DataFrame({"old_name": [1, 2], "keep": ["a", "b"]})
-        transformer = BaseTransformer(df)
-
+        transformer = _IdentityTransformer(df)
         transformer.rename_columns({"old_name": "new_name"})
         result = transformer.transform()
-
         assert "new_name" in result.columns
         assert "old_name" not in result.columns
         assert "keep" in result.columns
 
     def test_cast_types(self):
-        """Test type casting."""
         df = pd.DataFrame({"id": ["1", "2"], "value": [1.5, 2.5]})
-        transformer = BaseTransformer(df)
-
+        transformer = _IdentityTransformer(df)
         transformer.cast_types({"id": int, "value": int})
         result = transformer.transform()
-
         assert result["id"].dtype == int
         assert result["value"].dtype == int
         assert list(result["id"]) == [1, 2]
         assert list(result["value"]) == [1, 2]
 
     def test_cast_types_missing_column(self):
-        """Test type casting ignores missing columns."""
         df = pd.DataFrame({"id": ["1", "2"]})
-        transformer = BaseTransformer(df)
-
-        # Should not raise even though 'missing' doesn't exist
+        transformer = _IdentityTransformer(df)
         transformer.cast_types({"id": int, "missing": str})
         result = transformer.transform()
-
         assert result["id"].dtype == int
 
     def test_clean_strings(self):
-        """Test string cleaning (strip and lowercase)."""
         df = pd.DataFrame({"name": ["  ALICE  ", "BOB  ", "  Carol"]})
-        transformer = BaseTransformer(df)
-
+        transformer = _IdentityTransformer(df)
         transformer.clean_strings(["name"])
         result = transformer.transform()
-
         assert list(result["name"]) == ["alice", "bob", "carol"]
 
     def test_clean_strings_missing_column(self):
-        """Test string cleaning ignores missing columns."""
         df = pd.DataFrame({"name": ["Alice"]})
-        transformer = BaseTransformer(df)
-
-        # Should not raise
+        transformer = _IdentityTransformer(df)
         transformer.clean_strings(["name", "missing"])
         result = transformer.transform()
-
         assert list(result["name"]) == ["alice"]
 
     def test_chained_operations(self):
-        """Test chaining multiple transformer operations."""
         df = pd.DataFrame({
             "old_col": ["  VALUE1  ", "  VALUE2  "],
             "num": ["10", "20"]
         })
-        transformer = BaseTransformer(df)
-
+        transformer = _IdentityTransformer(df)
         result = (transformer
             .rename_columns({"old_col": "new_col"})
             .clean_strings(["new_col"])
             .cast_types({"num": int})
             .transform())
-
         assert "new_col" in result.columns
         assert list(result["new_col"]) == ["value1", "value2"]
         assert result["num"].dtype == int
@@ -145,9 +134,15 @@ class DoubleTransformer(BaseTransformer):
         assert "doubled" in result.columns
         assert list(result["doubled"]) == [2, 4, 6]
 
-    def test_load_nonexistent_script(self, caplog):
-        """Test loading from nonexistent path returns None and logs error."""
+    def test_load_nonexistent_script(self, caplog, monkeypatch):
+        """Test loading from nonexistent path returns None and logs error.
+
+        Ensures propagation is on for the fairway logger so caplog captures
+        the error record regardless of which other tests may have called
+        setup_logger() first (which sets propagate=False).
+        """
         import logging
+        monkeypatch.setattr(logging.getLogger("fairway"), "propagate", True)
         with caplog.at_level(logging.ERROR, logger="fairway.transformations.registry"):
             result = load_transformer("/nonexistent/path.py")
 
@@ -254,6 +249,33 @@ class TestTransformationThroughPipeline:
         assert "processed" in df.columns, "Transform did not add 'processed' column"
         assert len(df) == 3, "Transform must not change row count"
         assert df["processed"].all(), "All rows must have processed=True"
+
+    def test_transform_returning_none_raises(self, engine, fixtures_dir, tmp_path):
+        """A transformer that returns None must raise, not silently drop data."""
+        if hasattr(engine, "spark"):
+            pytest.xfail("Spark path not relevant — validation is engine-agnostic")
+        from tests.helpers import build_config
+
+        def engine_name(e):
+            return "pyspark" if hasattr(e, "spark") else "duckdb"
+
+        transform_script = tmp_path / "bad_transform.py"
+        transform_script.write_text(
+            "from fairway.transformations.base import BaseTransformer\n\n"
+            "class BadTransformer(BaseTransformer):\n"
+            "    def transform(self):\n"
+            "        return None\n"
+        )
+
+        config = build_config(tmp_path, engine=engine_name(engine), table={
+            "name": "bad",
+            "path": str(fixtures_dir / "formats" / "csv" / "simple.csv"),
+            "format": "csv",
+            "transformation": str(transform_script),
+        })
+        from fairway.pipeline import IngestionPipeline
+        with pytest.raises((ValueError, RuntimeError), match="returned None"):
+            IngestionPipeline(config).run()
 
     def test_transform_row_count_unchanged_both_engines(self, engine, fixtures_dir, tmp_path):
         """Transform must not filter or duplicate rows on either engine."""

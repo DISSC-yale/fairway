@@ -1010,7 +1010,13 @@ class IngestionPipeline:
             TransformerClass = load_transformer(transform_script)
             if TransformerClass:
                 logger.info("Applying custom transformations from %s...", transform_script)
-                df = TransformerClass(df).transform()
+                transformed = TransformerClass(df).transform()
+                if transformed is None:
+                    raise ValueError(
+                        f"Transformer {TransformerClass.__name__} in {transform_script} "
+                        f"returned None; transform() must return a DataFrame."
+                    )
+                df = transformed
 
                 processed_basename = (
                     f"{output_name}_processed"
