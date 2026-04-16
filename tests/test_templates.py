@@ -39,6 +39,37 @@ class TestReadDataFile:
                     templates._read_data_file('nonexistent.txt')
 
 
+class TestShippedTemplateValidity:
+    """The shipped fairway.yaml template must be usable as-is by `fairway init`."""
+
+    def test_naming_patterns_compile_as_regex(self):
+        """All naming_pattern values must compile after template substitution."""
+        import re
+        import string
+        import yaml
+
+        template_str = templates._read_data_file("fairway.yaml")
+        filled = string.Template(template_str).safe_substitute(
+            name="myproject", engine_type="duckdb"
+        )
+        config = yaml.safe_load(filled)
+
+        for table in config.get("tables", []):
+            pattern = table.get("naming_pattern")
+            if not pattern:
+                continue
+            assert "{{" not in pattern and "}}" not in pattern, (
+                f"Literal double-braces in pattern for table {table['name']!r}: {pattern!r}. "
+                f"Use single braces for regex quantifiers (e.g. \\d{{4}} for 4 digits)."
+            )
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise AssertionError(
+                    f"Invalid regex in table {table['name']!r}: {pattern!r} — {e}"
+                )
+
+
 class TestTemplateConstants:
     """Verify all template constants are loaded."""
 

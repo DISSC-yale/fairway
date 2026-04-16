@@ -37,6 +37,27 @@ def _validate_slurm_mem(mem_str):
     return mem_str
 
 
+_PLACEHOLDER_SLURM_ACCOUNTS = frozenset({
+    "your-account", "YOUR_ACCOUNT", "your_account",
+    "myaccount", "my-account", "account-name",
+    "CHANGEME", "changeme", "TODO", "todo",
+})
+
+
+def _validate_slurm_account(account):
+    """Reject obvious placeholder account values left over from the shipped template.
+
+    Catches the cases where a user runs `fairway init`, skims spark.yaml, and
+    jumps straight to `spark start` without editing the account line.
+    """
+    if account in _PLACEHOLDER_SLURM_ACCOUNTS:
+        raise click.ClickException(
+            f"Slurm account {account!r} looks like a placeholder. Edit the 'account' "
+            f"value in config/spark.yaml (or pass --account) with your real Slurm "
+            f"account name before starting a cluster."
+        )
+
+
 def discover_config():
     """Auto-discover config file in config/ folder.
     
@@ -204,8 +225,14 @@ def main():
 @main.command()
 @click.argument('name')
 @click.option('--engine', type=click.Choice(['duckdb', 'spark', 'pyspark']), required=True, help="Compute engine to use. 'spark' is an alias for 'pyspark'.")
-def init(name, engine):
+@click.option('--force', is_flag=True, default=False, help='Overwrite an existing project directory.')
+def init(name, engine, force):
     """Initialize a new fairway project."""
+    if os.path.exists(name) and not force:
+        raise click.ClickException(
+            f"Directory '{name}' already exists. "
+            f"Re-run with --force to overwrite existing files."
+        )
     click.echo(f"Initializing new fairway project: {name} with engine: {engine}")
 
     directories = [
@@ -553,6 +580,7 @@ def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
     # Validate required settings
     if not account:
         raise click.ClickException("Slurm account is required. Set 'account' in config/spark.yaml or use --account")
+    _validate_slurm_account(account)
 
     from .engines.slurm_cluster import SlurmSparkManager
 

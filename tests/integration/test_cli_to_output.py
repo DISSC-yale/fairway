@@ -68,6 +68,37 @@ class TestCLIInitCommand:
         assert "$" not in data.get("dataset_name", ""), \
             f"Unrendered placeholder: {data.get('dataset_name')}"
 
+    def test_cli_init_refuses_to_overwrite_existing_dir(self, tmp_path, monkeypatch):
+        """Re-running init on an existing project must not clobber user edits."""
+        monkeypatch.chdir(tmp_path)
+        from fairway.cli import main
+        runner = CliRunner()
+
+        first = runner.invoke(main, ["init", "myproject", "--engine", "duckdb"])
+        assert first.exit_code == 0
+
+        config_file = tmp_path / "myproject" / "config" / "fairway.yaml"
+        config_file.write_text(config_file.read_text() + "\n# USER EDIT\n")
+
+        second = runner.invoke(main, ["init", "myproject", "--engine", "duckdb"])
+        assert second.exit_code != 0, "init should refuse to overwrite existing dir"
+        assert "already exists" in second.output.lower()
+        assert "USER EDIT" in config_file.read_text(), "User edit was clobbered"
+
+    def test_cli_init_force_overwrites_existing_dir(self, tmp_path, monkeypatch):
+        """--force allows re-initialization of an existing directory."""
+        monkeypatch.chdir(tmp_path)
+        from fairway.cli import main
+        runner = CliRunner()
+
+        first = runner.invoke(main, ["init", "myproject", "--engine", "duckdb"])
+        assert first.exit_code == 0
+
+        second = runner.invoke(
+            main, ["init", "myproject", "--engine", "duckdb", "--force"]
+        )
+        assert second.exit_code == 0, f"--force init failed: {second.output}"
+
 
 @pytest.mark.local
 class TestCLIManifestCommands:

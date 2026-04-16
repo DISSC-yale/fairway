@@ -26,6 +26,7 @@ config/sales_schema.yaml
 
 # Coverage artifacts
 coverage.json
+coverage.xml
 config/census_1950.yaml
 .reports/security-analysis.md
 .claude

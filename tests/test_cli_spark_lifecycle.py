@@ -34,6 +34,21 @@ def test_spark_start(runner):
             assert call_args['slurm_nodes'] == 4
             mock_instance.start_cluster.assert_called_once()
 
+def test_spark_start_rejects_placeholder_account(runner):
+    """spark start must refuse to run with an obvious placeholder account."""
+    with runner.isolated_filesystem():
+        os.makedirs('config', exist_ok=True)
+        with open('config/fairway.yaml', 'w') as f:
+            f.write('dataset_name: test\nengine: pyspark\ntables: []\n')
+        with open('config/spark.yaml', 'w') as f:
+            f.write('account: your-account\nnodes: 2\n')
+        with patch('fairway.engines.slurm_cluster.SlurmSparkManager') as MockManager:
+            result = runner.invoke(main, ['spark', 'start'])
+        assert result.exit_code != 0
+        assert "placeholder" in result.output.lower() or "your-account" in result.output
+        MockManager.assert_not_called()
+
+
 def test_spark_stop(runner):
     """Test fairway spark stop command."""
     with runner.isolated_filesystem():

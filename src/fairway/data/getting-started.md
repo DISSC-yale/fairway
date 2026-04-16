@@ -57,9 +57,9 @@ Edit `config/fairway.yaml` to change the engine:
 engine: duckdb
 
 # Use Spark (triggers auto-provisioning on HPC)
-engine: spark
+engine: pyspark
 
-sources:
+tables:
   - name: "my_data"
     path: "data/raw/my_data.csv"
     format: "csv"
