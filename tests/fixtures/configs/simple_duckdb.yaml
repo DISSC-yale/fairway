@@ -4,7 +4,7 @@ storage:
   root: "PLACEHOLDER_ROOT"
 tables:
   - name: "people"
-    path: "raw/people.csv"
+    path: "PLACEHOLDER_ROOT/raw/people.csv"
     format: "csv"
     schema:
       id: "BIGINT"

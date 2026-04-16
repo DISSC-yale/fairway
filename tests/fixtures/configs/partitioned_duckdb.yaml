@@ -4,7 +4,7 @@ storage:
   root: "PLACEHOLDER_ROOT"
 tables:
   - name: "sales"
-    path: "raw/sales"
+    path: "PLACEHOLDER_ROOT/raw/sales"
     format: "csv"
     partition_by:
       - "year"
