@@ -66,9 +66,12 @@ class EngineProtocol(Protocol):
         ...
 
     def stop(self) -> None:
-        """Release any held resources (Spark session, DuckDB connection).
+        """Terminate the engine lifecycle and release held resources.
 
-        Must be idempotent — safe to call from both explicit teardown and
-        atexit-style finalizers.
+        This is end-of-life, not a reset: after stop(), subsequent ingest /
+        enforce_types / read_result / infer_schema calls must raise a clear
+        error (not a NoneType AttributeError). Idempotent — a second call
+        is a no-op, so teardown code is safe to call from both explicit
+        shutdown and atexit-style finalizers.
         """
         ...

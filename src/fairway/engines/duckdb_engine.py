@@ -56,24 +56,37 @@ class DuckDBEngine:
         self.con.execute("INSTALL aws; LOAD aws;") # Or gcs if needed
 
     def stop(self):
-        """Close the underlying DuckDB connection.
+        """Close the underlying DuckDB connection; terminates the engine lifecycle.
 
-        Idempotent — safe to call multiple times. Must match the PySpark
-        engine's stop() so pipeline teardown doesn't need to know which
-        engine it holds.
+        Idempotent — a second call is a no-op. Must mirror PySparkEngine.stop()
+        so pipeline teardown doesn't need to know which engine it holds. After
+        stop(), any method that needs the connection raises RuntimeError
+        instead of a NoneType AttributeError.
         """
         con = getattr(self, 'con', None)
         if con is not None:
             try:
+                logger.info("Closing DuckDB connection...")
                 con.close()
-            except Exception:
-                pass
-            self.con = None
+                logger.info("DuckDB connection closed.")
+            except Exception as e:
+                logger.warning("Error closing DuckDB connection: %s", e)
+            finally:
+                self.con = None
+
+    def _require_con(self):
+        """Raise a clear error instead of a NoneType AttributeError post-stop()."""
+        if self.con is None:
+            raise RuntimeError(
+                "DuckDBEngine has been stopped; construct a new instance to continue."
+            )
+        return self.con
 
     def ingest(self, input_path, output_path, format='csv', partition_by=None, metadata=None, naming_pattern=None, hive_partitioning=False, target_rows=None, schema=None, write_mode='overwrite', **kwargs):
         """
         Generic ingestion method that dispatches to format-specific handlers.
         """
+        self._require_con()
         # Extract format-specific kwargs before stripping (needed by handlers)
         fixed_width_spec = kwargs.pop('fixed_width_spec', None)
         min_line_length = kwargs.pop('min_line_length', None)
@@ -382,6 +395,7 @@ class DuckDBEngine:
             partition_by: Optional list of partition column names.
             write_mode:  'overwrite' or 'append'.
         """
+        self._require_con()
         ALLOWED_TYPES = {
             'VARCHAR', 'STRING', 'INTEGER', 'INT', 'BIGINT', 'DOUBLE', 'FLOAT',
             'DATE', 'TIMESTAMP', 'BOOLEAN', 'DECIMAL',
@@ -430,6 +444,7 @@ class DuckDBEngine:
         """
         Reads a Parquet result from the given path into a DuckDB Relation (Lazy).
         """
+        self._require_con()
         escaped_path = path.replace("'", "''")
         if os.path.isfile(path):
             return self.con.sql(f"SELECT * FROM '{escaped_path}'")
@@ -513,6 +528,7 @@ class DuckDBEngine:
             - Phase 2 ensures at least one file per unique column is sampled (coverage guarantee)
             - Deterministic: files are sorted before processing
         """
+        self._require_con()
         import glob as glob_module
 
         rows_per_file = int(rows_per_file)
