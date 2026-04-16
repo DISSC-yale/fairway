@@ -368,6 +368,17 @@ class IngestionPipeline:
                      if os.path.exists(output_dir) and os.listdir(output_dir):
                          return output_dir
                      with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                         for member in zip_ref.namelist():
+                             member_path = os.path.realpath(
+                                 os.path.join(output_dir, member)
+                             )
+                             if not member_path.startswith(
+                                 os.path.realpath(output_dir) + os.sep
+                             ):
+                                 raise ValueError(
+                                     f"Zip Slip blocked: {member!r} would extract "
+                                     f"outside {output_dir}"
+                                 )
                          zip_ref.extractall(output_dir)
                      return output_dir
                  else:
