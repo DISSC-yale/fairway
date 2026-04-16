@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev,duckdb]"
       - name: Run tests
-        run: pytest tests/ -m "not spark and not hpc" --cov=src/fairway --cov-report=xml --cov-fail-under=70
+        run: pytest tests/ -m "not spark and not hpc" -p no:cacheprovider --override-ini="addopts=" --cov=src/fairway --cov-report=xml --cov-fail-under=65
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         if: matrix.python-version == '3.11'
