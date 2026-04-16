@@ -112,10 +112,13 @@ class DuckDBEngine:
              kwargs['names'] = list(schema.keys())
 
         for k, v in kwargs.items():
+            if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', str(k)):
+                raise ValueError(f"Invalid DuckDB option key: {k!r}")
             if isinstance(v, bool):
                 val = str(v).lower() # true/false
             elif isinstance(v, str):
-                val = f"'{v}'"
+                escaped_v = v.replace("'", "''")
+                val = f"'{escaped_v}'"
             elif isinstance(v, list):
                 # list -> ['a', 'b']
                 val = f"[{', '.join([f'{repr(x)}' for x in v])}]"
@@ -328,9 +331,10 @@ class DuckDBEngine:
         # COPY ... TO 'dir' (FORMAT PARQUET, PARTITION_BY ...) -> Writes new files into dir.
         overwrite_val = "TRUE" if write_mode == 'overwrite' else "FALSE"
 
+        escaped_output = output_path.replace("'", "''")
         self.con.execute(f"""
-            COPY (SELECT {select_clause} FROM raw_data) 
-            TO '{output_path}' 
+            COPY (SELECT {select_clause} FROM raw_data)
+            TO '{escaped_output}'
             (FORMAT PARQUET{partition_clause}, OVERWRITE {overwrite_val})
         """)
         return True
@@ -400,9 +404,10 @@ class DuckDBEngine:
         """
         Reads a Parquet result from the given path into a DuckDB Relation (Lazy).
         """
+        escaped_path = path.replace("'", "''")
         if os.path.isfile(path):
-             return self.con.sql(f"SELECT * FROM '{path}'")
-        return self.con.sql(f"SELECT * FROM '{path}/**/*.parquet'")
+            return self.con.sql(f"SELECT * FROM '{escaped_path}'")
+        return self.con.sql(f"SELECT * FROM '{escaped_path}/**/*.parquet'")
 
     def _get_column_names_only(self, file_path, format, read_func):
         """Fast column name extraction (header only).
