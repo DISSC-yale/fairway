@@ -195,7 +195,8 @@ class DuckDBEngine:
         columns = spec['columns']
         line_length = spec['line_length']
 
-        logger.info("DuckDB reading fixed-width file from %s", input_path)
+        input_desc = f"{len(input_path)} files" if isinstance(input_path, list) else input_path
+        logger.info("DuckDB reading fixed-width file from %s", input_desc)
         logger.info("Spec defines %d columns, expected line length: %d", len(columns), line_length)
 
         # Handle glob patterns and list input (multi-archive)
