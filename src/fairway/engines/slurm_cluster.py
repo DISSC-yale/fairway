@@ -4,7 +4,7 @@ import re
 import time
 import click
 
-from fairway import constants
+from fairway.apptainer import FAIRWAY_SIF_ENV_VAR, DEFAULT_SIF_NAME
 
 
 def _sanitize_job_id(job_id: str) -> str:
@@ -144,7 +144,31 @@ class SlurmSparkManager:
             driver_job_id = _sanitize_job_id(driver_job_id)
         self.driver_job_id = driver_job_id
 
-        if driver_job_id:
+        # Slurm log dir for sbatch --output. Resolver-supplied when we
+        # come in from cli.py; falls back to "logs/slurm" so direct
+        # unit-test callers that construct with {} keep working.
+        if isinstance(config, dict):
+            self.slurm_log_dir = config.get('slurm_log_dir') or "logs/slurm"
+        else:
+            self.slurm_log_dir = "logs/slurm"
+
+        # Prefer a PathResolver-derived coordination dir if the caller
+        # supplied one (Phase 2d — single source of truth for state).
+        # Falls back to `~/.fairway-spark/` only when no resolver path
+        # is available, so pre-refactor call sites (dict-only configs,
+        # direct tests) still work.
+        coord_override = None
+        if isinstance(config, dict):
+            coord_override = config.get('spark_coordination_dir')
+
+        if coord_override:
+            base = str(coord_override)
+            state_dir = os.path.join(base, driver_job_id) if driver_job_id else base
+            self.master_url_file = os.path.join(state_dir, "master_url.txt")
+            self.job_id_file = os.path.join(state_dir, "cluster_job_id.txt")
+            self.conf_dir_file = os.path.join(state_dir, "conf_dir.txt")
+            self.cores_file = os.path.join(state_dir, "total_cores.txt")
+        elif driver_job_id:
             # Use job-specific directory to prevent race conditions between concurrent jobs
             state_dir = os.path.expanduser(f"~/.fairway-spark/{driver_job_id}")
             self.master_url_file = os.path.join(state_dir, "master_url.txt")
@@ -170,10 +194,10 @@ class SlurmSparkManager:
         # If not specified in config, auto-detect
         if use_apptainer is None:
             # Check for local fairway.sif
-            if os.path.exists(constants.DEFAULT_SIF_NAME):
-                return True, os.path.abspath(constants.DEFAULT_SIF_NAME)
+            if os.path.exists(DEFAULT_SIF_NAME):
+                return True, os.path.abspath(DEFAULT_SIF_NAME)
             # Check for FAIRWAY_SIF env var
-            env_sif = os.environ.get(constants.FAIRWAY_SIF_ENV_VAR)
+            env_sif = os.environ.get(FAIRWAY_SIF_ENV_VAR)
             if env_sif and os.path.exists(env_sif):
                 return True, env_sif
             return False, None
@@ -182,8 +206,8 @@ class SlurmSparkManager:
         if use_apptainer:
             if sif_path and os.path.exists(sif_path):
                 return True, os.path.abspath(sif_path)
-            elif os.path.exists(constants.DEFAULT_SIF_NAME):
-                return True, os.path.abspath(constants.DEFAULT_SIF_NAME)
+            elif os.path.exists(DEFAULT_SIF_NAME):
+                return True, os.path.abspath(DEFAULT_SIF_NAME)
             else:
                 click.echo("WARNING: use_apptainer=true but no .sif file found. Falling back to bare-metal.")
                 return False, None
@@ -319,10 +343,10 @@ class SlurmSparkManager:
         # Write and submit script
         from datetime import datetime
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        os.makedirs(constants.DEFAULT_LOG_DIR, exist_ok=True)
+        os.makedirs(self.slurm_log_dir, exist_ok=True)
 
         mode_suffix = "apptainer" if use_apptainer else "baremetal"
-        script_path = f"{constants.DEFAULT_LOG_DIR}/start_spark_cluster_{mode_suffix}_{timestamp}.sh"
+        script_path = f"{self.slurm_log_dir}/start_spark_cluster_{mode_suffix}_{timestamp}.sh"
         with open(script_path, "w") as f:
             f.write(sbatch_script)
         os.chmod(script_path, 0o755)
@@ -352,7 +376,7 @@ class SlurmSparkManager:
 
         return f"""#!/bin/bash
 #SBATCH --job-name=fairway-spark
-#SBATCH --output={constants.DEFAULT_LOG_DIR}/spark_cluster_%j.log
+#SBATCH --output={self.slurm_log_dir}/spark_cluster_%j.log
 #SBATCH --nodes={nodes}
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task={cpus}
@@ -366,12 +390,12 @@ class SlurmSparkManager:
 # =============================================================================
 
 set -e
-mkdir -p {constants.DEFAULT_LOG_DIR}
+mkdir -p {self.slurm_log_dir}
 
 # Apptainer container configuration
 # These are exported so fairway-spark-start.sh can detect container mode
 # and wrap Spark components (master, workers) in apptainer exec
-export {constants.FAIRWAY_SIF_ENV_VAR}="{sif_path}"
+export {FAIRWAY_SIF_ENV_VAR}="{sif_path}"
 export FAIRWAY_BINDS="{bind_paths}"
 
 echo "Starting Spark cluster in Apptainer mode"
@@ -427,7 +451,7 @@ sleep infinity
         """Generate sbatch script for bare-metal mode (host Spark module)."""
         return f"""#!/bin/bash
 #SBATCH --job-name=fairway-spark
-#SBATCH --output={constants.DEFAULT_LOG_DIR}/spark_cluster_%j.log
+#SBATCH --output={self.slurm_log_dir}/spark_cluster_%j.log
 #SBATCH --nodes={nodes}
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task={cpus}
@@ -441,7 +465,7 @@ sleep infinity
 # =============================================================================
 
 set -e
-mkdir -p {constants.DEFAULT_LOG_DIR}
+mkdir -p {self.slurm_log_dir}
 
 echo "Starting Spark cluster in bare-metal mode (host module)"
 

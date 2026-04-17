@@ -18,11 +18,16 @@ from click.testing import CliRunner
 # ---------------------------------------------------------------------------
 
 def _write_config(tmp_path, tables, engine="pyspark"):
-    """Write a minimal fairway config and return its path."""
+    """Write a minimal fairway config and return its path.
+
+    Always sets storage.root under tmp_path so the pipeline's manifest
+    directory lives inside the test's tmp dir (no repo-root leaks).
+    """
     config_path = tmp_path / "fairway.yaml"
     config_path.write_text(yaml.dump({
         "dataset_name": "lifecycle_test",
         "engine": engine,
+        "storage": {"root": str(tmp_path / "data")},
         "tables": tables,
     }))
     return str(config_path)
@@ -343,18 +348,46 @@ def test_missing_duckdb_import():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.local
-def test_flexible_ingestion(tmp_path):
+def test_flexible_ingestion(tmp_path, monkeypatch):
     """Pipeline handles headerless, zipped, custom-script, and batch sources."""
     import shutil
+    from pathlib import Path
 
-    config_path = "tests/fairway_test_flexible.yaml"
-    if not os.path.exists(config_path):
+    repo_root = Path(__file__).parent.parent
+    src_config = repo_root / "tests" / "fairway_test_flexible.yaml"
+    if not src_config.exists():
         pytest.skip("fairway_test_flexible.yaml fixture not present")
 
-    output_dir = tmp_path / "output"
+    # Stage the YAML at the same relative path (tests/fairway_test_flexible.yaml)
+    staged_config_dir = tmp_path / "tests"
+    staged_config_dir.mkdir(parents=True, exist_ok=True)
+    staged_config = staged_config_dir / "fairway_test_flexible.yaml"
+    shutil.copy2(src_config, staged_config)
+
+    # Stage data files referenced by the YAML. Data paths in the YAML
+    # (e.g. "data/raw_headerless.csv") are resolved relative to the
+    # config's directory (tmp_path/tests/), so the files must live at
+    # tmp_path/tests/data/.
+    staged_data = tmp_path / "tests" / "data"
+    staged_data.mkdir(parents=True, exist_ok=True)
+    for fname in ("raw_headerless.csv", "raw_zipped.zip"):
+        src = repo_root / "tests" / "data" / fname
+        if src.exists():
+            shutil.copy2(src, staged_data / fname)
+
+    # Preprocessing `action` paths are CWD-relative (resolved by pipeline.py
+    # against os.getcwd()), so the script must live at tmp_path/tests/scripts/.
+    staged_scripts = tmp_path / "tests" / "scripts"
+    staged_scripts.mkdir(parents=True, exist_ok=True)
+    src_script = repo_root / "tests" / "scripts" / "dummy_process.py"
+    if src_script.exists():
+        shutil.copy2(src_script, staged_scripts / "dummy_process.py")
+
+    # Run pipeline from tmp_path so tests/output/ stays under tmp_path
+    monkeypatch.chdir(tmp_path)
 
     from fairway.pipeline import IngestionPipeline
-    pipeline = IngestionPipeline(config_path)
+    pipeline = IngestionPipeline(str(staged_config))
     try:
         pipeline.run()
     except Exception as e:

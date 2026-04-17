@@ -10,91 +10,72 @@ def create_temp_config(filename, content):
     with open(filename, 'w') as f:
         yaml.dump(content, f)
 
-def test_valid_engine():
+def test_valid_engine(tmp_path):
+    config_path = tmp_path / 'valid_engine.yaml'
     config_data = {
         'dataset_name': 'test',
         'engine': 'duckdb',
         'tables': []
     }
-    create_temp_config('valid_engine.yaml', config_data)
-    try:
-        config = Config('valid_engine.yaml')
-        assert config.engine == 'duckdb'
-        
-        config_data['engine'] = 'pyspark'
-        create_temp_config('valid_engine.yaml', config_data)
-        config = Config('valid_engine.yaml')
-        assert config.engine == 'pyspark'
-    finally:
-        if os.path.exists('valid_engine.yaml'):
-            os.remove('valid_engine.yaml')
+    create_temp_config(str(config_path), config_data)
+    config = Config(str(config_path))
+    assert config.engine == 'duckdb'
 
-def test_invalid_engine():
+    config_data['engine'] = 'pyspark'
+    create_temp_config(str(config_path), config_data)
+    config = Config(str(config_path))
+    assert config.engine == 'pyspark'
+
+def test_invalid_engine(tmp_path):
+    config_path = tmp_path / 'invalid_engine.yaml'
     config_data = {
         'dataset_name': 'test',
         'engine': 'invalid',
         'tables': []
     }
-    create_temp_config('invalid_engine.yaml', config_data)
-    try:
-        with pytest.raises(ValueError) as excinfo:
-            Config('invalid_engine.yaml')
-        assert "Invalid engine" in str(excinfo.value)
-    finally:
-        if os.path.exists('invalid_engine.yaml'):
-            os.remove('invalid_engine.yaml')
+    create_temp_config(str(config_path), config_data)
+    with pytest.raises(ValueError) as excinfo:
+        Config(str(config_path))
+    assert "Invalid engine" in str(excinfo.value)
 
-def test_valid_table_format():
+def test_valid_table_format(tmp_path):
+    data_dir = tmp_path / 'data'
+    data_dir.mkdir()
+    (data_dir / 'test.csv').write_text('a,b\n1,2')
+    (data_dir / 'test.json').write_text('{"a":1}')
+    (data_dir / 'test.parquet').write_text('PAR1')
+
     config_data = {
         'dataset_name': 'test',
         'engine': 'duckdb',
         'tables': [
-            {'name': 'csv_table', 'path': 'data/test.csv', 'format': 'csv'},
-            {'name': 'json_table', 'path': 'data/test.json', 'format': 'json'},
-            {'name': 'parquet_table', 'path': 'data/test.parquet', 'format': 'parquet'}
+            {'name': 'csv_table', 'path': str(data_dir / 'test.csv'), 'format': 'csv'},
+            {'name': 'json_table', 'path': str(data_dir / 'test.json'), 'format': 'json'},
+            {'name': 'parquet_table', 'path': str(data_dir / 'test.parquet'), 'format': 'parquet'}
         ]
     }
-    # Create dummy files so expansion works
-    os.makedirs('data', exist_ok=True)
-    with open('data/test.csv', 'w') as f: f.write('a,b\n1,2')
-    with open('data/test.json', 'w') as f: f.write('{"a":1}')
-    with open('data/test.parquet', 'w') as f: f.write('PAR1')
+    config_path = tmp_path / 'valid_format.yaml'
+    create_temp_config(str(config_path), config_data)
+    config = Config(str(config_path))
+    assert len(config.tables) == 3
 
-    create_temp_config('valid_format.yaml', config_data)
-    try:
-        # We need to be careful about strict path checking in _expand_tables
-        # The Config class checks for existence.
-        config = Config('valid_format.yaml')
-        assert len(config.tables) == 3
-    finally:
-        if os.path.exists('valid_format.yaml'):
-            os.remove('valid_format.yaml')
-        import shutil
-        if os.path.exists('data'):
-            shutil.rmtree('data')
+def test_invalid_table_format(tmp_path):
+    data_dir = tmp_path / 'data_invalid'
+    data_dir.mkdir()
+    (data_dir / 'test.txt').write_text('content')
 
-def test_invalid_table_format():
     config_data = {
         'dataset_name': 'test',
         'engine': 'duckdb',
         'tables': [
-            {'path': 'data_invalid/test.txt', 'format': 'txt'}
+            {'path': str(data_dir / 'test.txt'), 'format': 'txt'}
         ]
     }
-    os.makedirs('data_invalid', exist_ok=True)
-    with open('data_invalid/test.txt', 'w') as f: f.write('content')
-
-    create_temp_config('invalid_format.yaml', config_data)
-    try:
-        with pytest.raises(ValueError) as excinfo:
-            Config('invalid_format.yaml')
-        assert "Invalid format" in str(excinfo.value)
-    finally:
-        if os.path.exists('invalid_format.yaml'):
-            os.remove('invalid_format.yaml')
-        import shutil
-        if os.path.exists('data_invalid'):
-            shutil.rmtree('data_invalid')
+    config_path = tmp_path / 'invalid_format.yaml'
+    create_temp_config(str(config_path), config_data)
+    with pytest.raises(ValueError) as excinfo:
+        Config(str(config_path))
+    assert "Invalid format" in str(excinfo.value)
 
 
 class TestBatchStrategyValidation:

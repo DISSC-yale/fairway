@@ -23,12 +23,11 @@ def test_spark_start(runner):
             mock_instance = MockManager.return_value
             mock_instance.start_cluster.return_value = "spark://mock-master:7077"
             
-            result = runner.invoke(main, ['spark', 'start', '--slurm-nodes', '4'])
+            result = runner.invoke(main, ['spark', 'start', '--nodes', '4'])
             assert result.exit_code == 0
             assert "Spark cluster started" in result.output
             assert "spark://mock-master:7077" in result.output
-            
-            # Verify config passed
+
             MockManager.assert_called_once()
             call_args = MockManager.call_args[0][0]
             assert call_args['slurm_nodes'] == 4

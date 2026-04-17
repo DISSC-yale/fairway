@@ -338,11 +338,15 @@ class TestCLILoggingIntegration:
         from click.testing import CliRunner
         from fairway.cli import main
 
-        # Create minimal config
+        # Config resolves paths relative to its own directory (Phase 3:
+        # config-dir-only resolution). Put `data/raw` inside config_dir so
+        # the glob actually hits it.
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config_file = config_dir / "fairway.yaml"
-        config_file.write_text("""
+        data_dir = config_dir / "data" / "raw"
+        data_dir.mkdir(parents=True)
+        (data_dir / "sample.csv").write_text("a,b\n1,2\n")
+        (config_dir / "fairway.yaml").write_text("""
 dataset_name: test
 engine: duckdb
 storage:
@@ -354,27 +358,18 @@ tables:
     format: csv
 """)
 
-        # Create data directory
-        data_dir = tmp_path / "data" / "raw"
-        data_dir.mkdir(parents=True)
-
         log_file = tmp_path / "logs" / "test.jsonl"
 
         runner = CliRunner()
         with runner.isolated_filesystem(temp_dir=tmp_path):
-            # Copy config to isolated filesystem
-            import shutil
-            shutil.copytree(config_dir, "config")
-            os.makedirs("data/raw", exist_ok=True)
-
             result = runner.invoke(main, [
                 'run',
-                '--config', 'config/fairway.yaml',
+                '--config', str(config_dir / "fairway.yaml"),
                 '--log-file', str(log_file),
-                '--log-level', 'DEBUG'
+                '--log-level', 'DEBUG',
+                '--skip-summary',
             ])
 
-        # Log file should be created (even if pipeline has no work)
         assert log_file.exists(), f"Log file not created. CLI output: {result.output}"
 
 

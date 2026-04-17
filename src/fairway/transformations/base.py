@@ -1,6 +1,6 @@
 import abc
 
-import pandas as pd
+from typing import Any
 
 
 class BaseTransformer(abc.ABC):
@@ -12,11 +12,11 @@ class BaseTransformer(abc.ABC):
     chaining — they are building blocks for ``transform()`` implementations.
     """
 
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: Any):
         self.df = df
 
     @abc.abstractmethod
-    def transform(self) -> pd.DataFrame:
+    def transform(self) -> Any:
         """Return the transformed DataFrame. Must be overridden."""
 
     def rename_columns(self, mapping: dict):

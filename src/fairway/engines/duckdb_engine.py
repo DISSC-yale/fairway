@@ -101,6 +101,10 @@ class DuckDBEngine:
         for key in _fairway_keys:
             kwargs.pop(key, None)
 
+        # If naming_pattern is provided, we need the filename column from DuckDB readers
+        if naming_pattern and 'filename' not in kwargs:
+            kwargs['filename'] = True
+
         # Normalize TSV/tab to CSV with tab delimiter
         if format in ('tsv', 'tab'):
             format = 'csv'
@@ -108,19 +112,19 @@ class DuckDBEngine:
                 kwargs['delim'] = '\t'
 
         if format == 'csv':
-            return self._ingest_csv(input_path, output_path, partition_by, metadata, hive_partitioning, schema, write_mode, **kwargs)
+            return self._ingest_csv(input_path, output_path, partition_by, metadata, hive_partitioning, schema, write_mode, naming_pattern=naming_pattern, **kwargs)
         elif format == 'json':
-            return self._ingest_json(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
+            return self._ingest_json(input_path, output_path, partition_by, metadata, write_mode, naming_pattern=naming_pattern, **kwargs)
         elif format == 'parquet':
-            return self._ingest_parquet(input_path, output_path, partition_by, metadata, write_mode, **kwargs)
+            return self._ingest_parquet(input_path, output_path, partition_by, metadata, write_mode, naming_pattern=naming_pattern, **kwargs)
         elif format == 'fixed_width':
             if min_line_length is not None:
                 kwargs['min_line_length'] = min_line_length
-            return self._ingest_fixed_width(input_path, output_path, fixed_width_spec, partition_by, metadata, write_mode, **kwargs)
+            return self._ingest_fixed_width(input_path, output_path, fixed_width_spec, partition_by, metadata, write_mode, naming_pattern=naming_pattern, **kwargs)
         else:
             raise ValueError(f"Unsupported format for DuckDB engine: {format}")
 
-    def _ingest_csv(self, input_path, output_path, partition_by=None, metadata=None, hive_partitioning=False, schema=None, write_mode='overwrite', **kwargs):
+    def _ingest_csv(self, input_path, output_path, partition_by=None, metadata=None, hive_partitioning=False, schema=None, write_mode='overwrite', naming_pattern=None, **kwargs):
         """
         Converts CSV to Parquet using DuckDB, with metadata injection.
         """
@@ -178,38 +182,63 @@ class DuckDBEngine:
         path_sql = self._format_path_sql(read_path)
         self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_csv_auto({path_sql}{options_str})")
         
-        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode, naming_pattern=naming_pattern)
 
-    def _ingest_json(self, input_path, output_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
+    def _ingest_json(self, input_path, output_path, partition_by=None, metadata=None, write_mode='overwrite', naming_pattern=None, **kwargs):
         """
         Converts JSON to Parquet.
         """
-        path_sql = self._format_path_sql(input_path)
-        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_json_auto({path_sql})")
-        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
+        # Ensure filename is included if naming_pattern is provided
+        if naming_pattern and 'filename' not in kwargs:
+            kwargs['filename'] = True
+            
+        options = []
+        for k, v in kwargs.items():
+            if isinstance(v, bool):
+                val = str(v).lower()
+            elif isinstance(v, str):
+                escaped_v = v.replace("'", "''")
+                val = f"'{escaped_v}'"
+            else:
+                val = v
+            options.append(f"{k}={val}")
+        options_str = ", ".join(options)
+        if options_str:
+            options_str = ", " + options_str
 
-    def _ingest_parquet(self, input_path, output_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
+        path_sql = self._format_path_sql(input_path)
+        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_json_auto({path_sql}{options_str})")
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode, naming_pattern=naming_pattern)
+
+    def _ingest_parquet(self, input_path, output_path, partition_by=None, metadata=None, write_mode='overwrite', naming_pattern=None, **kwargs):
         """
         Pass-through Parquet ingestion (useful for unifying pipeline logic).
         """
-        path_sql = self._format_path_sql(input_path)
-        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_parquet({path_sql})")
-        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
+        # Ensure filename is included if naming_pattern is provided
+        if naming_pattern and 'filename' not in kwargs:
+            kwargs['filename'] = True
 
-    def _ingest_fixed_width(self, input_path, output_path, spec_path, partition_by=None, metadata=None, write_mode='overwrite', **kwargs):
+        options = []
+        for k, v in kwargs.items():
+            if isinstance(v, bool):
+                val = str(v).lower()
+            elif isinstance(v, str):
+                escaped_v = v.replace("'", "''")
+                val = f"'{escaped_v}'"
+            else:
+                val = v
+            options.append(f"{k}={val}")
+        options_str = ", ".join(options)
+        if options_str:
+            options_str = ", " + options_str
+
+        path_sql = self._format_path_sql(input_path)
+        self.con.execute(f"CREATE OR REPLACE TEMP VIEW raw_data AS SELECT * FROM read_parquet({path_sql}{options_str})")
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode, naming_pattern=naming_pattern)
+
+    def _ingest_fixed_width(self, input_path, output_path, spec_path, partition_by=None, metadata=None, write_mode='overwrite', naming_pattern=None, **kwargs):
         """
         Converts fixed-width text files to Parquet using DuckDB.
-
-        Fixed-width files have columns at specific character positions (no delimiters).
-        A spec file defines column names, start positions, lengths, and types.
-
-        Args:
-            input_path: Path to fixed-width data file(s)
-            output_path: Output Parquet path
-            spec_path: Path to YAML spec file defining columns
-            partition_by: Optional partition columns
-            metadata: Optional metadata to inject
-            write_mode: 'overwrite' or 'append'
         """
         from fairway.fixed_width import load_spec
 
@@ -242,11 +271,23 @@ class DuckDBEngine:
         # Step 1: Read file as single text column (no header, no delimiter parsing)
         # Use a delimiter that won't appear in fixed-width data (ASCII unit separator)
         path_sql = self._format_path_sql(read_path)
+        
+        # If naming_pattern is provided, we need the filename
+        filename_opt = ", filename=true" if naming_pattern else ""
+        
         self.con.execute(f"""
             CREATE OR REPLACE TEMP VIEW raw_lines_unfiltered AS
-            SELECT column0 AS line
-            FROM read_csv({path_sql}, header=false, sep=E'\\x1F', columns={{'column0': 'VARCHAR'}})
+            SELECT *
+            FROM read_csv({path_sql}, header=false, sep=E'\\x1F', columns={{'column0': 'VARCHAR'}}{filename_opt})
         """)
+        # read_csv with filename=true will have columns [column0, filename]
+        
+        # Standardize 'column0' to 'line' for subsequent steps
+        # If filename was added, we have [column0, filename]
+        if naming_pattern:
+            self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines_standard AS SELECT column0 AS line, filename FROM raw_lines_unfiltered")
+        else:
+            self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines_standard AS SELECT column0 AS line FROM raw_lines_unfiltered")
 
         # Step 1b: Filter by record type if specified (for hierarchical fixed-width files)
         # When filtering, materialize to TEMP TABLE to avoid re-evaluating filter on every access
@@ -261,11 +302,11 @@ class DuckDBEngine:
             safe_value = value.replace("'", "''")
             self.con.execute(f"""
                 CREATE TEMP TABLE raw_lines AS
-                SELECT line FROM raw_lines_unfiltered
+                SELECT * FROM raw_lines_standard
                 WHERE substr(line, {pos}, {length}) = '{safe_value}'
             """)
         else:
-            self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines AS SELECT line FROM raw_lines_unfiltered")
+            self.con.execute("CREATE OR REPLACE TEMP VIEW raw_lines AS SELECT * FROM raw_lines_standard")
 
         # Step 1c: Filter out short/corrupted lines if min_line_length specified
         min_line_length = spec.get('min_line_length')
@@ -276,7 +317,7 @@ class DuckDBEngine:
             self.con.execute("DROP TABLE IF EXISTS raw_lines_filtered")
             self.con.execute(f"""
                 CREATE TEMP TABLE raw_lines_filtered AS
-                SELECT line FROM raw_lines
+                SELECT * FROM raw_lines
                 WHERE length(line) >= {min_line_length}
             """)
             self.con.execute("DROP VIEW IF EXISTS raw_lines")
@@ -332,6 +373,10 @@ class DuckDBEngine:
             # Store as VARCHAR — casting happens in enforce_types() (curated layer)
             select_parts.append(f"{extract_expr} AS {name}")
 
+        # Include filename if present for naming_pattern extraction
+        if naming_pattern:
+            select_parts.append("filename")
+
         select_clause = ", ".join(select_parts)
 
         # Step 4: Create view with extracted columns
@@ -341,20 +386,46 @@ class DuckDBEngine:
             FROM raw_lines
         """)
 
-        return self._write_to_parquet(output_path, partition_by, metadata, write_mode)
+        return self._write_to_parquet(output_path, partition_by, metadata, write_mode, naming_pattern=naming_pattern)
 
-    def _write_to_parquet(self, output_path, partition_by=None, metadata=None, write_mode='overwrite'):
+    def _write_to_parquet(self, output_path, partition_by=None, metadata=None, write_mode='overwrite', naming_pattern=None):
         # Inject metadata columns if provided
         select_clause = "*"
+        
+        extra_selects = []
         if metadata:
             # Validate metadata keys as SQL identifiers and escape values
-            meta_parts = []
             for key, val in metadata.items():
                 safe_key = _validate_sql_identifier(key)
                 safe_val = _escape_sql_string(val)
-                meta_parts.append(f"'{safe_val}' AS {safe_key}")
-            meta_cols = ", ".join(meta_parts)
-            select_clause = f"*, {meta_cols}"
+                extra_selects.append(f"'{safe_val}' AS {safe_key}")
+        
+        if naming_pattern:
+            import re
+            # Parse the naming pattern to find all named groups (in order)
+            pattern_groups = re.findall(r'\?P<([^>]+)>', naming_pattern)
+            if pattern_groups:
+                logger.info("Extracting metadata from file paths using naming_pattern: %s", pattern_groups)
+                # Convert Python named groups to standard groups for DuckDB (regexp_extract)
+                # (?P<name>pattern) -> (pattern)
+                duckdb_pattern = re.sub(r'\?P<[^>]+>', '', naming_pattern)
+                # Escape single quotes in pattern for SQL
+                safe_pattern = duckdb_pattern.replace("'", "''")
+
+                for idx, group_name in enumerate(pattern_groups):
+                    safe_group_name = _validate_sql_identifier(group_name)
+                    # DuckDB regexp_extract is 1-indexed for groups
+                    # Use 'filename' column which was added by readers with filename=True
+                    extra_selects.append(f"regexp_extract(filename, '{safe_pattern}', {idx + 1}) AS {safe_group_name}")
+                
+                # Exclude the temporary 'filename' column from final output
+                select_clause = "* EXCLUDE (filename)"
+
+        if extra_selects:
+            if select_clause == "*":
+                select_clause = f"*, {', '.join(extra_selects)}"
+            else:
+                select_clause = f"{select_clause}, {', '.join(extra_selects)}"
 
         # Write to Parquet with optional Hive partitioning
         partition_clause = ""
@@ -364,11 +435,6 @@ class DuckDBEngine:
             partition_clause = f", PARTITION_BY ({', '.join(safe_partitions)})"
             
         # Determine overwrite behavior
-        # DuckDB's COPY ... (OVERWRITE TRUE) replaces the directory/file
-        # If write_mode='append', we should NOT use OVERWRITE TRUE.
-        # However, DuckDB 0.9.x/1.0 COPY to parquet directory behavior works as append if OVERWRITE is not specified?
-        # Let's verify standard DuckDB behavior:
-        # COPY ... TO 'dir' (FORMAT PARQUET, PARTITION_BY ...) -> Writes new files into dir.
         overwrite_val = "TRUE" if write_mode == 'overwrite' else "FALSE"
 
         escaped_output = output_path.replace("'", "''")

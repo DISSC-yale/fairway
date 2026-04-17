@@ -45,9 +45,10 @@ class TestSimplePipelineRun:
         monkeypatch.chdir(simple_project)
         from fairway.pipeline import IngestionPipeline
         config_path = str(simple_project / "config" / "fairway.yaml")
-        IngestionPipeline(config_path).run(skip_summary=True)
-        manifest_file = simple_project / "data" / "manifest" / "people.json"
-        assert manifest_file.exists(), "Manifest file not created"
+        pipeline = IngestionPipeline(config_path)
+        pipeline.run(skip_summary=True)
+        manifest_file = pipeline.config.paths.manifest_dir / "people.json"
+        assert manifest_file.exists(), f"Manifest file not created at {manifest_file}"
         data = json.loads(manifest_file.read_text())
         statuses = [f["status"] for f in data.get("files", {}).values()]
         assert all(s == "success" for s in statuses), f"Unexpected statuses: {statuses}"

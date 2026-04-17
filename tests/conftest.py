@@ -8,9 +8,45 @@ from pathlib import Path
 os.environ.setdefault("FAIRWAY_ALLOW_TEST_SCRIPTS", "1")
 
 
-# ============ PySpark Skip Policy (RULE-113) ============
+# ============ Repo-root hygiene baseline + coverage path bootstrap ============
+# Set at pytest_configure (runs before any test, fixture, or plugin data write)
+# and compared at pytest_terminal_summary (fires even on abort/interrupt).
+_repo_root_baseline: "set[str] | None" = None
+
+
+def pytest_configure(config):
+    """Bootstrap build dirs and snapshot repo root.
+
+    Runs before any test or fixture, so:
+      * the sanctioned build/ subdirs exist first-run,
+      * the repo-root baseline is captured for the leak detector.
+
+    Coverage data file path is configured via [tool.coverage.run].data_file
+    in pyproject.toml (resolved relative to the config file).
+    """
+    global _repo_root_baseline
+    repo_root = Path(__file__).parent.parent
+
+    # Create sanctioned drop zones for coverage + pytest tmp.
+    (repo_root / "build" / "coverage").mkdir(parents=True, exist_ok=True)
+    (repo_root / "build" / "test-tmp").mkdir(parents=True, exist_ok=True)
+
+    # Snapshot repo-root contents for the leak detector to diff against.
+    try:
+        _repo_root_baseline = set(os.listdir(repo_root))
+    except OSError:
+        _repo_root_baseline = None
+
+
+# ============ Terminal summary: PySpark skips + leak detector ============
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Warn when PySpark tests were skipped (local dev without Spark/Java)."""
+    """Warn when PySpark tests were skipped; flag any repo-root leaks.
+
+    Runs on terminal summary (including aborted/interrupted sessions), so
+    leak reports survive Ctrl-C and plugin teardown order quirks. Uses
+    terminalreporter.write_line which is not swallowed by output capture.
+    """
+    # --- PySpark skip policy (RULE-113) ---
     skipped = terminalreporter.stats.get("skipped", [])
     spark_skips = [s for s in skipped if "pyspark" in str(getattr(s, "longrepr", "")).lower()]
     if spark_skips:
@@ -18,6 +54,32 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"WARNING: {len(spark_skips)} PySpark test(s) skipped "
             f"— run `make test-docker` for full coverage",
             yellow=True,
+        )
+
+    # --- Repo-root leak detector ---
+    if _repo_root_baseline is None:
+        return
+    repo_root = Path(__file__).parent.parent
+    ignored = {
+        "build",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        ".reports",
+        "htmlcov",
+        "coverage.xml",
+        "coverage.json",
+    }
+    try:
+        after = set(os.listdir(repo_root))
+    except OSError:
+        return
+    leaked = sorted((after - _repo_root_baseline) - ignored)
+    if leaked:
+        terminalreporter.write_line(
+            f"TEST LEAK DETECTED — new repo-root entries after session: {leaked}",
+            red=True,
         )
 
 
@@ -33,6 +95,30 @@ def pytest_collection_modifyitems(config, items):
                     reason=f"FAIRWAY_TEST_ENV=docker: PySpark must be available ({reason})",
                     strict=True,
                 ))
+
+
+# ============ FAIRWAY_HOME / FAIRWAY_SCRATCH isolation ============
+@pytest.fixture(autouse=True)
+def _fairway_home(request, tmp_path, monkeypatch):
+    """Point FAIRWAY_HOME and FAIRWAY_SCRATCH at per-test tmp dirs.
+
+    Autouse: every test gets an isolated state root so fairway can
+    never scatter manifest / logs / cache into the repo under its CWD.
+
+    Opt out with @pytest.mark.no_fairway_home — required for tests
+    that exercise resolver behavior itself (env-unset paths,
+    platformdirs fallback, etc.).
+    """
+    if request.node.get_closest_marker("no_fairway_home"):
+        yield
+        return
+    state = tmp_path / "_state"
+    scratch = tmp_path / "_scratch"
+    state.mkdir()
+    scratch.mkdir()
+    monkeypatch.setenv("FAIRWAY_HOME", str(state))
+    monkeypatch.setenv("FAIRWAY_SCRATCH", str(scratch))
+    yield
 
 
 # ============ Path Fixtures ============

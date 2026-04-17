@@ -84,12 +84,6 @@ class TestZipIngestion:
 class TestNamingPatternMetadata:
 
     @pytest.mark.local
-    @pytest.mark.xfail(
-        reason="DuckDB engine does not extract naming_pattern named groups into columns "
-               "(only pyspark engine does — see engines/pyspark_engine.py:239-290). "
-               "This test documents the gap.",
-        strict=True,
-    )
     def test_year_extracted_from_filename(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         csv_path = tmp_path / "raw" / "sales_2022.csv"

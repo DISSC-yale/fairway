@@ -2,7 +2,6 @@
 Tests for fixed-width file format support (Chunk F).
 """
 import os
-import shutil
 import pytest
 from pathlib import Path
 
@@ -96,15 +95,9 @@ class TestDuckDBFixedWidth:
     """Tests for DuckDB fixed-width ingestion."""
 
     @pytest.fixture
-    def output_dir(self):
-        """Create temporary output directory."""
-        base_dir = os.path.abspath("test_temp_data/fixed_width")
-        if os.path.exists(base_dir):
-            shutil.rmtree(base_dir)
-        os.makedirs(base_dir)
-        yield base_dir
-        if os.path.exists(base_dir):
-            shutil.rmtree(base_dir)
+    def output_dir(self, tmp_path):
+        """Temporary output directory routed to pytest tmp_path."""
+        return str(tmp_path)
 
     def test_basic_read(self, output_dir):
         """Ingest simple.txt → processed layer has correct trimmed STRING values."""
@@ -239,15 +232,9 @@ class TestPySparkFixedWidth:
     """Tests for PySpark fixed-width ingestion."""
 
     @pytest.fixture
-    def output_dir(self):
-        """Create temporary output directory."""
-        base_dir = os.path.abspath("test_temp_data/fixed_width_spark")
-        if os.path.exists(base_dir):
-            shutil.rmtree(base_dir)
-        os.makedirs(base_dir)
-        yield base_dir
-        if os.path.exists(base_dir):
-            shutil.rmtree(base_dir)
+    def output_dir(self, tmp_path):
+        """Temporary output directory routed to pytest tmp_path."""
+        return str(tmp_path)
 
     @pytest.fixture
     def spark_engine(self, pyspark_engine):

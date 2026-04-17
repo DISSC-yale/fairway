@@ -219,8 +219,6 @@ class TestTransformationThroughPipeline:
 
     def test_transform_adds_processed_column(self, engine, fixtures_dir, tmp_path):
         """simple_transform.py adds processed=True column. Must appear in output."""
-        if hasattr(engine, "spark"):
-            pytest.xfail("BaseTransformer receives Spark DF but test uses Pandas syntax (df['col']=...)")
         from tests.helpers import build_config, read_curated
 
         def engine_name(e):
@@ -229,10 +227,15 @@ class TestTransformationThroughPipeline:
         # Write a class-based transformer to tmp_path (registry requires class ending in Transformer)
         transform_script = tmp_path / "pipeline_transform.py"
         transform_script.write_text(
-            "from fairway.transformations.base import BaseTransformer\n\n"
+            "from fairway.transformations.base import BaseTransformer\n"
+            "import pandas as pd\n\n"
             "class PipelineTransformer(BaseTransformer):\n"
             "    def transform(self):\n"
-            "        self.df['processed'] = True\n"
+            "        if isinstance(self.df, pd.DataFrame):\n"
+            "            self.df['processed'] = True\n"
+            "        else:\n"
+            "            import pyspark.sql.functions as F\n"
+            "            self.df = self.df.withColumn('processed', F.lit(True))\n"
             "        return self.df\n"
         )
 
@@ -252,8 +255,6 @@ class TestTransformationThroughPipeline:
 
     def test_transform_returning_none_raises(self, engine, fixtures_dir, tmp_path):
         """A transformer that returns None must raise, not silently drop data."""
-        if hasattr(engine, "spark"):
-            pytest.xfail("Spark path not relevant — validation is engine-agnostic")
         from tests.helpers import build_config
 
         def engine_name(e):
@@ -279,8 +280,6 @@ class TestTransformationThroughPipeline:
 
     def test_transform_row_count_unchanged_both_engines(self, engine, fixtures_dir, tmp_path):
         """Transform must not filter or duplicate rows on either engine."""
-        if hasattr(engine, "spark"):
-            pytest.xfail("BaseTransformer receives Spark DF but test uses Pandas syntax (df['col']=...)")
         from tests.helpers import build_config, read_curated
 
         def engine_name(e):
@@ -289,10 +288,15 @@ class TestTransformationThroughPipeline:
         # Write a class-based transformer to tmp_path (registry requires class ending in Transformer)
         transform_script = tmp_path / "count_transform.py"
         transform_script.write_text(
-            "from fairway.transformations.base import BaseTransformer\n\n"
+            "from fairway.transformations.base import BaseTransformer\n"
+            "import pandas as pd\n\n"
             "class CountTransformer(BaseTransformer):\n"
             "    def transform(self):\n"
-            "        self.df['processed'] = True\n"
+            "        if isinstance(self.df, pd.DataFrame):\n"
+            "            self.df['processed'] = True\n"
+            "        else:\n"
+            "            import pyspark.sql.functions as F\n"
+            "            self.df = self.df.withColumn('processed', F.lit(True))\n"
             "        return self.df\n"
         )
 

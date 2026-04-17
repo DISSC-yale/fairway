@@ -16,7 +16,8 @@ VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 # Single source of truth for validation keys lives in validations/checks.py;
 # re-use it here so config-load validation and runtime-check validation can't drift.
 from fairway.validations.checks import KNOWN_VALIDATION_KEYS, LEGACY_LEVEL_KEYS
-from fairway.constants import VALID_ENGINES, normalize_engine_name
+from fairway.engines import VALID_ENGINES, normalize_engine_name
+from fairway.paths import PathResolver, PathResolverError
 
 # Keys declared in KNOWN_VALIDATION_KEYS but not yet implemented at runtime
 # (checks.py raises NotImplementedError). Caught at config load so users
@@ -29,11 +30,26 @@ UNSUPPORTED_VALIDATION_KEYS = frozenset({"check_unique", "check_custom"})
 # in pipeline.py (transformation, target_rows at top level are tolerated for
 # legacy configs).
 KNOWN_TOP_LEVEL_KEYS = frozenset({
+    "project",
     "dataset_name", "engine", "storage", "tables", "data",
     "enrichment", "performance", "validations", "logging",
     "partition_by", "container", "schema_pipeline",
     "version", "transformation", "target_rows",
 })
+
+
+def _derive_project_from_dataset_name(name: str) -> str:
+    """Sanitize a dataset_name into a valid project id.
+
+    Used as a transitional default when `project:` is absent from the
+    YAML so existing fixtures keep working. The regex in PathResolver
+    is strict; this lowercases, replaces runs of non-[a-z0-9_-] with
+    '_', and trims leading non-alpha. Truncates to 64 chars.
+    """
+    s = name.lower()
+    s = re.sub(r"[^a-z0-9_-]+", "_", s)
+    s = re.sub(r"^[^a-z]+", "", s)
+    return (s or "project")[:64]
 
 
 class ConfigValidationError(Exception):
@@ -126,34 +142,70 @@ class TableConfig:
         yield from self._extra.items()
 
 
+@dataclass
+class HPCConfig:
+    """Configuration for Slurm/HPC/Spark cluster settings."""
+    account: str | None = None
+    partition: str = "day"
+    time: str = "04:00:00"
+    nodes: int = 2
+    cpus_per_node: int = 4
+    mem_per_node: str = "32G"
+    dynamic_allocation: dict = field(default_factory=dict)
+    spark_conf: dict = field(default_factory=dict)
+    
+    @classmethod
+    def from_dict(cls, d: dict) -> "HPCConfig":
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+
 class Config:
-    def __init__(self, config_path):
+    def __init__(self, config_path, overrides=None):
         self.config_path = config_path # Store for relative path resolution
+        self.overrides = overrides or {}
         with open(config_path, 'r') as f:
             self.data = yaml.safe_load(f)
         
         self.dataset_name = self.data.get('dataset_name')
-        
-        # Engine Validation — normalize aliases ('spark' -> 'pyspark') once at load
-        # so downstream code can compare against canonical names without per-callsite
-        # normalization.
+
+        # Project identity — explicit field preferred; derive from
+        # dataset_name as a transitional fallback so existing fixtures
+        # keep loading. Phase 3 hardens this to fail without project:.
+        raw_project = self.data.get('project')
+        if raw_project:
+            self.project = str(raw_project)
+        elif self.dataset_name:
+            self.project = _derive_project_from_dataset_name(str(self.dataset_name))
+        else:
+            raise ConfigValidationError([
+                "Config must define 'project:' (or 'dataset_name:' for derivation). "
+                "Add 'project: <name>' at the top level of your YAML."
+            ])
+
+        # Engine Validation
         raw_engine = self.data.get('engine', 'duckdb')
         self.engine = normalize_engine_name(raw_engine)
         if self.engine not in VALID_ENGINES:
             raise ValueError(f"Invalid engine: '{raw_engine}'. Must be one of {sorted(VALID_ENGINES)}")
 
         self.storage = self.data.get('storage', {})
-
-        # Medallion directory layout: raw / processed / curated
+        # storage.root is user-visible data output location. Default
+        # retained for Phase 2a; Phase 3 will require it explicitly.
         self.output_root = self.storage.get('root', 'data')
         self.raw_dir = self.storage.get('raw', os.path.join(self.output_root, 'raw'))
         self.processed_dir = self.storage.get('processed', os.path.join(self.output_root, 'processed'))
         self.curated_dir = self.storage.get('curated', os.path.join(self.output_root, 'curated'))
 
-        # Unified temp directory: FAIRWAY_TEMP env > storage.temp > storage.scratch_dir
-        # scratch_dir is documented for HPC fast-scratch storage; treat as fallback for temp
         temp_raw = os.environ.get('FAIRWAY_TEMP') or self.storage.get('temp') or self.storage.get('scratch_dir')
         self.temp_dir = os.path.expandvars(temp_raw) if temp_raw else None
+
+        # Construct PathResolver — single source of truth for fairway
+        # state/scratch paths. run_id is bound later by IngestionPipeline.
+        self.paths = PathResolver.from_config(self)
+
+        # Load HPC/Spark defaults from config/spark.yaml if it exists
+        self.hpc = self._load_hpc_config()
 
         # Warn on unknown top-level keys (likely typos)
         if isinstance(self.data, dict):
@@ -166,8 +218,7 @@ class Config:
                     )
 
         # Alias deprecated 'data.sources' → 'data.tables'. If both are set,
-        # error out rather than silently dropping one — exactly the class of
-        # silent-drop bug C4 is meant to prevent.
+        # error out rather than silently dropping one.
         data_block = self.data.get('data') if isinstance(self.data, dict) else None
         if isinstance(data_block, dict):
             has_sources = 'sources' in data_block
@@ -186,63 +237,111 @@ class Config:
                 )
                 data_block['tables'] = data_block.pop('sources')
 
-        # Support both root-level 'tables' and 'data: tables' structures
-        raw_tables = self.data.get('tables')
-        if not raw_tables:
-             raw_tables = self.data.get('data', {}).get('tables', [])
-
+        raw_tables = self.data.get('tables') or self.data.get('data', {}).get('tables', [])
         self.tables = self._expand_tables(raw_tables)
-        self._validate()  # Fail fast on config errors
+        self._validate()
+
         self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
         self.output_format = self.storage.get('format', 'parquet').lower()
 
-        # Performance/Optimizations
+        # Performance
         performance = self.data.get('performance', {})
         self.target_rows = performance.get('target_rows') or self.data.get('target_rows', 500000)
-        self.salting = performance.get('salting', False)  # D.1: Disabled by default
-        self.target_file_size_mb = performance.get('target_file_size_mb', 128)  # D.2: Target ~128MB files
-        self.compression = performance.get('compression', 'snappy')  # D.2: Default compression
-        # Direct control over max records per file (overrides target_file_size_mb heuristic)
+        self.salting = performance.get('salting', False)
+        self.target_file_size_mb = performance.get('target_file_size_mb', 128)
+        self.compression = performance.get('compression', 'snappy')
         self.max_records_per_file = performance.get('max_records_per_file')
 
-        # Container settings
+        # Container
         container = self.data.get('container', {})
         self.apptainer_binds = container.get('apptainer_binds')
 
+    def _load_hpc_config(self) -> HPCConfig:
+        """Load spark.yaml from the same directory as fairway.yaml or the config/ subfolder."""
+        config_dir = os.path.dirname(os.path.abspath(self.config_path))
+        candidates = [
+            os.path.join(config_dir, 'spark.yaml'),
+            os.path.join(os.path.dirname(config_dir), 'config', 'spark.yaml'),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    return HPCConfig.from_dict(yaml.safe_load(f) or {})
+        return HPCConfig()
 
+    def resolve_resources(self):
+        """Resolve Slurm/Spark resources with correct precedence."""
+        res = {
+            'account': self.hpc.account,
+            'partition': self.hpc.partition,
+            'time': self.hpc.time,
+            'nodes': self.hpc.nodes,
+            'cpus': self.hpc.cpus_per_node,
+            'mem': self.hpc.mem_per_node,
+        }
+        for t in self.tables:
+            hints = t.preprocess.get('resources', {}) if t.preprocess else {}
+            if hints:
+                if 'cpus' in hints: res['cpus'] = hints['cpus']
+                if 'memory' in hints: res['mem'] = hints['memory']
+                if 'time' in hints: res['time'] = hints['time']
+                break
+        for key in ['account', 'partition', 'time', 'nodes', 'cpus', 'mem']:
+            if self.overrides.get(key) is not None:
+                res[key] = self.overrides[key]
+        return res
+
+    @property
+    def binds_list(self) -> str:
+        bind_paths = set()
+        for path in [self.raw_dir, self.processed_dir, self.curated_dir]:
+            if path:
+                abs_p = os.path.abspath(path)
+                if os.path.exists(abs_p):
+                    bind_paths.add(os.path.dirname(abs_p) if os.path.isfile(abs_p) else abs_p)
+        if self.temp_dir: bind_paths.add(os.path.abspath(self.temp_dir))
+        for tbl in self.tables:
+            if tbl.root: bind_paths.add(os.path.abspath(tbl.root))
+        if self.apptainer_binds:
+            for p in self.apptainer_binds.split(','):
+                if p.strip(): bind_paths.add(p.strip())
+        return ','.join(sorted(bind_paths))
 
     def _resolve_path(self, path_ref, config_dir):
-        """Resolve a relative path, checking CWD (project root) before config directory."""
+        """Resolve a relative path against config_dir.
+
+        CWD is NEVER consulted — reproducibility requires that the same
+        fairway.yaml resolves identically regardless of where the user
+        invoked fairway from. Absolute paths pass through unchanged.
+        """
         if not path_ref:
             return None
-        if os.path.isabs(path_ref):
-            return path_ref
-        cwd_path = os.path.join(os.getcwd(), path_ref)
-        if os.path.exists(cwd_path):
-            return cwd_path
-        cfg_path = os.path.join(config_dir, path_ref)
-        if os.path.exists(cfg_path):
-            return cfg_path
-        return cwd_path
+        return str(PathResolver.resolve_config_path(path_ref, config_dir))
 
     def _resolve_script_path(self, script_path, config_dir):
-        """Resolve a preprocessing script path, searching CWD then config_dir."""
+        """Resolve a preprocessing script path, searching config_dir only.
+
+        Tries the bare ref, then `scripts/` and `src/preprocess/`
+        subdirectories under config_dir (common project layouts). CWD
+        fallback was removed in Phase 3 — configs must be
+        invocation-directory-independent.
+        """
         if os.path.isabs(script_path):
             return script_path
-        cwd = os.getcwd()
+        basename = os.path.basename(script_path)
         candidates = [
-            os.path.join(cwd, script_path),
-            os.path.join(cwd, 'scripts', os.path.basename(script_path)),
-            os.path.join(cwd, 'src', 'preprocess', os.path.basename(script_path)),
             os.path.join(config_dir, script_path),
-            os.path.join(config_dir, 'scripts', os.path.basename(script_path)),
-            os.path.join(config_dir, 'src', 'preprocess', os.path.basename(script_path)),
+            os.path.join(config_dir, 'scripts', basename),
+            os.path.join(config_dir, 'src', 'preprocess', basename),
         ]
         for candidate in candidates:
             if os.path.exists(candidate):
                 return candidate
-        return os.path.join(cwd, script_path)
+        # Default: resolve against config_dir even if missing. Downstream
+        # validators surface the clear "not found" error rather than a
+        # silent CWD-relative resolution that only the invoking user sees.
+        return os.path.join(config_dir, script_path)
 
     def _load_schema(self, schema_ref):
         """Loads schema from a file if schema_ref is a path string, otherwise returns it as-is."""
@@ -325,6 +424,8 @@ class Config:
                     'files': files_pattern,
                     'fixed_width_spec': self._resolve_path(tbl.get('fixed_width_spec'), config_dir),
                     'batch_strategy': tbl.get('batch_strategy', 'bulk'),
+                    'transformation': self._resolve_path(tbl.get('transformation'), config_dir),
+                    'min_line_length': tbl.get('min_line_length'),
                     'type_enforcement': tbl.get('type_enforcement', {}),
                     'validations': self._resolve_table_validations(tbl),
                     'output_layer': tbl.get('output_layer', 'curated'),
@@ -679,3 +780,39 @@ class Config:
         # Raise on errors
         if errors:
             raise ConfigValidationError(errors)
+
+
+def validate_config_paths(config):
+    """Assert every config path field is absolute or resolved.
+
+    Phase 3 rule: configs are portable. A fairway.yaml that resolves
+    correctly when invoked from its own directory must also resolve
+    correctly when invoked from /tmp, from Slurm, from an Apptainer
+    container, etc. That requires every path to be either absolute
+    or deterministically relative to the config file — never to CWD.
+
+    Escape hatch: tables with `preprocess` or `archives` set may
+    reference outputs that don't exist until preprocessing runs. The
+    `has_preprocessing` flag suppresses the existence check for those
+    specific fields (fixed_width_spec, transformation output).
+    """
+    errors = []
+    for t in config.tables:
+        has_preprocessing = bool(t.get('archives') or t.get('preprocess'))
+        for field_name in ('path', 'fixed_width_spec', 'transformation', 'root'):
+            val = t.get(field_name)
+            if not val:
+                continue
+            # Paths with glob wildcards are expanded at runtime; their
+            # literal form does not need to exist.
+            if '*' in str(val):
+                continue
+            if has_preprocessing and field_name in ('fixed_width_spec', 'transformation'):
+                continue
+            if not os.path.isabs(val):
+                errors.append(
+                    f"tables['{t.get('name')}'].{field_name} is not absolute: {val!r}. "
+                    f"Relative paths must be resolved at config-load time."
+                )
+    if errors:
+        raise ConfigValidationError(errors)

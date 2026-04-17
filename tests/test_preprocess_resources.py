@@ -252,7 +252,7 @@ class TestSlurmResourceDefaults:
         assert '--mem=128G' in result.output
 
     def test_no_resources_preserves_defaults(self, tmp_path, monkeypatch):
-        """Without resources in config, existing defaults (--cpus 4, --mem 16G) are used."""
+        """Without resources in config, HPC dataclass defaults (--cpus 4, --mem 32G) are used."""
         from fairway.cli import main
 
         config_path = self._make_config(tmp_path, resources=None)
@@ -263,4 +263,4 @@ class TestSlurmResourceDefaults:
 
         assert result.exit_code == 0
         assert '--cpus-per-task=4' in result.output
-        assert '--mem=16G' in result.output
+        assert '--mem=32G' in result.output

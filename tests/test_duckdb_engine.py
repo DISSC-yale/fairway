@@ -29,7 +29,7 @@ def test_fixed_width_path_with_single_quote_does_not_crash(tmp_path):
 
     engine = DuckDBEngine()
     try:
-        result = engine._ingest_fixed_width(str(csv_path), "test_fw", spec_path)
+        result = engine._ingest_fixed_width(str(csv_path), str(tmp_path / "test_fw.parquet"), spec_path)
     except Exception as e:
         assert "Parser Error" not in str(e), f"SQL injection via path: {e}"
     finally:
@@ -55,7 +55,7 @@ def test_record_type_filter_value_with_single_quote_is_safe(tmp_path):
 
     engine = DuckDBEngine()
     try:
-        result = engine._ingest_fixed_width(str(csv_path), "test_filter", spec_path)
+        result = engine._ingest_fixed_width(str(csv_path), str(tmp_path / "test_filter.parquet"), spec_path)
         assert result is not None
     finally:
         if hasattr(engine, 'con') and engine.con:

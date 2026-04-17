@@ -67,6 +67,9 @@ class PySparkEngine:
         try:
             from delta import configure_spark_with_delta_pip
             builder = configure_spark_with_delta_pip(builder)
+            # Add these for full Delta support (required by some versions/environments like PySpark 4.x)
+            builder = builder.config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
+                             .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         except ImportError:
             # Delta not installed or valid; proceed with standard Spark
             pass

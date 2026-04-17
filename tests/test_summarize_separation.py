@@ -33,6 +33,7 @@ class TestRunSkipSummary:
             "dataset_name": "test_dataset",
             "engine": "duckdb",
             "storage": {
+                "root": str(tmp_path / "data"),
                 "raw": str(tmp_path / "data" / "raw"),
                 "processed": str(tmp_path / "data" / "processed"),
                 "curated": str(tmp_path / "data" / "curated"),
@@ -111,6 +112,7 @@ class TestSummarizeStandalone:
             "dataset_name": "test_dataset",
             "engine": "duckdb",
             "storage": {
+                "root": str(tmp_path / "data"),
                 "raw": str(tmp_path / "data" / "raw"),
                 "processed": str(tmp_path / "data" / "processed"),
                 "curated": str(tmp_path / "data" / "curated"),
@@ -166,6 +168,7 @@ class TestSummarizeStandalone:
             "dataset_name": "test_dataset",
             "engine": "duckdb",
             "storage": {
+                "root": str(tmp_path / "data"),
                 "raw": str(tmp_path / "data" / "raw"),
                 "processed": str(tmp_path / "data" / "processed"),
                 "curated": str(tmp_path / "data" / "curated"),

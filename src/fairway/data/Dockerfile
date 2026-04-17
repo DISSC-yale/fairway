@@ -4,8 +4,6 @@
 # Build with: docker build -t fairway .
 # Or with specific git ref: docker build --build-arg FAIRWAY_GIT_REF=fix-apptainer -t fairway .
 
-# If bumping this base image, update constants.CONTAINER_PYTHON_VERSION
-# (the dev-mode bind path in cli.py reads that constant).
 FROM python:3.10-slim-bookworm
 
 WORKDIR /app

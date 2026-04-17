@@ -21,6 +21,8 @@ dependencies = [
     "pyyaml",
     "pandas",
     "tabulate",
+    "platformdirs>=4.0",
+    "python-ulid>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -70,9 +72,14 @@ markers = [
     "slow: takes >10 seconds",
     "local: runs only in local (non-cluster) environments",
     "spark: requires PySpark — skipped when Spark is unavailable",
+    "no_fairway_home: opt out of the autouse FAIRWAY_HOME/FAIRWAY_SCRATCH fixture (for resolver-behavior tests)",
 ]
 testpaths = ["tests"]
-addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=67"
+addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml:build/coverage/coverage.xml --cov-report=html:build/coverage/html --cov-fail-under=67 --basetemp=build/test-tmp"
+
+[tool.coverage.run]
+data_file = "build/coverage/.coverage"
+relative_files = true
 
 [tool.setuptools.package-data]
 "fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]

@@ -46,6 +46,7 @@ class TestPartitionAwarePipeline:
             'dataset_name': 'test_batching',
             'engine': 'duckdb',
             'storage': {
+                'root': str(tmp_path / 'data'),
                 'processed': str(intermediate),
                 'curated': str(final),
             },
@@ -147,10 +148,11 @@ class TestPartitionAwarePipeline:
 
     def test_bulk_strategy_uses_existing_path(self, tmp_path):
         """With batch_strategy=bulk, existing pipeline behavior preserved."""
-        # Clean up shared manifest to avoid cross-test pollution
-        manifest_file = os.path.join("manifest", "bulk_claims.json")
-        if os.path.exists(manifest_file):
-            os.remove(manifest_file)
+        # Clean up any staged manifest under tmp_path (no-op first run);
+        # avoids cross-test pollution when tmp_path is reused across parametrized runs.
+        staged_manifest = tmp_path / "data" / "manifest" / "bulk_claims.json"
+        if staged_manifest.exists():
+            staged_manifest.unlink()
 
         data_dir = tmp_path / "data"
         self._create_csv_files(data_dir)
@@ -165,6 +167,7 @@ class TestPartitionAwarePipeline:
             'dataset_name': 'test_bulk',
             'engine': 'duckdb',
             'storage': {
+                'root': str(tmp_path / 'data'),
                 'processed': str(intermediate),
                 'curated': str(final),
             },

@@ -2,14 +2,17 @@ import os
 import sys
 import glob
 import shutil
+import signal
+import atexit
+import json
+import datetime as _dt
 import zipfile
 import tarfile
 import hashlib
 import importlib.util
 import logging
 import tempfile
-from . import constants
-from .constants import VALID_ENGINES, normalize_engine_name
+from .engines import VALID_ENGINES, normalize_engine_name
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
@@ -17,8 +20,45 @@ from .validations.checks import Validator
 from .summarize import Summarizer
 from .enrichments.geospatial import Enricher
 from .logging_config import BatchLogger
+from .paths import generate_run_id
 
 logger = logging.getLogger("fairway.pipeline")
+
+# Module-level registry so atexit/signal handlers can reach active
+# pipelines without leaking references through globals. Single-threaded
+# CLI invocations typically run one pipeline at a time; the set tolerates
+# nested runs during tests.
+_ACTIVE_PIPELINES: "set[IngestionPipeline]" = set()
+_SIGTERM_HANDLER_INSTALLED = False
+
+
+def _finalize_all_unfinished() -> None:
+    """Write `run.json` for any pipelines that didn't finalize explicitly."""
+    for p in list(_ACTIVE_PIPELINES):
+        try:
+            p._finalize_run("unfinished")
+        except Exception:
+            pass
+
+
+def _sigterm_handler(signum, frame):
+    _finalize_all_unfinished()
+    # Re-raise default behavior so the process still exits.
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _install_crash_finalizers() -> None:
+    global _SIGTERM_HANDLER_INSTALLED
+    if _SIGTERM_HANDLER_INSTALLED:
+        return
+    atexit.register(_finalize_all_unfinished)
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except (ValueError, OSError):
+        # Non-main thread or platform without signal — skip.
+        pass
+    _SIGTERM_HANDLER_INSTALLED = True
 
 
 def _recover_atomic_swap(final_output_path: str, old_backup: str, temp_final: str) -> None:
@@ -77,9 +117,12 @@ def _is_preprocess_script_allowed(script_path):
 class ArchiveCache:
     """Persistent cache for extracted archives.
 
-    Extracts archives to .fairway_cache/archives/{name}_{hash}/ and tracks
-    extractions in the manifest. Multiple tables can share the same archive
-    extraction.
+    Extraction layout: `PathResolver.cache_dir / archives / {name}_{hash}/`.
+    Cross-process serialization uses `fcntl.lockf` on
+    `PathResolver.lock_dir / archive_<short_hash>.lock` so two concurrent
+    Slurm array tasks can't race on the same archive. Locks live under
+    the state root (durable) — scratch may be purged mid-run, and a
+    vanishing lockfile would silently stop serializing.
     """
 
     def __init__(self, config, global_manifest, table_name=None):
@@ -87,6 +130,12 @@ class ArchiveCache:
         self.global_manifest = global_manifest
         self.table_name = table_name
         self._session_cache = {}  # in-memory cache for current run
+        # Create lock_dir eagerly so the first extraction doesn't race on
+        # mkdir. Idempotent — survives manual deletion without crashing.
+        try:
+            self.config.paths.lock_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            logger.warning("Could not create lock_dir: %s", exc)
 
     def get_extracted_path(self, archive_path):
         """Return path to extracted contents, extracting if needed."""
@@ -96,26 +145,59 @@ class ArchiveCache:
         if abs_path in self._session_cache:
             return self._session_cache[abs_path]
 
-        # Check manifest for valid existing extraction
-        if self.global_manifest.is_extraction_valid(archive_path):
-            entry = self.global_manifest.get_extraction(archive_path)
-            logger.debug("Using cached extraction for: %s", archive_path)
-            self._session_cache[abs_path] = entry['extracted_dir']
-            return entry['extracted_dir']
+        # Serialize per-archive so two concurrent processes don't both
+        # extract. Lock is held across the manifest re-check so the
+        # second waiter sees the first's result and returns immediately.
+        with self._archive_lock(archive_path):
+            if self.global_manifest.is_extraction_valid(archive_path):
+                entry = self.global_manifest.get_extraction(archive_path)
+                logger.debug("Using cached extraction for: %s", archive_path)
+                self._session_cache[abs_path] = entry['extracted_dir']
+                return entry['extracted_dir']
 
-        # Need to extract
-        extraction_dir = self._get_extraction_dir(archive_path)
-        os.makedirs(extraction_dir, exist_ok=True)
+            extraction_dir = self._get_extraction_dir(archive_path)
+            os.makedirs(extraction_dir, exist_ok=True)
 
-        logger.info("Extracting archive: %s → %s", archive_path, extraction_dir)
-        self._extract(archive_path, extraction_dir)
+            logger.info("Extracting archive: %s → %s", archive_path, extraction_dir)
+            self._extract(archive_path, extraction_dir)
 
-        # Record in manifest
+            archive_hash = _get_file_hash_static(archive_path, fast_check=True)
+            self.global_manifest.record_extraction(archive_path, extraction_dir, archive_hash, self.table_name)
+
+            self._session_cache[abs_path] = extraction_dir
+            return extraction_dir
+
+    def _archive_lock(self, archive_path):
+        """Return a context manager holding an fcntl.lockf on the archive.
+
+        Uses record locking (lockf) rather than flock because GPFS/BeeGFS
+        default to flock=no, silently making advisory locks a no-op. If
+        lockf isn't available (rare — Windows), fall back to a no-op.
+        """
+        import contextlib
         archive_hash = _get_file_hash_static(archive_path, fast_check=True)
-        self.global_manifest.record_extraction(archive_path, extraction_dir, archive_hash, self.table_name)
+        short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
+        lock_path = self.config.paths.lock_dir / f"archive_{short_hash}.lock"
 
-        self._session_cache[abs_path] = extraction_dir
-        return extraction_dir
+        @contextlib.contextmanager
+        def _locked():
+            try:
+                import fcntl
+            except ImportError:
+                yield
+                return
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX)
+                yield
+            finally:
+                try:
+                    fcntl.lockf(fd, fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                os.close(fd)
+
+        return _locked()
 
     def _get_extraction_dir(self, archive_path):
         """Get deterministic extraction location for an archive."""
@@ -125,8 +207,11 @@ class ArchiveCache:
         # Create short hash for directory name
         short_hash = hashlib.md5(archive_hash.encode()).hexdigest()[:8]
 
-        # Use temp_dir from config, or default to constants.DEFAULT_CACHE_DIR
-        base_dir = self.config.temp_dir or os.path.join(os.getcwd(), constants.DEFAULT_CACHE_DIR)
+        # Prefer config.temp_dir when the user has explicitly pointed at
+        # fast scratch storage; otherwise use the resolver's cache_dir
+        # (FAIRWAY_SCRATCH / platformdirs user_cache_dir). CWD is never
+        # consulted — keeps behavior stable across invocation directories.
+        base_dir = self.config.temp_dir or str(self.config.paths.cache_dir)
         return os.path.join(base_dir, 'archives', f"{archive_name}_{short_hash}")
 
     def _safe_extract_path(self, dest_dir, member_path):
@@ -221,18 +306,77 @@ class IngestionPipeline:
     def __init__(self, config_path, spark_master=None, engine_override=None, spark_conf=None):
         logger.debug("Loading local fairway.pipeline")
         self.config = Config(config_path)
-        # Use storage-root-based manifest dir when output_root is absolute (explicit config).
-        # Fall back to "manifest" (CWD-relative) when output_root is relative (default "data").
-        output_root = self.config.output_root
-        if os.path.isabs(output_root):
-            manifest_dir = os.path.join(output_root, "manifest")
-        else:
-            manifest_dir = "manifest"
-        self.manifest_store = ManifestStore(manifest_dir)
+
+        # Bind run_id here so every pipeline artifact (manifest, logs,
+        # run.json) shares one identity. Source precedence lives in
+        # generate_run_id: FAIRWAY_RUN_ID → Slurm → ULID.
+        self.run_id = generate_run_id()
+        self.config.paths = self.config.paths.with_run_id(self.run_id)
+
+        # Pin the month shard so start-writer and end-finalizer land in
+        # the same directory even when a long-running job crosses UTC
+        # midnight. Exported into Slurm via --export in Phase 2d.
+        if not os.environ.get("FAIRWAY_RUN_MONTH"):
+            os.environ["FAIRWAY_RUN_MONTH"] = _dt.datetime.now(
+                _dt.timezone.utc
+            ).strftime("%Y-%m")
+
+        # PathResolver is the single source of truth for manifest/logs/
+        # cache locations; no more CWD-relative fallback.
+        manifest_dir = self.config.paths.manifest_dir
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        self.manifest_store = ManifestStore(str(manifest_dir))
         self._engine = None  # Lazy-initialized; use self.engine property
         self._engine_args = (spark_master, engine_override, spark_conf)
         self._hash_cache = {}  # Cache for distributed hash results
         self.archive_cache = ArchiveCache(self.config, self.manifest_store.global_manifest)
+
+        self._run_started_at = _dt.datetime.now(_dt.timezone.utc)
+        self._finalized = False
+        _install_crash_finalizers()
+        _ACTIVE_PIPELINES.add(self)
+        self._write_run_metadata(exit_status="running")
+
+    def _run_metadata_path(self):
+        return self.config.paths.run_metadata_file_for(self.run_id)
+
+    def _atomic_write_json(self, path, payload):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, default=str))
+        os.replace(tmp, path)
+
+    def _write_run_metadata(self, exit_status: str) -> None:
+        payload = {
+            "run_id": self.run_id,
+            "project": self.config.project,
+            "dataset_name": self.config.dataset_name,
+            "started_at": self._run_started_at.isoformat(),
+            "exit_status": exit_status,
+        }
+        if exit_status != "running":
+            payload["finished_at"] = _dt.datetime.now(
+                _dt.timezone.utc
+            ).isoformat()
+        path = self._run_metadata_path()
+        # When called from atexit after pytest has torn down tmp_path,
+        # the state root itself may be gone. Silently skip — there's no
+        # useful place to write and no caller listening.
+        if not self.config.paths.project_state_dir.parent.parent.exists():
+            return
+        try:
+            self._atomic_write_json(path, payload)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning("Failed to write run metadata: %s", exc)
+
+    def _finalize_run(self, exit_status: str) -> None:
+        if self._finalized:
+            return
+        self._finalized = True
+        self._write_run_metadata(exit_status=exit_status)
+        _ACTIVE_PIPELINES.discard(self)
 
     @property
     def engine(self):
@@ -1148,6 +1292,15 @@ class IngestionPipeline:
         )
 
     def run(self, skip_summary=False):
+        status = "failed"
+        try:
+            result = self._run(skip_summary=skip_summary)
+            status = "success"
+            return result
+        finally:
+            self._finalize_run(status)
+
+    def _run(self, skip_summary=False):
         logger.info("Starting ingestion for dataset: %s", self.config.dataset_name)
 
         if not self.config.tables:
