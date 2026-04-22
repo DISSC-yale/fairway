@@ -177,6 +177,10 @@ class PathResolver:
         return self._state_root_path / "projects" / self.project
 
     @property
+    def state_root(self) -> Path:
+        return self._state_root_path
+
+    @property
     def manifest_dir(self) -> Path:
         return self.project_state_dir / "manifest"
 
@@ -244,6 +248,10 @@ class PathResolver:
     @property
     def project_scratch_dir(self) -> Path:
         return self._scratch_root_path / "projects" / self.project
+
+    @property
+    def scratch_root(self) -> Path:
+        return self._scratch_root_path
 
     @property
     def cache_dir(self) -> Path:

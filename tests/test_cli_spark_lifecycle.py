@@ -68,6 +68,26 @@ def test_spark_stop(runner):
             
             mock_instance.stop_cluster.assert_called_once()
 
+
+def test_spark_stop_uses_configured_coordination_dir(runner):
+    with runner.isolated_filesystem():
+        os.makedirs('config', exist_ok=True)
+        with open('config/fairway.yaml', 'w') as f:
+            f.write(
+                'project: test_project\n'
+                'dataset_name: test\n'
+                'engine: pyspark\n'
+                'storage:\n'
+                '  root: data\n'
+                'tables: []\n'
+            )
+        with patch('fairway.engines.slurm_cluster.SlurmSparkManager') as MockManager:
+            result = runner.invoke(main, ['spark', 'stop', '--config', 'config/fairway.yaml', '--driver-job-id', '123'])
+            assert result.exit_code == 0, result.output
+            spark_cfg = MockManager.call_args[0][0]
+            assert spark_cfg['spark_coordination_dir'].endswith('/projects/test_project/spark')
+            assert MockManager.call_args[1]['driver_job_id'] == '123'
+
 def test_run_command_no_spark_provisioning(runner):
     """Test run command does NOT try to provision spark implicitly."""
     with runner.isolated_filesystem():

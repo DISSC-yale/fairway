@@ -1,6 +1,7 @@
 # CLI Reference
 
-Fairway provides a command-line interface for data ingestion and pipeline management.
+Fairway provides a command-line interface for data ingestion, state
+management, and HPC dispatch.
 
 ## Installation
 
@@ -38,38 +39,33 @@ fairway run [OPTIONS]
 | `--config TEXT` | Auto-discover | Path to config file |
 | `--spark-master TEXT` | None | Spark master URL (e.g., `spark://host:port` or `local[*]`) |
 | `--dry-run` | False | Show matched files without processing |
-| `--log-file TEXT` | `logs/fairway.jsonl` | Path to JSONL log file (empty string to disable) |
+| `--skip-summary` | False | Skip end-of-run summary stats |
+| `--log-file TEXT` | PathResolver default | Path to JSONL log file (empty string to disable) |
 | `--log-level` | `INFO` | Log level: DEBUG, INFO, WARNING, ERROR |
 
 **Examples:**
 ```bash
-# Run with auto-discovered config
 fairway run
-
-# Run with specific config
 fairway run --config config/production.yaml
-
-# Dry run to see what would be processed
 fairway run --dry-run
-
-# Run with debug logging
 fairway run --log-level DEBUG
-
-# Run with custom log file
-fairway run --log-file /path/to/pipeline.jsonl
 ```
 
 ### `fairway generate-schema`
 
-Generate schema from data files.
+Generate schema from data files via two-phase discovery + type inference.
 
 ```bash
 fairway generate-schema [OPTIONS]
 ```
 
-Scans source files and infers column types using the two-phase approach:
-1. **Phase 1**: Discover all columns from all files
-2. **Phase 2**: Sample files for type inference
+### `fairway generate-data`
+
+Generate synthetic test data for development/CI.
+
+```bash
+fairway generate-data [OPTIONS]
+```
 
 ### `fairway build`
 
@@ -81,8 +77,6 @@ fairway build [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `--apptainer` | Build Apptainer container (default) |
-| `--docker` | Build Docker container |
 | `--force` | Overwrite existing image |
 
 ### `fairway spark`
@@ -94,23 +88,20 @@ fairway spark [SUBCOMMAND]
 ```
 
 Subcommands:
-- `start` - Start a Spark cluster
-- `stop` - Stop the Spark cluster
-- `status` - Show cluster status
+- `start` — Start a Spark cluster (Slurm-dispatched)
+- `stop` — Stop the Spark cluster
 
 ### `fairway status`
 
-Show status of submitted Slurm jobs.
+Show status of submitted Slurm jobs. Wrapper around `squeue`.
 
 ```bash
-fairway status
+fairway status [OPTIONS]
 ```
-
-Wrapper around `squeue` with fairway-specific formatting.
 
 ### `fairway submit`
 
-Submit the pipeline as a Slurm job with optional Spark cluster provisioning.
+Submit the pipeline as a Slurm job, optionally provisioning a Spark cluster.
 
 ```bash
 fairway submit [OPTIONS]
@@ -125,26 +116,21 @@ fairway submit [OPTIONS]
 | `--mem TEXT` | `16G` | Memory per node |
 | `--cpus INTEGER` | `4` | CPUs per task |
 | `--with-spark` | False | Start Spark cluster before running |
+| `--with-summary` | False | Run `summarize` after ingest |
 | `--dry-run` | False | Print job script without submitting |
 
-**Examples:**
-```bash
-# Submit with auto-discovered config
-fairway submit
+`--dry-run` renders the exact script that would be submitted, using
+`cfg.paths.slurm_log_dir` for the log directory (matches the real
+submit path).
 
-# Submit with Spark cluster
-fairway submit --with-spark
-
-# Submit with custom resources
-fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
-
-# Preview the job script
-fairway submit --with-spark --dry-run
-```
+The rendered sbatch templates install an `EXIT` trap that calls
+`fairway run-abandon` as belt-and-suspenders: if the job is OOM-killed
+or hits walltime before the pipeline can finalize its own `run.json`,
+the trap marks the run as `unfinished`.
 
 ### `fairway summarize`
 
-Generate summary stats and reports for already-ingested data. Use this after running `fairway run --skip-summary` to generate summaries in a separate step (useful on HPC where ingestion and summarization have different resource needs).
+Generate summary stats and reports for already-ingested data.
 
 ```bash
 fairway summarize [OPTIONS]
@@ -153,27 +139,10 @@ fairway summarize [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--config TEXT` | Auto-discover | Path to config file |
-| `--spark-master TEXT` | None | Spark master URL |
-| `--slurm` | False | Submit as a Slurm job (loads Spark/Java modules) |
-| `--account TEXT` | From spark.yaml | Slurm account |
-| `--partition TEXT` | `day` | Slurm partition |
-| `--time TEXT` | `04:00:00` | Slurm time limit |
-| `--mem TEXT` | `32G` | Slurm memory |
-| `--cpus INTEGER` | `4` | Slurm CPUs per task |
-| `--log-file TEXT` | `logs/fairway.jsonl` | Path to JSONL log file |
-| `--log-level` | `INFO` | Log level |
+| `--slurm` | False | Submit as a Slurm job |
 
-**Examples:**
-```bash
-# Run summarization locally
-fairway summarize
-
-# Submit as Slurm job
-fairway summarize --slurm
-
-# Submit with custom resources
-fairway summarize --slurm --mem 64G --time 08:00:00
-```
+Slurm resource options (`--account`, `--partition`, `--time`, `--mem`,
+`--cpus`) match `submit`.
 
 ### `fairway cancel`
 
@@ -184,22 +153,56 @@ fairway cancel [JOB_ID]
 fairway cancel --all
 ```
 
-| Option | Description |
-|--------|-------------|
-| `JOB_ID` | Specific job ID to cancel |
-| `--all` | Cancel all your running jobs (requires confirmation) |
+### `fairway state`
 
-### `fairway cache`
-
-Manage fairway cache (extracted archives, manifests).
+Inspect and initialize fairway state directories.
 
 ```bash
-fairway cache [SUBCOMMAND]
+fairway state [SUBCOMMAND]
 ```
 
 Subcommands:
-- `clear` - Clear cached data
-- `status` - Show cache usage
+- `init` — Create the state/scratch dir tree for this project (idempotent).
+  Warns if a legacy pre-v4.1 `./manifest/` dir is found in CWD, since
+  those manifests would otherwise be orphaned on upgrade.
+- `path` — Print every resolved state/scratch path (one per line,
+  label TAB path).
+
+### `fairway doctor`
+
+Diagnose the fairway environment: env vars, project paths, last run.
+
+```bash
+fairway doctor [--config TEXT]
+```
+
+Prints `FAIRWAY_HOME`, `FAIRWAY_SCRATCH`, `FAIRWAY_RUN_ID`, the project
+name, every state directory with an `[ok]`/`[miss]` marker, and the
+most recent `run.json` under `log_dir` (if any).
+
+### `fairway preflight`
+
+Validate a config before submitting it.
+
+```bash
+fairway preflight [--config TEXT] [--require-account]
+```
+
+Runs the path-validation checks, confirms each table root and
+preprocess action exists, and optionally refuses placeholder Slurm
+accounts. Exits non-zero on any problem.
+
+### `fairway cache`
+
+Manage fairway cache (extracted archives).
+
+```bash
+fairway cache clean [--config TEXT] [--force]
+```
+
+Targets `PathResolver.cache_dir` (under `FAIRWAY_SCRATCH`). Also sweeps
+the legacy CWD-local `.fairway_cache` location so operators upgrading
+from pre-v4.1 installs can clean up in one step.
 
 ### `fairway eject`
 
@@ -209,56 +212,24 @@ Eject bundled scripts and container definitions for customization.
 fairway eject [OPTIONS]
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--scripts` | False | Eject only Slurm/HPC scripts |
-| `--container` | False | Eject only container files (Apptainer.def, Dockerfile) |
-| `-o, --output TEXT` | `.` | Output directory |
-| `--force` | False | Overwrite existing files without prompting |
-
-**Examples:**
-```bash
-# Eject everything (container files + scripts)
-fairway eject
-
-# Eject only scripts to customize Slurm workflows
-fairway eject --scripts
-
-# Eject only container definitions
-fairway eject --container
-
-# Eject to a custom directory
-fairway eject --output custom/
-
-# Force overwrite existing files
-fairway eject --force
-```
-
-**Ejected Files:**
-
-Container files:
-- `Apptainer.def` - Apptainer container definition
-- `Dockerfile` - Docker container definition
-- `.dockerignore` - Docker ignore patterns
-- `Makefile` - Build and run commands
-
-Scripts:
-- `scripts/driver.sh` - Slurm driver job script
-- `scripts/driver-schema.sh` - Schema generation driver
-- `scripts/fairway-spark-start.sh` - Spark cluster startup
-- `scripts/fairway-hpc.sh` - HPC utilities
+| Option | Description |
+|--------|-------------|
+| `--scripts` | Eject only Slurm/HPC scripts |
+| `--container` | Eject only container files |
+| `-o, --output TEXT` | Output directory (default `.`) |
+| `--force` | Overwrite existing files without prompting |
 
 ### `fairway shell`
 
 Enter an interactive shell inside the fairway container.
 
 ```bash
-fairway shell
+fairway shell [--image TEXT] [--bind TEXT]... [--dev]
 ```
 
 ### `fairway pull`
 
-Pull (mirror) the Apptainer container from the registry.
+Pull the Apptainer container from the registry.
 
 ```bash
 fairway pull
@@ -266,7 +237,7 @@ fairway pull
 
 ### `fairway logs`
 
-View and filter structured pipeline logs (JSONL format).
+View and filter structured pipeline logs (JSONL).
 
 ```bash
 fairway logs [OPTIONS]
@@ -274,41 +245,14 @@ fairway logs [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-f, --file TEXT` | `logs/fairway.jsonl` | Path to JSONL log file |
-| `-l, --level` | None | Filter by log level: DEBUG, INFO, WARNING, ERROR |
-| `-b, --batch TEXT` | None | Filter by batch ID (supports partial match) |
+| `-f, --file TEXT` | Latest `run_*.jsonl` under the sharded log dir | Path to JSONL log file |
+| `--config TEXT` | Auto-discover | Config used to resolve the project log dir |
+| `--run-id TEXT` | None | Inspect a specific run_id (requires `--config`) |
+| `-l, --level` | None | Filter by level: DEBUG, INFO, WARNING, ERROR |
+| `-b, --batch TEXT` | None | Filter by batch ID (partial match) |
 | `-n, --last INTEGER` | 0 | Show only last N entries |
-| `--json` | False | Output raw JSON instead of formatted text |
+| `--json` | False | Output raw JSON |
 | `--errors` | False | Shortcut for `--level ERROR` |
-
-**Examples:**
-```bash
-# Show all logs
-fairway logs
-
-# Show last 20 entries
-fairway logs --last 20
-
-# Show only errors
-fairway logs --errors
-fairway logs --level ERROR
-
-# Filter by batch ID (partial match)
-fairway logs --batch claims_CT_2023
-
-# Raw JSON output (pipe to jq for advanced queries)
-fairway logs --json | jq 'select(.level == "ERROR")'
-
-# Custom log file
-fairway logs --file /path/to/other.jsonl
-```
-
-**Output Format:**
-```
-2026-02-06T10:00:00 [INFO] Starting ingestion for dataset: sales
-2026-02-06T10:00:01 [INFO] [sales_2023_01_abc123] Processing batch 1/3
-2026-02-06T10:00:15 [ERROR] [sales_2023_01_abc123] Batch failed: OOM
-```
 
 ### `fairway manifest`
 
@@ -319,21 +263,47 @@ fairway manifest [SUBCOMMAND] [OPTIONS]
 ```
 
 Subcommands:
-- `show` - Display manifest entries
-- `query` - Query files by status or batch
-- `reset` - Reset file status (for reprocessing)
+- `list` — List every table with its file-status counts.
+- `query` — Filter files by status, batch_id, or file-path substring.
+  Supports `--json` for pipe-friendly output.
+
+### `fairway run-abandon` *(hidden)*
+
+Idempotently mark a run as `unfinished`. Called from the sbatch `EXIT`
+trap installed by `submit` so OOM/walltime kills still finalize
+`run.json`. Safe to call on already-terminal runs.
+
+```bash
+fairway run-abandon --config <path> <run_id>
+```
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `FAIRWAY_BINDS` | Additional Apptainer bind paths (comma-separated) | Auto-detected from config |
-| `FAIRWAY_TEMP` | Temporary directory for large operations (archive extraction, scratch) | System temp |
-| `REDIVIS_API_TOKEN` | API token for Redivis data export | None (required for export) |
-| `SPARK_LOCAL_IP` | Spark driver bind address | Auto-detect |
-| `PYSPARK_SUBMIT_ARGS` | Additional Spark submit arguments | Auto-configured |
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `FAIRWAY_HOME` | Root of durable state (manifests, logs, run metadata, locks). | platformdirs user state dir |
+| `FAIRWAY_SCRATCH` | Root of ephemeral state (cache, temp). | platformdirs user cache dir |
+| `FAIRWAY_RUN_ID` | Pin a specific run_id (highest precedence over Slurm/ULID). | Auto-generated per run |
+| `FAIRWAY_RUN_MONTH` | Pin the month shard for log dir (`YYYY-MM`). Useful for tests and long-running jobs crossing UTC midnight. | Derived from run_id ULID timestamp |
+| `FAIRWAY_TEMP` | User-visible fast scratch for archive extractions and preprocess batches (e.g., node-local SSD). Falls back to `PathResolver.temp_dir` under `FAIRWAY_SCRATCH`. | Unset |
+| `FAIRWAY_BINDS` | Additional Apptainer bind paths (comma-separated). | Auto-detected from config |
+| `FAIRWAY_SIF` | Path to the Apptainer SIF image. | `fairway.sif` |
+| `REDIVIS_API_TOKEN` | API token for Redivis data export. | None |
+| `SPARK_LOCAL_IP` | Spark driver bind address. | Auto-detect |
+| `PYSPARK_SUBMIT_ARGS` | Additional Spark submit arguments. | Auto-configured |
 
-**Note:** `FAIRWAY_BINDS` is useful when running on HPC clusters with different filesystem paths (e.g., `/scratch`, `/gpfs`, `/project`). Set this to your cluster's shared storage path if auto-detection doesn't find it.
+### `FAIRWAY_TEMP` vs `FAIRWAY_SCRATCH`
+
+Two scratch concepts coexist:
+
+- **`FAIRWAY_TEMP`** (or `storage.temp` in config) — user-pointable fast
+  scratch for preprocess work and archive extraction. Set this to a
+  node-local SSD or fast burst-buffer to speed up ingest.
+- **`FAIRWAY_SCRATCH`** — fairway-managed ephemeral root that holds the
+  resolver's `cache_dir` and `temp_dir` when `FAIRWAY_TEMP` is unset.
+
+`FAIRWAY_HOME` is *always* the durable tree (manifests, logs, run
+metadata, archive-extraction locks) and is never purged mid-run.
 
 ## Exit Codes
 
@@ -343,3 +313,5 @@ Subcommands:
 | 1 | General error |
 | 2 | Configuration error |
 | 115 | Data integrity error (RULE-115) |
+| 130 | Interrupted (SIGINT); pipeline finalized run.json as `unfinished` |
+| 143 | Terminated (SIGTERM); pipeline finalized run.json as `unfinished` |

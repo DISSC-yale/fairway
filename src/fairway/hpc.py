@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import sys
 import logging
@@ -20,17 +21,25 @@ class SlurmManager:
         template = _resources.files(_slurm_templates).joinpath(name).read_text()
         return template % params
 
-    def submit_job(self, template_name, submit_message, extra_params=None):
-        """Render a template and submit it as a Slurm job."""
-        # Slurm stdout/stderr lands in slurm_log_dir (flat sibling of
-        # the structured log_dir). Resolved once per Config, so every
-        # submission from one project shares the same directory.
-        log_dir = str(self.config.paths.slurm_log_dir)
-        os.makedirs(log_dir, exist_ok=True)
+    def _spark_start_args(self, resources):
+        tokens = ["--config", self.config.config_path]
+        for flag, key in (
+            ("--account", "account"),
+            ("--partition", "partition"),
+            ("--time", "time"),
+            ("--cpus", "cpus"),
+            ("--mem", "mem"),
+            ("--nodes", "nodes"),
+        ):
+            value = resources.get(key)
+            if value is not None:
+                tokens.extend([flag, str(value)])
+        return f" {shlex.join(tokens)}"
 
+    def build_template_params(self, extra_params=None):
         resources = self.config.resolve_resources()
         params = {
-            'log_dir': log_dir,
+            'log_dir': str(self.config.paths.slurm_log_dir),
             'sif_env_var': FAIRWAY_SIF_ENV_VAR,
             'default_sif': DEFAULT_SIF_NAME,
             'slurm_time': resources['time'],
@@ -40,10 +49,23 @@ class SlurmManager:
             'account': resources['account'],
             'apptainer_binds': self.config.binds_list,
             'config': self.config.config_path,
+            'fairway_home': str(self.config.paths.state_root),
+            'fairway_scratch': str(self.config.paths.scratch_root),
+            'spark_coordination_dir': str(self.config.paths.spark_coordination_dir),
+            'spark_start_args': self._spark_start_args(resources),
         }
         if extra_params:
             params.update(extra_params)
+        return params
 
+    def submit_job(self, template_name, submit_message, extra_params=None):
+        """Render a template and submit it as a Slurm job."""
+        # Slurm stdout/stderr lands in slurm_log_dir (flat sibling of
+        # the structured log_dir). Resolved once per Config, so every
+        # submission from one project shares the same directory.
+        log_dir = str(self.config.paths.slurm_log_dir)
+        os.makedirs(log_dir, exist_ok=True)
+        params = self.build_template_params(extra_params)
         job_script = self._render_template(template_name, **params)
         
         import tempfile

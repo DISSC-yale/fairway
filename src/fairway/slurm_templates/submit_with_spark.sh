@@ -32,6 +32,11 @@ fi
 # =============================================================================
 # Environment Setup
 # =============================================================================
+# Pin resolver roots so host-side spark start/stop, run-abandon, and
+# the driver all resolve one shared fairway state tree.
+export FAIRWAY_HOME="%(fairway_home)s"
+export FAIRWAY_SCRATCH="%(fairway_scratch)s"
+
 if [ "$USE_APPTAINER" = "yes" ]; then
     echo "Using Apptainer container for Spark cluster and driver"
     # Export for SlurmSparkManager to detect
@@ -44,24 +49,40 @@ else
 fi
 
 # Use job-specific state directory to prevent race conditions with concurrent jobs
-STATE_DIR="$HOME/.fairway-spark/$SLURM_JOB_ID"
+STATE_DIR="%(spark_coordination_dir)s/$SLURM_JOB_ID"
 mkdir -p "$STATE_DIR"
 
-# Cleanup function to stop Spark cluster on exit
+# Pre-compute run_id + month shard so the pipeline and the EXIT trap
+# both reference the same run.json. Use UTC so midnight-crossing jobs
+# don't flip the month shard between pipeline start and trap fire.
+# Include $$ (shell PID) to avoid collisions when SLURM_JOB_ID is unset.
+export FAIRWAY_RUN_ID="${FAIRWAY_RUN_ID:-slurm_${SLURM_JOB_ID:-local}_$(date -u +%%s)_$$}"
+export FAIRWAY_RUN_MONTH="${FAIRWAY_RUN_MONTH:-$(date -u +%%Y-%%m)}"
+
+# The EXIT trap runs on the submit host. In pure-container deployments
+# `fairway` may not be on host PATH, which makes run-abandon a no-op.
+if ! command -v fairway >/dev/null 2>&1; then
+    echo "WARNING: 'fairway' not on host PATH; OOM/walltime run-abandon trap will be a no-op." >&2
+fi
+
+# Cleanup function: stop Spark cluster AND finalize run.json on exit.
 # NOTE: fairway spark stop runs on HOST (not in container) because it:
 #   1. Reads state files from host filesystem
 #   2. Runs scancel (Slurm command) to cancel the cluster job
+# run-abandon is idempotent — no-op when run is already terminal.
 cleanup() {
     echo "Stopping Spark cluster..."
-    fairway spark stop --driver-job-id $SLURM_JOB_ID || true
+    fairway spark stop --config %(config)s --driver-job-id $SLURM_JOB_ID || true
     # Clean up state directory
     rm -rf "$STATE_DIR"
+    # Belt-and-suspenders finalization for OOM/walltime kills.
+    fairway run-abandon --config %(config)s "${FAIRWAY_RUN_ID}" || true
 }
 trap cleanup EXIT
 
 # Start Spark cluster with job isolation
 echo "Starting Spark cluster..."
-fairway spark start --driver-job-id $SLURM_JOB_ID
+fairway spark start --driver-job-id $SLURM_JOB_ID%(spark_start_args)s
 
 # Wait for master URL and conf dir (job-specific paths)
 MASTER_URL_FILE="$STATE_DIR/master_url.txt"
@@ -90,7 +111,9 @@ if [ "$USE_APPTAINER" = "yes" ]; then
     # Use --no-home to prevent classpath pollution from user's home directory
     BIND_PATHS="${FAIRWAY_BINDS}"
     BIND_PATHS="${BIND_PATHS},${HOME}/.spark-local"
-    BIND_PATHS="${BIND_PATHS},${HOME}/.fairway-spark"
+    BIND_PATHS="${BIND_PATHS},${FAIRWAY_HOME}"
+    BIND_PATHS="${BIND_PATHS},${FAIRWAY_SCRATCH}"
+    BIND_PATHS="${BIND_PATHS},${STATE_DIR}"
     BIND_PATHS="${BIND_PATHS},${PWD}"
     BIND_PATHS="${BIND_PATHS},/tmp"
     if [ -n "$SPARK_CONF_DIR" ]; then
@@ -107,9 +130,15 @@ if [ "$USE_APPTAINER" = "yes" ]; then
     done
     unset _bind_dirs _dir
 
+    # Forward run_id + run_month so the container's pipeline writes to
+    # the same run.json the host trap will look up.
     apptainer exec --no-home \
         --bind "$BIND_PATHS" \
+        --env FAIRWAY_HOME="${FAIRWAY_HOME}" \
+        --env FAIRWAY_SCRATCH="${FAIRWAY_SCRATCH}" \
         --env SPARK_CONF_DIR="${SPARK_CONF_DIR}" \
+        --env FAIRWAY_RUN_ID="${FAIRWAY_RUN_ID}" \
+        --env FAIRWAY_RUN_MONTH="${FAIRWAY_RUN_MONTH}" \
         "$FAIRWAY_SIF" \
         fairway run --config %(config)s $SPARK_ARGS%(summary_flag)s
 else

@@ -125,8 +125,12 @@ def test_resolve_env_or_home_returns_value_when_set(_clean_env, monkeypatch):
 # --- resolve_config_path ---
 
 def test_resolve_relative_config_path():
-    out = PathResolver.resolve_config_path("./rel/sub", Path("/etc/fairway"))
-    assert out == Path("/etc/fairway/rel/sub")
+    # Use a tmp-like absolute path that isn't symlinked on any platform;
+    # /etc is a symlink to /private/etc on macOS, so comparing against a
+    # literal Path("/etc/...") fails there after .resolve().
+    config_dir = Path("/etc/fairway")
+    out = PathResolver.resolve_config_path("./rel/sub", config_dir)
+    assert out == (config_dir / "rel" / "sub").resolve()
 
 
 def test_resolve_absolute_config_path():

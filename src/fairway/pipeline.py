@@ -48,16 +48,28 @@ def _sigterm_handler(signum, frame):
     os.kill(os.getpid(), signum)
 
 
+def _sigint_handler(signum, frame):
+    # Finalize first so run.json reflects the interruption, then raise
+    # KeyboardInterrupt so user-visible semantics (finally blocks, exit
+    # code 130) match Python's default SIGINT behavior.
+    _finalize_all_unfinished()
+    raise KeyboardInterrupt()
+
+
 def _install_crash_finalizers() -> None:
     global _SIGTERM_HANDLER_INSTALLED
     if _SIGTERM_HANDLER_INSTALLED:
         return
     atexit.register(_finalize_all_unfinished)
-    try:
-        signal.signal(signal.SIGTERM, _sigterm_handler)
-    except (ValueError, OSError):
-        # Non-main thread or platform without signal — skip.
-        pass
+    for sig, handler in (
+        (signal.SIGTERM, _sigterm_handler),
+        (signal.SIGINT, _sigint_handler),
+    ):
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            # Non-main thread or platform without signal — skip.
+            pass
     _SIGTERM_HANDLER_INSTALLED = True
 
 
@@ -477,11 +489,10 @@ class IngestionPipeline:
         # subdirs get the same manifest key (basename-only fallback).
         temp_loc = self.config.temp_dir
         if not temp_loc:
-            scratch_base = os.environ.get('SCRATCH')
-            if scratch_base:
-                temp_loc = os.path.join(scratch_base, 'fairway')
-            else:
-                temp_loc = os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}')
+            # Fall back to the resolver-managed temp dir so preprocess
+            # batch output stays inside FAIRWAY_SCRATCH rather than
+            # leaking into /tmp or an unrelated $SCRATCH tree.
+            temp_loc = str(self.config.paths.temp_dir)
         safe_name = "".join([c if c.isalnum() else "_" for c in table['name']])
         batch_dir = os.path.join(temp_loc, f"{safe_name}_v1")
 

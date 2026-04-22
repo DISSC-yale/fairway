@@ -295,6 +295,7 @@ class Config:
     @property
     def binds_list(self) -> str:
         bind_paths = set()
+        bind_paths.add(os.path.dirname(os.path.abspath(self.config_path)))
         for path in [self.raw_dir, self.processed_dir, self.curated_dir]:
             if path:
                 abs_p = os.path.abspath(path)

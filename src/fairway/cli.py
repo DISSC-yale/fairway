@@ -259,11 +259,24 @@ def start(config, driver_job_id, **overrides):
     click.echo(f"Spark cluster started: {spark_manager.start_cluster()}")
 
 @spark.command()
+@click.option('--config', default=None)
 @click.option('--driver-job-id', default=None)
-def stop(driver_job_id):
+def stop(config, driver_job_id):
     """Stop the running Spark cluster."""
     from .engines.slurm_cluster import SlurmSparkManager
-    SlurmSparkManager({}, driver_job_id=driver_job_id).stop_cluster()
+    spark_cfg = {}
+    cfg_path = None
+    if config:
+        cfg_path = config
+    else:
+        try:
+            cfg_path = discover_config()
+        except click.ClickException:
+            cfg_path = None
+    if cfg_path:
+        cfg = Config(cfg_path)
+        spark_cfg["spark_coordination_dir"] = str(cfg.paths.spark_coordination_dir)
+    SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id).stop_cluster()
 
 @main.command()
 @click.option('--config', default=None)
@@ -357,7 +370,7 @@ def submit(config, with_spark, with_summary, dry_run, **overrides):
     
     if dry_run:
         mgr = SlurmManager(cfg)
-        click.echo(mgr._render_template(template, **{**extra, 'log_dir': 'logs', 'sif_env_var': 'FAIRWAY_SIF', 'default_sif': 'fairway.sif', 'slurm_time': res['time'], 'mem': res['mem'], 'cpus': res['cpus'], 'partition': res['partition'], 'account': res['account'], 'apptainer_binds': cfg.binds_list, 'config': cfg.config_path}))
+        click.echo(mgr._render_template(template, **mgr.build_template_params(extra)))
     else:
         SlurmManager(cfg).submit_job(template, f"Submitting job (with-spark={with_spark})...", extra_params=extra)
 
@@ -520,13 +533,44 @@ def cache():
     pass
 
 @cache.command()
+@click.option('--config', default=None)
 @click.option('--force', is_flag=True)
-def clean(force):
-    """Clear the archive extraction cache."""
-    if os.path.exists('.fairway_cache'):
-        if force or click.confirm("Delete .fairway_cache?"):
-            shutil.rmtree('.fairway_cache')
-            click.echo("Cache cleared.")
+def clean(config, force):
+    """Clear the archive extraction cache.
+
+    Targets PathResolver.cache_dir (under FAIRWAY_SCRATCH). Also sweeps
+    the legacy CWD-local `.fairway_cache` location so operators
+    upgrading from pre-v4.1 installs can clean up in one step.
+    """
+    targets = []
+    # Only swallow "no config discoverable" — real config errors must
+    # surface so operators don't think the cache cleaned when it didn't.
+    try:
+        cfg_path = config or discover_config()
+    except click.ClickException:
+        cfg_path = None
+    if cfg_path:
+        cfg = Config(cfg_path)
+        resolved_cache = cfg.paths.cache_dir
+        if resolved_cache.exists() or os.path.islink(str(resolved_cache)):
+            targets.append(str(resolved_cache))
+
+    legacy = os.path.join(os.getcwd(), '.fairway_cache')
+    if (os.path.exists(legacy) or os.path.islink(legacy)) and legacy not in targets:
+        targets.append(legacy)
+
+    if not targets:
+        click.echo("No cache to clear.")
+        return
+
+    for target in targets:
+        if force or click.confirm(f"Delete {target}?"):
+            # rmtree refuses symlinked dirs; unlink those explicitly.
+            if os.path.islink(target):
+                os.unlink(target)
+            else:
+                shutil.rmtree(target)
+            click.echo(f"Cleared {target}.")
 
 @main.command()
 def pull():
@@ -685,11 +729,41 @@ def state_init(config):
     tree so the first `fairway run` doesn't have to mkdir under a
     hot Lustre/GPFS write path.
     """
+    from pathlib import Path
     cfg = Config(config or discover_config())
     for label, path in _state_dirs_for(cfg):
         path.mkdir(parents=True, exist_ok=True)
         click.echo(f"  {label}: {path}")
     click.echo(f"Initialized state for project {cfg.project!r}.")
+
+    # Detect pre-FAIRWAY_HOME manifest dir. Check both the config's
+    # directory (covers `state init --config /path/to/project/foo.yaml`
+    # from anywhere) and CWD (covers legacy `cd project && state init`).
+    # Silently leaving legacy manifests stranded would cause the next
+    # run to re-ingest every file as new. Dedupe by resolved form so
+    # the same real dir referenced two different ways warns only once.
+    new_manifest = cfg.paths.manifest_dir
+    try:
+        new_resolved = new_manifest.resolve()
+    except OSError:
+        new_resolved = new_manifest
+    seen = set()
+    for raw in (Path(cfg.config_path).parent / "manifest", Path.cwd() / "manifest"):
+        try:
+            key = raw.resolve()
+        except OSError:
+            key = raw
+        if key in seen or key == new_resolved:
+            continue
+        seen.add(key)
+        if raw.is_dir() and any(raw.glob("*.json")):
+            click.echo(
+                f"\nWARNING: legacy manifest dir found at {raw}\n"
+                f"  Active manifest dir is {new_manifest}\n"
+                f"  Copy {raw}/*.json there to resume prior state;\n"
+                f"  otherwise the next run will treat every file as unprocessed.",
+                err=True,
+            )
 
 
 @state.command("path")
