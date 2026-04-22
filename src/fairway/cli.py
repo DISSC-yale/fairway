@@ -522,6 +522,10 @@ def shell(config, image, bind, dev):
     """Enter an interactive shell inside the container."""
     cfg = Config(config or discover_config())
     binds = set(cfg.binds_list.split(',')) | set(bind)
+    if dev:
+        dev_bind = _get_dev_bind_path()
+        if dev_bind:
+            binds.add(dev_bind)
     cmd = ["apptainer", "shell"]
     if binds: cmd.extend(["--bind", ",".join(filter(None, binds))])
     cmd.append(image)
@@ -675,10 +679,6 @@ def manifest_query(config, table, file_key, status, batch_id, as_json):
 def status(user, job_id):
     """Show status of Slurm jobs."""
     import getpass
-    if os.path.exists("spark_master_url.txt") and os.path.exists("cluster_job_id.txt"):
-        master_url = open("spark_master_url.txt").read().strip()
-        cluster_job = open("cluster_job_id.txt").read().strip()
-        click.echo(f"Found active Spark cluster: master={master_url} job={cluster_job}")
     cmd = ['squeue', '--user', user or getpass.getuser()]
     if job_id: cmd.extend(['--jobs', job_id])
     subprocess.run(cmd)

@@ -337,6 +337,33 @@ class TestDevMode:
         # Should still return something (the module's own location)
         assert bind_path is not None
 
+    def test_shell_dev_adds_overlay_bind(self, tmp_path, monkeypatch):
+        """`fairway shell --dev` should pass the dev overlay bind to Apptainer."""
+        from fairway.cli import main
+
+        runner = CliRunner()
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config").mkdir()
+        (tmp_path / "src" / "fairway").mkdir(parents=True)
+        (tmp_path / "config" / "fairway.yaml").write_text(
+            "project: shell_dev\n"
+            "dataset_name: shell_dev\n"
+            "engine: duckdb\n"
+            "storage:\n"
+            "  root: data\n"
+            "tables: []\n"
+        )
+
+        with patch("fairway.cli.subprocess.run") as mock_run:
+            result = runner.invoke(main, ["shell", "--config", "config/fairway.yaml", "--dev"])
+
+        assert result.exit_code == 0, result.output
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:2] == ["apptainer", "shell"]
+        bind_spec = cmd[cmd.index("--bind") + 1]
+        assert str(tmp_path / "src" / "fairway") in bind_spec
+        assert "/opt/venv/lib/python3.10/site-packages/fairway" in bind_spec
+
 
 class TestSparkStartScript:
     """Tests for fairway-spark-start.sh content."""

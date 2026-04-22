@@ -23,23 +23,20 @@ def test_status_command_no_spark_cluster(runner):
             # Should have --user flag by default
             assert '--user' in args[0]
 
-def test_status_command_with_spark_cluster(runner):
-    """Test fairway status displays Spark cluster info if files exist."""
+def test_status_command_ignores_legacy_cluster_files(runner):
+    """Status is a thin squeue wrapper and should ignore stale CWD files."""
     with runner.isolated_filesystem():
-        # Create mock cluster info files
         with open("spark_master_url.txt", "w") as f:
             f.write("spark://master:7077")
         with open("cluster_job_id.txt", "w") as f:
             f.write("12345")
-            
-        with patch('os.path.expanduser', side_effect=lambda x: x.replace("~", os.getcwd())):
-            with patch('subprocess.run') as mock_run:
-                result = runner.invoke(main, ['status'])
-                assert result.exit_code == 0
-                
-                assert "Found active Spark cluster" in result.output
-                assert "spark://master:7077" in result.output
-                assert "12345" in result.output
+
+        with patch('subprocess.run') as mock_run:
+            result = runner.invoke(main, ['status'])
+            assert result.exit_code == 0
+            assert "Found active Spark cluster" not in result.output
+            args, _ = mock_run.call_args
+            assert args[0][0] == 'squeue'
 
 def test_cancel_command(runner):
     """Test fairway cancel command."""
