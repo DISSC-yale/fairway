@@ -24,7 +24,7 @@ class TestPartitionAwarePipeline:
             (data_dir / name).write_text(content)
         return files
 
-    def _create_config(self, tmp_path, data_dir, batch_strategy="partition_aware", extra_table_config=None):
+    def _create_config(self, tmp_path, data_dir, engine="duckdb", batch_strategy="partition_aware", extra_table_config=None):
         """Create a fairway config YAML."""
         intermediate = tmp_path / "intermediate"
         final = tmp_path / "final"
@@ -44,7 +44,7 @@ class TestPartitionAwarePipeline:
 
         config = {
             'dataset_name': 'test_batching',
-            'engine': 'duckdb',
+            'engine': engine,
             'storage': {
                 'root': str(tmp_path / 'data'),
                 'processed': str(intermediate),
@@ -52,19 +52,26 @@ class TestPartitionAwarePipeline:
             },
             'tables': [table_config],
         }
-        config_path = tmp_path / "config.yaml"
+        config_path = tmp_path / f"config_{engine}.yaml"
         with open(config_path, 'w') as f:
             yaml.dump(config, f)
         return str(config_path)
 
-    def test_partition_aware_creates_correct_output_structure(self, tmp_path):
+    @pytest.mark.parametrize("engine", ["duckdb", "pyspark"])
+    def test_partition_aware_creates_correct_output_structure(self, tmp_path, engine):
         """6 CSV files across 3 partitions should produce correct Hive-style dirs."""
+        if engine == "pyspark":
+            from tests.conftest import require_pyspark_for_pipeline
+            require_pyspark_for_pipeline()
+
         data_dir = tmp_path / "data"
         self._create_csv_files(data_dir)
-        config_path = self._create_config(tmp_path, data_dir)
+        config_path = self._create_config(tmp_path, data_dir, engine=engine)
 
         from fairway.pipeline import IngestionPipeline
         pipeline = IngestionPipeline(config_path)
+        if engine == "pyspark":
+            pipeline.engine.master = "local[*]"
         pipeline.run()
 
         intermediate = tmp_path / "intermediate" / "claims"
@@ -74,32 +81,44 @@ class TestPartitionAwarePipeline:
         assert (intermediate / "state=NY" / "year=2024").exists()
         assert (intermediate / "state=MA" / "year=2024").exists()
 
-    def test_partition_aware_writes_data_to_correct_partitions(self, tmp_path):
+    @pytest.mark.parametrize("engine", ["duckdb", "pyspark"])
+    def test_partition_aware_writes_data_to_correct_partitions(self, tmp_path, engine):
         """Verify data lands in the right partition directories."""
+        if engine == "pyspark":
+            from tests.conftest import require_pyspark_for_pipeline
+            require_pyspark_for_pipeline()
+
         data_dir = tmp_path / "data"
         self._create_csv_files(data_dir)
-        config_path = self._create_config(tmp_path, data_dir)
+        config_path = self._create_config(tmp_path, data_dir, engine=engine)
 
         from fairway.pipeline import IngestionPipeline
         pipeline = IngestionPipeline(config_path)
+        if engine == "pyspark":
+            pipeline.engine.master = "local[*]"
         pipeline.run()
 
+        # Check curated output directly (engine-agnostic via read_curated or simple file check)
+        # But here we want to check the INTERMEDIATE partitioned files
+        
+        # CT/2023 should have 3 rows
+        ct_2023_path = tmp_path / "intermediate" / "claims" / "state=CT" / "year=2023"
+        assert ct_2023_path.exists()
+        
+        # Check row count using DuckDB for validation (works on Parquet files from either engine)
         import duckdb
         con = duckdb.connect()
-
-        # CT/2023 should have 3 rows (2 files: 2+1 rows)
-        ct_2023_path = str(tmp_path / "intermediate" / "claims" / "state=CT" / "year=2023" / "*.parquet")
-        ct_files = glob.glob(ct_2023_path)
-        assert len(ct_files) > 0, f"No parquet files at {ct_2023_path}"
-        df = con.execute(f"SELECT * FROM read_parquet('{ct_files[0]}')").fetchdf()
-        assert len(df) == 3
+        
+        ct_files = list(ct_2023_path.glob("*.parquet"))
+        assert len(ct_files) > 0
+        count = con.execute(f"SELECT COUNT(*) FROM read_parquet('{ct_2023_path}/*.parquet')").fetchone()[0]
+        assert count == 3
 
         # NY/2024 should have 1 row
-        ny_2024_path = str(tmp_path / "intermediate" / "claims" / "state=NY" / "year=2024" / "*.parquet")
-        ny_files = glob.glob(ny_2024_path)
-        assert len(ny_files) > 0
-        df = con.execute(f"SELECT * FROM read_parquet('{ny_files[0]}')").fetchdf()
-        assert len(df) == 1
+        ny_2024_path = tmp_path / "intermediate" / "claims" / "state=NY" / "year=2024"
+        assert ny_2024_path.exists()
+        count = con.execute(f"SELECT COUNT(*) FROM read_parquet('{ny_2024_path}/*.parquet')").fetchone()[0]
+        assert count == 1
 
     def test_manifest_tracks_processed_files(self, tmp_path):
         """After partition-aware run, manifest should record all files."""

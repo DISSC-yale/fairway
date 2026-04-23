@@ -11,6 +11,8 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.hpc_contract
+
 
 TEMPLATES = ["submit_bare.sh", "submit_with_spark.sh"]
 

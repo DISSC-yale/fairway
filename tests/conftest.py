@@ -14,6 +14,41 @@ os.environ.setdefault("FAIRWAY_ALLOW_TEST_SCRIPTS", "1")
 _repo_root_baseline: "set[str] | None" = None
 
 
+def require_duckdb_for_pipeline():
+    """Return the imported duckdb module or fail/skip by test policy."""
+    try:
+        import duckdb  # type: ignore
+    except ImportError as exc:
+        if os.environ.get("FAIRWAY_TEST_ENV") == "full-pipeline-duckdb":
+            pytest.exit(
+                "duckdb is required when FAIRWAY_TEST_ENV=full-pipeline-duckdb. "
+                "Install fairway[duckdb] in this lane.",
+                returncode=1,
+            )
+        pytest.skip(f"duckdb not available: {exc}")
+    return duckdb
+
+
+def require_pyspark_for_pipeline():
+    """Return the imported pyspark module or fail/skip by test policy.
+
+    Local/default runs may skip Spark-backed tests when PySpark is not
+    installed. In the dedicated full-pipeline lane, missing PySpark is
+    a hard failure because whole-pipeline coverage requires it.
+    """
+    try:
+        import pyspark  # type: ignore
+    except ImportError as exc:
+        if os.environ.get("FAIRWAY_TEST_ENV") == "full-pipeline":
+            pytest.exit(
+                "PySpark is required when FAIRWAY_TEST_ENV=full-pipeline. "
+                "Install fairway[spark] in this lane.",
+                returncode=1,
+            )
+        pytest.skip(f"PySpark not available: {exc}")
+    return pyspark
+
+
 def pytest_configure(config):
     """Bootstrap build dirs and snapshot repo root.
 
@@ -27,16 +62,16 @@ def pytest_configure(config):
     global _repo_root_baseline
     repo_root = Path(__file__).parent.parent
 
-    # Create sanctioned drop zones for coverage + pytest tmp.
+    # Create sanctioned drop zone for coverage output. Do NOT create
+    # build/test-tmp here — pytest owns --basetemp and will error if
+    # the directory already exists.
     (repo_root / "build" / "coverage").mkdir(parents=True, exist_ok=True)
-    (repo_root / "build" / "test-tmp").mkdir(parents=True, exist_ok=True)
 
     # Snapshot repo-root contents for the leak detector to diff against.
     try:
         _repo_root_baseline = set(os.listdir(repo_root))
     except OSError:
         _repo_root_baseline = None
-
 
 # ============ Terminal summary: PySpark skips + leak detector ============
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -155,7 +190,7 @@ def _pyspark_engine_shared():
 
     Skips entire session's PySpark tests if PySpark is unavailable.
     """
-    pytest.importorskip("pyspark")
+    require_pyspark_for_pipeline()
     from fairway.engines.pyspark_engine import PySparkEngine
     engine = PySparkEngine()
     try:

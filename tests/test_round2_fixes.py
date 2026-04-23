@@ -15,6 +15,8 @@ from click.testing import CliRunner
 
 from fairway.cli import main
 
+pytestmark = pytest.mark.hpc_contract
+
 
 pytest.importorskip("duckdb")
 

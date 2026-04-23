@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  regression:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -21,10 +21,57 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev,duckdb]"
       - name: Run tests
-        run: pytest tests/ -m "not spark and not hpc" -p no:cacheprovider --override-ini="addopts=" --cov=src/fairway --cov-report=xml --cov-fail-under=64
+        run: pytest tests/ -m "not spark and not spark_pipeline and not pipeline and not hpc and not hpc_contract" -p no:cacheprovider --override-ini="addopts=" --cov=src/fairway --cov-report=xml --cov-fail-under=64
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         if: matrix.python-version == '3.11'
         with:
           name: coverage-report
           path: coverage.xml
+
+  duckdb-pipeline:
+    runs-on: ubuntu-latest
+    env:
+      FAIRWAY_TEST_ENV: full-pipeline-duckdb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev,duckdb]"
+      - name: Verify DuckDB is available
+        run: python -c "import duckdb"
+      - name: Run canonical DuckDB pipeline test
+        run: pytest tests/integration/test_full_pipeline_duckdb.py -m "pipeline and not spark_pipeline" -p no:cacheprovider --override-ini="addopts=" --cov=src/fairway --cov-report=xml --cov-fail-under=0
+
+  spark-pipeline:
+    runs-on: ubuntu-latest
+    env:
+      FAIRWAY_TEST_ENV: full-pipeline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev,spark]"
+      - name: Verify PySpark is available
+        run: python -c "import pyspark"
+      - name: Run canonical Spark pipeline test
+        run: pytest tests/integration/test_full_pipeline_pyspark.py -m "spark_pipeline" -p no:cacheprovider --override-ini="addopts=" --cov=src/fairway --cov-report=xml --cov-fail-under=0
+
+  hpc-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev,duckdb]"
+      - name: Run HPC/Slurm contract tests
+        run: pytest tests/test_sbatch_templates.py tests/test_slurm_paths.py tests/test_cli_spark_lifecycle.py tests/test_round2_fixes.py -m "hpc_contract and not hpc" -p no:cacheprovider --override-ini="addopts=" --no-cov

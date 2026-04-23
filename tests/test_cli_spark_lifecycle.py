@@ -6,6 +6,8 @@ from fairway.cli import main
 from fairway.engines.slurm_cluster import compute_executor_defaults, _parse_mem_to_gb
 import os
 
+pytestmark = pytest.mark.hpc_contract
+
 @pytest.fixture
 def runner():
     return CliRunner()

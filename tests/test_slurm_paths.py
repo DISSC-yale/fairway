@@ -15,6 +15,8 @@ from unittest import mock
 import pytest
 import yaml
 
+pytestmark = pytest.mark.hpc_contract
+
 
 def test_spark_coord_override_routes_state_files(tmp_path):
     from fairway.engines.slurm_cluster import SlurmSparkManager

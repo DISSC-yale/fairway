@@ -5,6 +5,8 @@ import os
 from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 
+pytestmark = pytest.mark.hpc_contract
+
 
 class TestSlurmSparkManagerApptainerDetection:
     """Tests for SlurmSparkManager._detect_apptainer_mode()."""

@@ -72,6 +72,9 @@ markers = [
     "slow: takes >10 seconds",
     "local: runs only in local (non-cluster) environments",
     "spark: requires PySpark — skipped when Spark is unavailable",
+    "pipeline: real end-to-end pipeline execution with config -> ingest -> artifacts",
+    "spark_pipeline: Spark-backed end-to-end pipeline execution in local CI/runtime",
+    "hpc_contract: HPC/Slurm contract test without requiring a live cluster",
     "no_fairway_home: opt out of the autouse FAIRWAY_HOME/FAIRWAY_SCRATCH fixture (for resolver-behavior tests)",
 ]
 testpaths = ["tests"]
