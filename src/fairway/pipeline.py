@@ -11,7 +11,6 @@ import tarfile
 import hashlib
 import importlib.util
 import logging
-import tempfile
 from .engines import VALID_ENGINES, normalize_engine_name
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
@@ -315,14 +314,14 @@ def _build_enforcement_schema(table, fixed_width_spec_path):
 
 
 class IngestionPipeline:
-    def __init__(self, config_path, spark_master=None, engine_override=None, spark_conf=None):
+    def __init__(self, config_path, spark_master=None, engine_override=None, spark_conf=None, run_id_override=None):
         logger.debug("Loading local fairway.pipeline")
         self.config = Config(config_path)
 
         # Bind run_id here so every pipeline artifact (manifest, logs,
         # run.json) shares one identity. Source precedence lives in
         # generate_run_id: FAIRWAY_RUN_ID → Slurm → ULID.
-        self.run_id = generate_run_id()
+        self.run_id = run_id_override or generate_run_id()
         self.config.paths = self.config.paths.with_run_id(self.run_id)
 
         # Pin the month shard so start-writer and end-finalizer land in
@@ -955,15 +954,8 @@ class IngestionPipeline:
             logger.info("  Path: %s", table.get('path'))
 
             # Resolve files
-            path = table.get('path')
-            root = table.get('root')
-
-            if root:
-                config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
-                root_path = os.path.join(config_dir, root) if not os.path.isabs(root) else root
-                search_path = os.path.join(root_path, path.lstrip(os.sep)) if path else root_path
-            else:
-                search_path = path
+            config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
+            search_path = table.resolve_path(config_dir)
 
             if search_path and '*' in search_path:
                 matched_files = glob.glob(search_path, recursive=True)
@@ -1059,20 +1051,23 @@ class IngestionPipeline:
         preprocessing (e.g. unzipping) cost when the manifest check says
         the table is actually stale.
         """
-        # Check manifest BEFORE preprocessing to avoid expensive work (unzipping)
-        # if the table hasn't changed. original_path is the manifest key — we
-        # track against the original path because the preprocessed path is temp.
-        computed_hash = self._hash_cache.get(original_path)
-        if not table_manifest.should_process(
-            original_path, table_root=table.get('root'), computed_hash=computed_hash
-        ):
-            logger.info("Skipping %s (already processed and hash matches)", table['name'])
-            return
-
         input_path = get_preprocessed_path()
 
         if input_path != original_path:
             logger.info("Preprocessing complete. Ingesting from: %s", input_path)
+
+        # Resolve roots for manifest consistency
+        config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
+        preprocess_root = table.get('_preprocess_root')
+        if preprocess_root and not os.path.isabs(preprocess_root):
+             preprocess_root = os.path.join(config_dir, preprocess_root)
+        
+        table_root = table.get('root')
+        if table_root and not os.path.isabs(table_root):
+             table_root = os.path.join(config_dir, table_root)
+
+        # Use _preprocess_root for files in scratch space (avoids basename key collision)
+        effective_root = preprocess_root or table_root
 
         # Multi-archive: use the full extracted file list so all archives are
         # ingested, not just the first one.
@@ -1085,9 +1080,6 @@ class IngestionPipeline:
             discovered_files = [f for f in discovered_files if os.path.isfile(f)]
         else:
             discovered_files = [input_path] if os.path.exists(input_path) else []
-
-        # Use _preprocess_root for files in scratch space (avoids basename key collision)
-        effective_root = table.get('_preprocess_root', table.get('root'))
 
         file_hashes = {
             f: _get_file_hash_static(f, fast_check=True)
@@ -1299,7 +1291,7 @@ class IngestionPipeline:
             original_path,
             status="success",
             metadata={"config_path": getattr(self.config, 'config_path', 'unknown')},
-            table_root=table.get('root'),
+            table_root=effective_root,
         )
 
     def run(self, skip_summary=False):
@@ -1318,40 +1310,25 @@ class IngestionPipeline:
              logger.warning("No tables found to process! Check your config path patterns and ensuring data exists.")
              logger.warning("Configured tables: %s", self.config.data.get('tables', []))
 
-        # --- Phase 0: Run all preprocessing BEFORE engine startup ---
-        # This avoids launching Spark (expensive) just for driver-mode preprocessing
-        preprocessed_paths = {}
-        failed_tables = []
-        failed_table_errors = {}
-        for table in self.config.tables:
-            preprocess_config = table.get('preprocess')
-            archives_pattern = table.get('archives')
-            if preprocess_config or archives_pattern:
-                logger.info("Pre-run preprocessing for %s...", table['name'])
-                try:
-                    preprocessed_paths[table['name']] = self._preprocess(table)
-                except Exception as exc:
-                    logger.error(
-                        "Phase 0 preprocessing failed for table '%s': %s",
-                        table['name'], exc
-                    )
-                    failed_tables.append(table['name'])
-                    failed_table_errors[table['name']] = str(exc)
-                    preprocessed_paths[table['name']] = None
-
         # --- Phase 1: Engine startup and ingestion ---
         # Optimize: Distributed Manifest Check for Cluster Mode
         # Group tables by root to perform batch hashing on the cluster
         if hasattr(self.engine, 'calculate_hashes'):
             cluster_batches = {} # root -> list_of_paths
+            config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
 
             for t in self.config.tables:
                  mode = t.get('preprocess', {}).get('execution_mode', 'driver')
                  if mode == 'cluster':
+                     # Use absolute root for Spark worker consistency
                      root = t.get('root')
+                     if root and not os.path.isabs(root):
+                         root = os.path.join(config_dir, root)
+                     
+                     full_path = t.resolve_path(config_dir)
                      if root not in cluster_batches:
                          cluster_batches[root] = []
-                     cluster_batches[root].append(t['path'])
+                     cluster_batches[root].append(full_path)
 
             for root, paths in cluster_batches.items():
                 logger.info("Distributed Check: Calculating hashes for %d items under root '%s' via Spark...", len(paths), root)
@@ -1365,30 +1342,42 @@ class IngestionPipeline:
                 except Exception as e:
                     logger.error("Distributed hash check failed: %s. Falling back to driver check.", e)
 
+        failed_tables = []
+        failed_table_errors = {}
+        config_dir = os.path.dirname(os.path.abspath(self.config.config_path))
         for table in self.config.tables:
-            if table['name'] in failed_tables:
-                logger.info("Skipping '%s' (failed in Phase 0 preprocessing)", table['name'])
-                continue
-
             try:
                 # Get per-table manifest for this table
                 table_manifest = self.manifest_store.get_table_manifest(table['name'])
 
-                # 0. Preprocessing
-                # Preprocess returns a modified path (e.g. to temp unzipped files)
-                # Table dict is unmodified, we just change the variable we use for input
-                # For archives-only tables (no path key), use archives as the manifest key
-                original_path = table.get('path') or table.get('archives')
+                # Use absolute path as the stable manifest key
+                original_path = table.resolve_path(config_dir) or table.get('archives')
+                if original_path and not os.path.isabs(original_path):
+                     original_path = os.path.join(config_dir, original_path)
 
-                # Use pre-computed preprocessing result if available, otherwise run now
+                # Pre-run manifest check to avoid expensive work (unzipping)
+                # Partition-aware handles its own per-file checking
+                is_partition_aware = table.get('batch_strategy') == 'partition_aware'
+                if not is_partition_aware:
+                    computed_hash = self._hash_cache.get(original_path)
+                    
+                    # Resolve root for manifest consistency
+                    table_root = table.get('root')
+                    if table_root and not os.path.isabs(table_root):
+                         table_root = os.path.join(config_dir, table_root)
+
+                    if not table_manifest.should_process(
+                        original_path, table_root=table_root, computed_hash=computed_hash
+                    ):
+                        logger.info("Skipping %s (already processed and hash matches)", table['name'])
+                        continue
+
+                # Run preprocessing only if needed
                 def get_preprocessed_path():
-                    if table['name'] in preprocessed_paths:
-                        return preprocessed_paths[table['name']]
                     return self._preprocess(table)
 
-                # Partition-aware batching: skip whole-table manifest check,
-                # do per-file checking instead in _run_partition_aware()
-                if table.get('batch_strategy') == 'partition_aware':
+                # Partition-aware batching:
+                if is_partition_aware:
                     input_path = get_preprocessed_path()
                     if input_path != original_path:
                         logger.info("Preprocessing complete. Ingesting from: %s", input_path)

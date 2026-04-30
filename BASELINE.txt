@@ -1,0 +1,113 @@
+# Fairway rewrite/v0.3 — Step 0 baseline
+
+Captured 2026-04-30 on branch `rewrite/v0.3`, immediately after the
+pre-existing rewrite-prep edits (cli.py / config_loader.py / hpc.py /
+pipeline.py / submit_with_spark.sh / rules.md) and the Step 0 ruff cleanup
+(both auto-fix and inline `# ruff: noqa` suppressions in three deletion-bound
+modules: cli.py, config_loader.py, engines/pyspark_engine.py).
+
+Tools used: `.venv/bin/python -m {pytest,ruff,mypy}` against this repo's
+.venv (Python 3.12). `ruff` and `mypy` were installed into the .venv during
+this step (they were not previously present).
+
+## Source LOC
+
+`find src/fairway -name '*.py' -print0 | xargs -0 wc -l | tail -1`
+
+7898 total
+
+(captured pre-ruff-fix; ruff fixes were whitespace/import/f-string changes
+that do not move the LOC needle materially. The Step 13 final-tidy budget is
+≤ 1800 LOC.)
+
+## Test count
+
+`find tests -name 'test_*.py' | wc -l`
+
+68
+
+(Step 13 final-tidy budget is ≤ 20 test files.)
+
+## Pytest collect
+
+`pytest --collect-only -q` final lines:
+
+```
+Coverage XML written to file build/coverage/coverage.xml
+FAIL Required test coverage of 67% not reached. Total coverage: 14.65%
+759 tests collected in 4.05s
+```
+
+759 tests collected. The coverage-fail-under failure here is expected and is
+removed in Step 0.5 for the duration of the rewrite (restored, re-anchored,
+in Step 11.5).
+
+## Mypy baseline
+
+`mypy --ignore-missing-imports src/fairway/` (captured AFTER ruff --fix +
+inline noqa suppressions, per forge v3 P0 ordering fix):
+
+`Found 23 errors in 9 files (checked 30 source files)`
+
+Per the Implicit Done-when typecheck gate, Step 1+ must produce **no more
+than 23 mypy errors**. The count must monotonically decrease (or stay flat)
+across the rewrite, never increase. Pre-existing errors are tolerated; new
+errors block the introducing step.
+
+Per-file error breakdown (informational; not the gate):
+- src/fairway/cli.py: 2 (yaml/tabulate stubs missing)
+- src/fairway/config_loader.py: 1 (yaml stubs missing)
+- src/fairway/engines/duckdb_engine.py: 1 (assignment to module-typed var)
+- src/fairway/fixed_width.py: 1 (yaml stubs missing)
+- src/fairway/logging_config.py: 2 (var-annotated)
+- src/fairway/manifest.py: 3 (var-annotated, return type)
+- src/fairway/paths.py: 10 (PathResolver attr-defined errors)
+- src/fairway/schema_pipeline.py: 1 (yaml stubs missing)
+- src/fairway/transformations/registry.py: 1 (var-annotated)
+
+## Ruff baseline
+
+`ruff check src/fairway/` pre-fix:
+
+```
+34  E701  multiple-statements-on-one-line-colon
+ 3  E402  module-import-not-at-top-of-file
+ 2  F401  unused-import
+ 2  F541  f-string-missing-placeholders
+ 2  F841  unused-variable
+ 1  E401  multiple-imports-on-one-line
+ 1  E722  bare-except
+ 1  F601  multi-value-repeated-key-literal
+Found 46 errors.
+```
+
+After `ruff --fix` (auto-fixed 5: E401×1 + F541×2 + F401×2):
+- src/fairway/cli.py — split `import yaml, duckdb` into two lines.
+- src/fairway/generate_test_data.py — dropped `f` prefix from two
+  placeholder-free f-strings.
+- src/fairway/pipeline.py — removed unused `import tempfile`.
+- src/fairway/cli.py — removed one other unused import (F401 #2).
+
+After inline `# ruff: noqa` suppressions in three deletion-bound modules:
+- src/fairway/cli.py — `# ruff: noqa: E701, E722` (rewritten in Step 9).
+- src/fairway/config_loader.py — `# ruff: noqa: E402, E701, F601`
+  (replaced by `config.py` in Step 5).
+- src/fairway/engines/pyspark_engine.py — `# ruff: noqa: F841`
+  (deleted in Step 1).
+
+Final state: `ruff check src/fairway/ --no-fix` exits 0 ("All checks passed!").
+
+The Step 1+ Implicit Done-when lint gate inherits this clean baseline.
+
+## Original addopts
+
+Captured from `pyproject.toml` `[tool.pytest.ini_options].addopts` BEFORE
+any Step 0.5 edit:
+
+```
+addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml:build/coverage/coverage.xml --cov-report=html:build/coverage/html --cov-fail-under=67 --basetemp=build/test-tmp"
+```
+
+Step 0.5 will strip the `--cov-fail-under=67` token and write back; Step
+11.5 will re-anchor a new `--cov-fail-under = max(60, M-5)` based on
+post-rewrite measured coverage `M`.

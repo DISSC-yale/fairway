@@ -1,3 +1,7 @@
+# ruff: noqa: F841
+# Step 0 baseline suppression: two unused local variables (`TYPE_MAP`,
+# `col_type`) in the fixed-width PySpark path. The whole module is deleted in
+# Step 1; suppressing here keeps Step 0 bounded to baseline capture.
 try:
     import pyspark.sql.functions as F
     from pyspark.sql import SparkSession

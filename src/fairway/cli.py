@@ -1,3 +1,7 @@
+# ruff: noqa: E701, E722
+# Step 0 baseline suppression: pre-existing single-line if/for/with bodies and a
+# bare `except:` in `logs` subcommand. The whole module is rewritten in Step 9
+# (cli.py rebuild). Suppressing here keeps Step 0 bounded to baseline capture.
 import click
 import os
 import re
@@ -184,7 +188,8 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, **
     if not file_path: raise click.ClickException("Must provide FILE_PATH or --config.")
     
     # Legacy logic remains for simple direct file inference
-    import yaml, duckdb
+    import yaml
+    import duckdb
     if not os.path.exists(file_path):
         raise click.ClickException(f"Path not found: {file_path}")
 
@@ -290,6 +295,7 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
     """Run the ingestion pipeline."""
     from .pipeline import IngestionPipeline
     from .logging_config import setup_logging
+    from .paths import generate_run_id
 
     cfg = Config(config or discover_config())
 
@@ -300,12 +306,22 @@ def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
         pipeline.dry_run()
         return
 
+    # Pre-calculate run_id so we can setup logging before pipeline init
+    run_id = generate_run_id()
+    resolved_paths = cfg.paths.with_run_id(run_id)
+    resolved_log = log_file or str(resolved_paths.log_file)
+    setup_logging(log_file=resolved_log, level=log_level.upper(), console=True)
+
     click.echo(f"Starting pipeline execution using config: {cfg.config_path}")
     if skip_summary:
         click.echo("Skipping end-of-run summary.")
-    pipeline = IngestionPipeline(cfg.config_path, spark_master=spark_master, spark_conf=cfg.hpc.spark_conf)
-    resolved_log = log_file or str(pipeline.config.paths.log_file)
-    setup_logging(log_file=resolved_log, level=log_level.upper(), console=True)
+
+    pipeline = IngestionPipeline(
+        cfg.config_path,
+        spark_master=spark_master,
+        spark_conf=cfg.hpc.spark_conf,
+        run_id_override=run_id
+    )
     pipeline.run(skip_summary=skip_summary)
     click.echo("Pipeline execution completed successfully.")
 

@@ -1,3 +1,9 @@
+# ruff: noqa: E402, E701, F601
+# Step 0 baseline suppression: imports placed after a documentation-block
+# regex constant (E402); single-line `if k in d: x = d[k]` micro-statements
+# (E701); one duplicate dict key in a 'transformation' table builder (F601).
+# This entire module is replaced by `config.py` in Step 5; suppressing here
+# keeps Step 0 bounded to baseline capture.
 import yaml
 import os
 import glob
@@ -17,7 +23,7 @@ VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 # re-use it here so config-load validation and runtime-check validation can't drift.
 from fairway.validations.checks import KNOWN_VALIDATION_KEYS, LEGACY_LEVEL_KEYS
 from fairway.engines import VALID_ENGINES, normalize_engine_name
-from fairway.paths import PathResolver, PathResolverError
+from fairway.paths import PathResolver
 
 # Keys declared in KNOWN_VALIDATION_KEYS but not yet implemented at runtime
 # (checks.py raises NotImplementedError). Caught at config load so users
@@ -140,6 +146,28 @@ class TableConfig:
         for name in self._field_names():
             yield name, getattr(self, name)
         yield from self._extra.items()
+
+    def resolve_path(self, config_dir: str) -> str | None:
+        """Resolve table path by joining root and path, handling relative/absolute logic.
+
+        If root is set, path is interpreted relative to it. If path is absolute,
+        it is returned as-is. CWD is never consulted.
+        """
+        if not self.path:
+            return None
+        if os.path.isabs(self.path):
+            return self.path
+
+        if self.root:
+            # Resolve root relative to config dir if needed
+            root_abs = self.root
+            if not os.path.isabs(root_abs):
+                root_abs = os.path.join(config_dir, root_abs)
+            # Join root + path (ensuring no double slash from path.lstrip)
+            return os.path.join(root_abs, self.path.lstrip(os.sep))
+
+        # No root - resolve directly against config_dir
+        return os.path.join(config_dir, self.path)
 
 
 @dataclass
@@ -435,17 +463,8 @@ class Config:
 
             # Resolve path relative to config file if it's not absolute
             # SKIP if 'root' is defined (let pipeline handle it)
-            if not os.path.isabs(path_pattern) and not tbl.get('root'):
-                # Try relative to config dir first
-                resolved_path = os.path.join(config_dir, path_pattern)
-                # If that doesn't exist, maybe it is relative to CWD?
-                # But prioritizing config_dir is safer for reproducibility.
-                if not os.path.exists(resolved_path) and not glob.glob(resolved_path):
-                     # If not found relative to config, try CWD (backward compatibility)
-                     if os.path.exists(path_pattern) or glob.glob(path_pattern):
-                         resolved_path = path_pattern
-            else:
-                resolved_path = path_pattern
+            temp_tbl = TableConfig.from_dict(tbl)
+            resolved_path = temp_tbl.resolve_path(config_dir)
 
             raw_schema = tbl.get('schema')
             resolved_schema = self._load_schema(raw_schema)

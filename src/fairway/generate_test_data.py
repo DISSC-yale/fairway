@@ -12,11 +12,11 @@ def generate_test_data(size="small", partitioned=True, file_format="csv"):
     if size == "small":
         n_rows = 100
         file_path = f'data/raw/sales.{file_format}'
-        output_path = f'data/raw/sales_partitioned'
+        output_path = 'data/raw/sales_partitioned'
     else:
         n_rows = 1000000
         file_path = f'data/raw/sales_large.{file_format}'
-        output_path = f'data/raw/sales_large_partitioned'
+        output_path = 'data/raw/sales_large_partitioned'
         
     df = pd.DataFrame({
         'id': range(n_rows),
