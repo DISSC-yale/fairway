@@ -135,16 +135,13 @@ def init(name, engine, force):
     for d in directories: os.makedirs(os.path.join(name, d), exist_ok=True)
 
     engine_type = _normalize_engine_name(engine)
-    from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+    from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
 
     with open(os.path.join(name, "config/fairway.yaml"), 'w') as f:
         f.write(Template(CONFIG_TEMPLATE).safe_substitute(name=name, engine_type=engine_type))
 
     with open(os.path.join(name, 'Makefile'), 'w') as f:
         f.write(MAKEFILE_TEMPLATE)
-
-    with open(os.path.join(name, 'src', 'transformations', 'example_transform.py'), 'w') as f:
-        f.write(TRANSFORM_TEMPLATE.strip())
 
     with open(os.path.join(name, 'README.md'), 'w') as f:
         f.write(Template(README_TEMPLATE).safe_substitute(name=name, timestamp=datetime.now().isoformat(), engine=engine))
@@ -186,12 +183,9 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, **
         return
 
     if config:
-        from .schema_pipeline import SchemaDiscoveryPipeline
-        cfg = Config(config, overrides=overrides)
-        effective_engine = _normalize_engine_name(engine or cfg.engine)
-        pipeline = SchemaDiscoveryPipeline(config, engine_override=effective_engine)
-        pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
-        return
+        raise NotImplementedError(
+            "Schema discovery pipeline removed in v0.3 rewrite — see PLAN.md re-entry triggers."
+        )
 
     if not file_path: raise click.ClickException("Must provide FILE_PATH or --config.")
     

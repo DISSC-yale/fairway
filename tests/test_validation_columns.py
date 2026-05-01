@@ -13,6 +13,7 @@ Covers (merged from phase4 and review_fixes):
   - Threshold boundary edge cases
 """
 import pytest
+pytest.skip("validations module removed in v0.3 Step 3 — deleted in Step 4", allow_module_level=True)
 import pandas as pd
 from fairway.validations.checks import Validator
 from fairway.validations.result import ValidationResult

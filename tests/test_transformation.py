@@ -1,5 +1,6 @@
 """Tests for transformation registry and base transformer."""
 import pytest
+pytest.skip("transformations module removed in v0.3 Step 3 — deleted in Step 4", allow_module_level=True)
 import pandas as pd
 from pathlib import Path
 

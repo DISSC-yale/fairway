@@ -9,6 +9,8 @@ Covers (merged from phase2 and phase3):
 """
 import pytest
 import yaml
+import pytest
+pytest.skip("validations module removed in v0.3 Step 3 — deleted in Step 4", allow_module_level=True)
 import pandas as pd
 from fairway.validations.checks import Validator
 from fairway.validations.result import ValidationResult

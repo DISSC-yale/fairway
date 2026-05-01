@@ -11,6 +11,7 @@ for any filesystem artifacts (RULE-114 cleanup).
 import os
 import pandas as pd
 import pytest
+pytest.skip("validations/enrichments/transformations modules removed in v0.3 Step 3 — deleted in Step 4", allow_module_level=True)
 
 from fairway.validations.checks import Validator
 from fairway.enrichments.geospatial import Enricher

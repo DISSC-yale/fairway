@@ -36,7 +36,6 @@ DOCKERIGNORE = _read_data_file('.dockerignore')
 MAKEFILE_TEMPLATE = _read_data_file('Makefile')
 CONFIG_TEMPLATE = _read_data_file('fairway.yaml')
 
-TRANSFORM_TEMPLATE = _read_data_file('example_transform.py')
 DRIVER_SCHEMA_TEMPLATE = _read_data_file('scripts/driver-schema.sh')
 README_TEMPLATE = _read_data_file('README.md')
 DOCS_TEMPLATE = _read_data_file('getting-started.md')

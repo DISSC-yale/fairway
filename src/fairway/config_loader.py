@@ -21,7 +21,6 @@ VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
 # Single source of truth for validation keys lives in validations/checks.py;
 # re-use it here so config-load validation and runtime-check validation can't drift.
-from fairway.validations.checks import KNOWN_VALIDATION_KEYS, LEGACY_LEVEL_KEYS
 from fairway.paths import PathResolver
 
 # v0.3 rewrite (Step 1): the multi-engine layer was removed and only
@@ -38,22 +37,14 @@ def _normalize_engine_name(engine):
         return engine
     return engine.strip().lower()
 
-# Keys declared in KNOWN_VALIDATION_KEYS but not yet implemented at runtime
-# (checks.py raises NotImplementedError). Caught at config load so users
-# get a file-name/line context instead of a mid-run stack trace.
-UNSUPPORTED_VALIDATION_KEYS = frozenset({"check_unique", "check_custom"})
-
 # Top-level config keys that are recognised. Anything else triggers a warning
-# so users catch typos before they cause silent misbehavior. Audited against
-# every self.data.get('<key>') callsite plus external config.data consumers
-# in pipeline.py (transformation, target_rows at top level are tolerated for
-# legacy configs).
+# so users catch typos before they cause silent misbehavior.
 KNOWN_TOP_LEVEL_KEYS = frozenset({
     "project",
     "dataset_name", "engine", "storage", "tables", "data",
-    "enrichment", "performance", "validations", "logging",
-    "partition_by", "container", "schema_pipeline",
-    "version", "transformation", "target_rows",
+    "performance", "logging",
+    "partition_by", "container",
+    "version", "target_rows",
 })
 
 
@@ -89,13 +80,10 @@ class TableConfig:
     name: str = "unnamed"
     path: str | None = None
     format: str = "csv"
-    schema: dict | None = field(default_factory=dict)
     partition_by: list = field(default_factory=list)
     write_mode: str = "overwrite"
     preprocess: dict | None = None
-    validations: dict = field(default_factory=dict)
     naming_pattern: str | None = None
-    enrichment: dict = field(default_factory=dict)
     output_layer: str = "curated"
     type_enforcement: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
@@ -106,7 +94,6 @@ class TableConfig:
     files: str | None = None
     fixed_width_spec: str | None = None
     batch_strategy: str = "bulk"
-    transformation: str | None = None
     min_line_length: int | None = None
     # Runtime fields set by pipeline (not in config YAML)
     _extra: dict = field(default_factory=dict, repr=False)
@@ -282,7 +269,6 @@ class Config:
         self.tables = self._expand_tables(raw_tables)
         self._validate()
 
-        self.enrichment = self.data.get('enrichment', {})
         self.partition_by = self.data.get('partition_by', [])
         self.output_format = self.storage.get('format', 'parquet').lower()
 
@@ -387,44 +373,6 @@ class Config:
         # silent CWD-relative resolution that only the invoking user sees.
         return os.path.join(config_dir, script_path)
 
-    def _load_schema(self, schema_ref):
-        """Loads schema from a file if schema_ref is a path string, otherwise returns it as-is."""
-        if isinstance(schema_ref, str):
-            # Assume it's a file path
-            schema_path = schema_ref
-            if not os.path.exists(schema_path):
-                # Try relative to config file directory
-                config_dir = os.path.dirname(os.path.abspath(self.config_path))
-                schema_path = os.path.join(config_dir, schema_ref)
-                if not os.path.exists(schema_path):
-                    raise FileNotFoundError(f"Schema file not found: {schema_ref}")
-            
-            with open(schema_path, 'r') as f:
-                data = None
-                if schema_path.endswith('.yaml') or schema_path.endswith('.yml'):
-                    data = yaml.safe_load(f)
-                elif schema_path.endswith('.json'):
-                    import json
-                    data = json.load(f)
-                else:
-                    raise ValueError(f"Unsupported schema file format: {schema_path}")
-                
-                # Handle generate-schema output format
-                if isinstance(data, dict) and 'columns' in data:
-                    return data['columns']
-                return data
-        return schema_ref or {}
-
-    def _resolve_table_validations(self, tbl):
-        """Merge per-table validations with global defaults (shallow merge)."""
-        global_validations = self.data.get('validations', {})
-        table_validations = tbl.get('validations', {})
-        if not global_validations and not table_validations:
-            return {}
-        merged = dict(global_validations)
-        merged.update(table_validations)  # shallow: per-table key replaces global key
-        return merged
-
     def _expand_tables(self, raw_tables):
         """Discovers files and extracts metadata via regex if patterns are provided."""
         expanded = []
@@ -456,8 +404,6 @@ class Config:
                     'format': table_format,
                     'metadata': {},
                     'naming_pattern': naming_pattern,
-                    'schema': self._load_schema(tbl.get('schema')),
-                    'transformation': self._resolve_path(tbl.get('transformation'), config_dir),
                     'hive_partitioning': tbl.get('hive_partitioning', False),
                     'partition_by': tbl.get('partition_by', []),
                     'read_options': tbl.get('read_options', {}),
@@ -468,10 +414,8 @@ class Config:
                     'files': files_pattern,
                     'fixed_width_spec': self._resolve_path(tbl.get('fixed_width_spec'), config_dir),
                     'batch_strategy': tbl.get('batch_strategy', 'bulk'),
-                    'transformation': self._resolve_path(tbl.get('transformation'), config_dir),
                     'min_line_length': tbl.get('min_line_length'),
                     'type_enforcement': tbl.get('type_enforcement', {}),
-                    'validations': self._resolve_table_validations(tbl),
                     'output_layer': tbl.get('output_layer', 'curated'),
                 }))
                 continue
@@ -480,9 +424,6 @@ class Config:
             # SKIP if 'root' is defined (let pipeline handle it)
             temp_tbl = TableConfig.from_dict(tbl)
             resolved_path = temp_tbl.resolve_path(config_dir)
-
-            raw_schema = tbl.get('schema')
-            resolved_schema = self._load_schema(raw_schema)
 
             # Glob expansion behavior:
             # - expand_glob=False (default): glob pattern → one table entry (standard behavior)
@@ -509,7 +450,6 @@ class Config:
 
                  # Resolve fixed_width_spec relative to config dir (consistent with other path resolution)
                  fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
-                 transformation = self._resolve_path(tbl.get('transformation'), config_dir)
 
                  # Resolve preprocess.action: CWD first, then config_dir
                  preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
@@ -522,8 +462,6 @@ class Config:
                     'format': table_format,
                     'metadata': {},
                     'naming_pattern': naming_pattern,
-                    'schema': resolved_schema,
-                    'transformation': transformation,
                     'hive_partitioning': hive_partitioning,
                     'partition_by': tbl.get('partition_by', []),
                     'read_options': tbl.get('read_options', {}),
@@ -535,7 +473,6 @@ class Config:
                     'fixed_width_spec': fixed_width_spec,
                     'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                     'type_enforcement': tbl.get('type_enforcement', {}),
-                    'validations': self._resolve_table_validations(tbl),
                     'output_layer': tbl.get('output_layer', 'curated'),
                  }))
 
@@ -580,7 +517,6 @@ class Config:
                     # Resolve file paths relative to config dir
                     table_root = self._resolve_path(tbl.get('root'), config_dir)
                     fixed_width_spec = self._resolve_path(tbl.get('fixed_width_spec'), config_dir)
-                    transformation = self._resolve_path(tbl.get('transformation'), config_dir)
 
                     # Resolve preprocess.action: CWD first, then config_dir
                     preprocess = tbl.get('preprocess', {}).copy() if tbl.get('preprocess') else {}
@@ -594,8 +530,6 @@ class Config:
                         'format': table_format,
                         'metadata': metadata,
                         'naming_pattern': naming_pattern,
-                        'schema': resolved_schema,
-                        'transformation': transformation,
                         'hive_partitioning': False,
                         'partition_by': tbl.get('partition_by', []),
                         'read_options': tbl.get('read_options', {}),
@@ -606,7 +540,6 @@ class Config:
                         'fixed_width_spec': fixed_width_spec,
                         'batch_strategy': tbl.get('batch_strategy', 'bulk'),
                         'type_enforcement': tbl.get('type_enforcement', {}),
-                        'validations': self._resolve_table_validations(tbl),
                         'output_layer': tbl.get('output_layer', 'curated'),
                     }))
         return expanded
@@ -675,60 +608,12 @@ class Config:
                         if not os.path.exists(spec_path):
                             errors.append(f"{prefix}: fixed_width_spec file not found: {spec_path}")
 
-            # Schema file exists (if specified as path)
-            schema = table.get('schema')
-            if isinstance(schema, str) and not os.path.exists(schema):
-                # Try relative to config dir
-                schema_path = os.path.join(config_dir, schema) if not os.path.isabs(schema) else schema
-                if not os.path.exists(schema_path):
-                    errors.append(f"{prefix}: Schema file not found: {schema}")
-
             # Root directory exists (if specified)
             root = table.get('root')
             if root:
                 root_path = os.path.join(config_dir, root) if not os.path.isabs(root) else root
                 if not os.path.isdir(root_path):
                     errors.append(f"{prefix}: Root directory does not exist: {root}")
-
-            # Validation keys: reject unsupported and shape-mismatched values,
-            # warn on unknown keys, allow legacy level1/level2 nesting which
-            # Validator._normalize_validation_config() handles at runtime.
-            table_validations = table.get('validations', {})
-            if isinstance(table_validations, dict):
-                for vkey, vval in table_validations.items():
-                    if vkey in UNSUPPORTED_VALIDATION_KEYS:
-                        errors.append(
-                            f"{prefix}: validation '{vkey}' is not yet implemented. "
-                            f"Remove it from your config."
-                        )
-                    elif vkey in LEGACY_LEVEL_KEYS:
-                        # Legacy level1/level2 nesting is supported at runtime;
-                        # don't warn so existing configs load clean.
-                        pass
-                    elif vkey in KNOWN_VALIDATION_KEYS:
-                        expected_type = KNOWN_VALIDATION_KEYS[vkey]
-                        if not isinstance(vval, expected_type):
-                            type_names = (
-                                ", ".join(t.__name__ for t in expected_type)
-                                if isinstance(expected_type, tuple)
-                                else expected_type.__name__
-                            )
-                            errors.append(
-                                f"{prefix}: validation '{vkey}' must be "
-                                f"{type_names}, got {type(vval).__name__}"
-                            )
-                    elif isinstance(vval, dict):
-                        errors.append(
-                            f"{prefix}: validations must be flat — "
-                            f"found nested dict under unknown key '{vkey}'. "
-                            f"Use e.g. 'min_rows: 5' not '{vkey}: {{min_rows: 5}}'."
-                        )
-                    else:
-                        warnings.warn(
-                            f"Unknown validation key '{vkey}' in {prefix}",
-                            UserWarning,
-                            stacklevel=2,
-                        )
 
             # batch_strategy validation
             batch_strategy = table.get('batch_strategy', 'bulk')
@@ -759,11 +644,6 @@ class Config:
             valid_layers = {'processed', 'curated'}
             if output_layer not in valid_layers:
                 errors.append(f"{prefix}: Invalid output_layer '{output_layer}'. Must be one of {valid_layers}")
-            if output_layer == 'processed' and table.get('transformation'):
-                errors.append(
-                    f"{prefix}: output_layer 'processed' cannot be combined with transformation "
-                    f"(transformations only run for output_layer 'curated')"
-                )
 
             # Validate preprocess.resources
             preprocess = table.get('preprocess', {})
@@ -834,7 +714,7 @@ def validate_config_paths(config):
     errors = []
     for t in config.tables:
         has_preprocessing = bool(t.get('archives') or t.get('preprocess'))
-        for field_name in ('path', 'fixed_width_spec', 'transformation', 'root'):
+        for field_name in ('path', 'fixed_width_spec', 'root'):
             val = t.get(field_name)
             if not val:
                 continue
@@ -842,7 +722,7 @@ def validate_config_paths(config):
             # literal form does not need to exist.
             if '*' in str(val):
                 continue
-            if has_preprocessing and field_name in ('fixed_width_spec', 'transformation'):
+            if has_preprocessing and field_name == 'fixed_width_spec':
                 continue
             if not os.path.isabs(val):
                 errors.append(

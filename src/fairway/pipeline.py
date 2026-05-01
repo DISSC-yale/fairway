@@ -13,9 +13,7 @@ import logging
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
-from .validations.checks import Validator
 from .summarize import Summarizer
-from .enrichments.geospatial import Enricher
 from .logging_config import BatchLogger
 from .paths import generate_run_id
 
@@ -1121,79 +1119,18 @@ class IngestionPipeline:
         if hasattr(df, 'df'):
             df = df.df()
 
-        df_modified = False
-
-        if self.config.enrichment.get('geocode'):
-            if not self.config.enrichment.get('allow_mock'):
-                raise ValueError(
-                    "enrichment.geocode is enabled but fairway only ships a MOCK geocoder "
-                    "(deterministic placeholder values, not real geospatial data). Set "
-                    "enrichment.allow_mock: true in your config to opt in to the mock, "
-                    "or plug in a real geocoder before enabling enrichment.geocode."
-                )
-            logger.warning(
-                "Enriching %s with MOCK geospatial data — not real geocoding",
-                table['name'],
+        if self.config.data.get('enrichment', {}).get('geocode'):
+            raise NotImplementedError(
+                "Enrichment removed in v0.3 rewrite — see PLAN.md re-entry triggers."
             )
-            df = Enricher.enrich_dataframe(df)
-            df_modified = True
 
-        transform_script = table.get('transformation') or self.config.data.get('transformation')
+        if table.get('transformation') or self.config.data.get('transformation'):
+            raise NotImplementedError(
+                "Custom transformations removed in v0.3 rewrite — see PLAN.md re-entry triggers."
+            )
+
+        # Validations module removed in v0.3 Step 3; per-shard validation re-implemented in Step 7.
         validation_target_path = output_path
-
-        if transform_script:
-            from .transformations.registry import load_transformer
-            TransformerClass = load_transformer(transform_script)
-            if TransformerClass:
-                logger.info("Applying custom transformations from %s...", transform_script)
-                transformed = TransformerClass(df).transform()
-                if transformed is None:
-                    raise ValueError(
-                        f"Transformer {TransformerClass.__name__} in {transform_script} "
-                        f"returned None; transform() must return a DataFrame."
-                    )
-                df = transformed
-                df_modified = True
-
-        if df_modified:
-            processed_basename = (
-                f"{output_name}_processed"
-                if partition_by
-                else f"{output_name}_processed.parquet"
-            )
-            processed_path = os.path.join(self.config.processed_dir, processed_basename)
-
-            if os.path.isdir(processed_path):
-                shutil.rmtree(processed_path)
-            elif os.path.exists(processed_path):
-                os.remove(processed_path)
-            os.makedirs(os.path.dirname(processed_path), exist_ok=True)
-            df.to_parquet(processed_path, partition_cols=partition_by)
-
-            validation_target_path = processed_path
-
-        table_validations = table['validations']
-        validation_result = Validator.run_all(df, table_validations, is_spark=False)
-
-        if not validation_result.passed:
-            errors = [e['message'] for e in validation_result.errors]
-            logger.error("Validations failed for %s: %s", table['name'], errors)
-            with table_manifest.batch():
-                for file_path in discovered_files:
-                    table_manifest.update_file(
-                        file_path,
-                        status="failed",
-                        metadata={"errors": errors},
-                        table_root=effective_root,
-                        computed_hash=file_hashes.get(file_path),
-                    )
-            table_manifest.update_file(
-                original_path, status="failed", metadata={"errors": errors},
-                table_root=table.get('root'),
-            )
-            raise ValueError(f"Validation failed for {table['name']}: {'; '.join(errors)}")
-
-        logger.info("Validations passed for %s", table['name'])
 
         output_layer = table.get('output_layer', 'curated')
         if output_layer == 'curated':

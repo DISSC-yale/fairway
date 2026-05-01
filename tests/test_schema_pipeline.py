@@ -9,6 +9,7 @@ Follows project rules:
 import os
 import yaml
 import pytest
+pytest.skip("schema_pipeline module removed in v0.3 Step 3 — deleted in Step 4", allow_module_level=True)
 
 from fairway.schema_pipeline import (
     SchemaDiscoveryPipeline,

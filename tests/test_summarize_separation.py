@@ -8,6 +8,8 @@ import pandas as pd
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+pytest.skip("validations module removed in v0.3 Step 3 — deleted in Step 4", allow_module_level=True)
 from fairway.pipeline import IngestionPipeline
 from fairway.summarize import Summarizer
 from fairway.validations.checks import Validator
