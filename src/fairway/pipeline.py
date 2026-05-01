@@ -1,5 +1,4 @@
 import os
-import sys
 import glob
 import shutil
 import signal
@@ -11,7 +10,6 @@ import tarfile
 import hashlib
 import importlib.util
 import logging
-from .engines import VALID_ENGINES, normalize_engine_name
 from .config_loader import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
@@ -425,22 +423,16 @@ class IngestionPipeline:
         return False
 
     def _get_engine(self, spark_master=None, engine_override=None, spark_conf=None):
-        # CLI override takes precedence over config; normalize aliases ('spark' -> 'pyspark')
+        # CLI override takes precedence over config.
         raw = engine_override or self.config.engine or 'duckdb'
-        engine_type = normalize_engine_name(raw)
+        engine_type = (raw.strip().lower() if isinstance(raw, str) else raw)
 
-        if engine_type == 'pyspark':
-            try:
-                from .engines.pyspark_engine import PySparkEngine
-                return PySparkEngine(spark_master, spark_conf=spark_conf)
-            except ImportError:
-                sys.exit("Error: PySpark is not installed. Please install using `pip install fairway[spark]`")
-        elif engine_type == 'duckdb':
+        if engine_type == 'duckdb':
             from .engines.duckdb_engine import DuckDBEngine
             return DuckDBEngine()
         else:
-            raise ValueError(
-                f"Unknown engine: {engine_type}. Supported engines: {sorted(VALID_ENGINES)}"
+            raise NotImplementedError(
+                "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
             )
 
     def _preprocess(self, table):
@@ -695,16 +687,9 @@ class IngestionPipeline:
                  # Custom script returned a concrete file path — use directly.
                  result_path = single_path
              elif include_pattern:
-                 # Zip archives may preserve nested paths. DuckDB resolves "**"
-                 # natively; PySpark uses recursiveFileLookup on bare paths and
-                 # its Hadoop file:// layer rejects "**". So only emit the
-                 # recursive glob when the active engine is DuckDB.
-                 engine_name = (self.config.engine or 'duckdb').lower()
-                 if action == 'unzip' and engine_name == 'duckdb':
+                 # DuckDB resolves "**" natively in archive-extracted directories.
+                 if action == 'unzip':
                      result_path = os.path.join(single_path, "**", include_pattern)
-                 elif action == 'unzip':
-                     # PySpark: return the directory; engine sets recursiveFileLookup=true
-                     result_path = single_path
                  else:
                      result_path = os.path.join(single_path, include_pattern)
              else:
@@ -1008,19 +993,14 @@ class IngestionPipeline:
 
             # Read finalized output (not the in-memory df from ingestion)
             df = self.engine.read_result(final_path)
-            is_spark = self.config.engine == 'pyspark'
-            if not is_spark and hasattr(df, 'df'):
+            if hasattr(df, 'df'):
                 df = df.df()
 
             summary_path = os.path.join(self.config.curated_dir, f"{table_name}_summary.csv")
             report_path = os.path.join(self.config.curated_dir, f"{table_name}_report.md")
 
-            if is_spark:
-                summary_df, row_count = Summarizer.generate_summary_spark(df, summary_path)
-                # row_count extracted from describe() — no extra df.count() needed
-            else:
-                summary_df = Summarizer.generate_summary_table(df, summary_path)
-                row_count = len(df)
+            summary_df = Summarizer.generate_summary_table(df, summary_path)
+            row_count = len(df)
 
             stats = {
                 "row_count": row_count,
@@ -1138,8 +1118,7 @@ class IngestionPipeline:
             return
 
         df = self.engine.read_result(output_path)
-        is_spark = self.config.engine == 'pyspark'
-        if not is_spark and hasattr(df, 'df'):
+        if hasattr(df, 'df'):
             df = df.df()
 
         df_modified = False
@@ -1156,10 +1135,7 @@ class IngestionPipeline:
                 "Enriching %s with MOCK geospatial data — not real geocoding",
                 table['name'],
             )
-            if is_spark:
-                df = Enricher.enrich_spark(df)
-            else:
-                df = Enricher.enrich_dataframe(df)
+            df = Enricher.enrich_dataframe(df)
             df_modified = True
 
         transform_script = table.get('transformation') or self.config.data.get('transformation')
@@ -1187,24 +1163,17 @@ class IngestionPipeline:
             )
             processed_path = os.path.join(self.config.processed_dir, processed_basename)
 
-            if is_spark:
-                if partition_by:
-                    df.write.mode("overwrite").partitionBy(*partition_by).parquet(processed_path)
-                else:
-                    df.write.mode("overwrite").parquet(processed_path)
-                df = self.engine.read_result(processed_path)
-            else:
-                if os.path.isdir(processed_path):
-                    shutil.rmtree(processed_path)
-                elif os.path.exists(processed_path):
-                    os.remove(processed_path)
-                os.makedirs(os.path.dirname(processed_path), exist_ok=True)
-                df.to_parquet(processed_path, partition_cols=partition_by)
+            if os.path.isdir(processed_path):
+                shutil.rmtree(processed_path)
+            elif os.path.exists(processed_path):
+                os.remove(processed_path)
+            os.makedirs(os.path.dirname(processed_path), exist_ok=True)
+            df.to_parquet(processed_path, partition_cols=partition_by)
 
             validation_target_path = processed_path
 
         table_validations = table['validations']
-        validation_result = Validator.run_all(df, table_validations, is_spark=is_spark)
+        validation_result = Validator.run_all(df, table_validations, is_spark=False)
 
         if not validation_result.passed:
             errors = [e['message'] for e in validation_result.errors]

@@ -7,13 +7,17 @@ from click.testing import CliRunner
 
 pytestmark = pytest.mark.hpc_contract
 
+pytest.skip(
+    "slurm_cluster removed in v0.3 Step 1; apptainer + full file deleted in Steps 2/4",
+    allow_module_level=True,
+)
+
 
 class TestSlurmSparkManagerApptainerDetection:
     """Tests for SlurmSparkManager._detect_apptainer_mode()."""
 
     def test_detect_apptainer_with_sif_file(self, tmp_path, monkeypatch):
         """Detects Apptainer mode when fairway.sif exists."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "fairway.sif").write_text("fake sif")
@@ -26,7 +30,6 @@ class TestSlurmSparkManagerApptainerDetection:
 
     def test_detect_apptainer_no_sif_file(self, tmp_path, monkeypatch):
         """Falls back to bare-metal when no sif file."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
 
@@ -38,7 +41,6 @@ class TestSlurmSparkManagerApptainerDetection:
 
     def test_detect_apptainer_from_env_var(self, tmp_path, monkeypatch):
         """Detects Apptainer mode from FAIRWAY_SIF env var."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         sif_file = tmp_path / "custom.sif"
         sif_file.write_text("fake sif")
@@ -53,7 +55,6 @@ class TestSlurmSparkManagerApptainerDetection:
 
     def test_detect_apptainer_config_override_true(self, tmp_path, monkeypatch):
         """Config use_apptainer=True forces Apptainer mode."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "fairway.sif").write_text("fake sif")
@@ -65,7 +66,6 @@ class TestSlurmSparkManagerApptainerDetection:
 
     def test_detect_apptainer_config_override_false(self, tmp_path, monkeypatch):
         """Config use_apptainer=False forces bare-metal mode."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "fairway.sif").write_text("fake sif")
@@ -78,7 +78,6 @@ class TestSlurmSparkManagerApptainerDetection:
 
     def test_detect_apptainer_config_true_no_sif_fallback(self, tmp_path, monkeypatch, capsys):
         """Config use_apptainer=True but no sif falls back with warning."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         # No sif file exists
@@ -476,7 +475,6 @@ class TestSlurmSparkManagerJobIsolation:
 
     def test_state_files_are_job_specific(self, tmp_path, monkeypatch):
         """State files should be scoped to driver job ID to prevent conflicts."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
 
@@ -494,7 +492,6 @@ class TestSlurmSparkManagerJobIsolation:
 
     def test_state_files_default_to_legacy_paths(self, tmp_path, monkeypatch):
         """Without driver_job_id, should use legacy paths for backwards compatibility."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
 
@@ -506,7 +503,6 @@ class TestSlurmSparkManagerJobIsolation:
 
     def test_generated_script_uses_job_specific_paths(self, tmp_path, monkeypatch):
         """Generated sbatch scripts should use driver job ID for state files."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "fairway.sif").write_text("fake sif")
@@ -536,7 +532,6 @@ class TestSlurmSparkManagerScriptGeneration:
         fairway-spark-start.sh must run on the HOST so it can call srun.
         The script itself handles containerization of Spark components.
         """
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "fairway.sif").write_text("fake sif")
@@ -600,7 +595,6 @@ class TestBindPathConfiguration:
 
     def test_slurm_manager_default_bind_is_empty(self, tmp_path, monkeypatch):
         """SlurmSparkManager should default to empty bind paths, not /vast."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "fairway.sif").write_text("fake sif")
@@ -621,7 +615,6 @@ class TestBindPathConfiguration:
 
     def test_slurm_manager_config_bind_override(self, tmp_path, monkeypatch):
         """SlurmSparkManager should respect apptainer_binds from config."""
-        from fairway.engines.slurm_cluster import SlurmSparkManager
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "fairway.sif").write_text("fake sif")

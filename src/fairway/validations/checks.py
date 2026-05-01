@@ -217,40 +217,9 @@ class Validator:
         check_nulls = flat.get("check_nulls")
         if check_nulls:
             if is_spark:
-                from pyspark.sql import functions as F
-                # Surface missing columns as warnings (parity with check_range/values/pattern).
-                df_cols = set(df.columns)
-                present_cols = [c for c in check_nulls if c in df_cols]
-                for missing in (c for c in check_nulls if c not in df_cols):
-                    result.add_finding({
-                        "column": missing,
-                        "check": "check_nulls",
-                        "message": f"Column '{missing}' not found, skipping nulls check",
-                        "severity": "warn",
-                        "failed_count": 0,
-                        "total_count": 0,
-                    })
-                if present_cols:
-                    # Positional aliases avoid collisions with user columns named like "__null__foo".
-                    # Slot 0 is the total count; slot i+1 is the null count for present_cols[i].
-                    agg_exprs = [F.count(F.lit(1)).alias("__fw_total__")]
-                    for i in range(len(present_cols)):
-                        agg_exprs.append(
-                            F.count(F.when(F.col(present_cols[i]).isNull(), 1)).alias(f"__fw_null_{i}__")
-                        )
-                    row = df.agg(*agg_exprs).collect()[0]
-                    total = row[0]
-                    for i, col_name in enumerate(present_cols):
-                        null_count = row[i + 1]
-                        if null_count > 0:
-                            result.add_finding({
-                                "column": col_name,
-                                "check": "check_nulls",
-                                "message": f"Null values found in mandatory column: {col_name} (count: {null_count})",
-                                "severity": "error",
-                                "failed_count": null_count,
-                                "total_count": total,
-                            })
+                raise NotImplementedError(
+                    "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+                )
             else:
                 for col_name in check_nulls:
                     if col_name not in df.columns:
@@ -279,40 +248,9 @@ class Validator:
         if check_range:
             for col_name, bounds in check_range.items():
                 if is_spark:
-                    if col_name not in df.columns:
-                        result.add_finding({
-                            "column": col_name,
-                            "check": "check_range",
-                            "message": f"Column '{col_name}' not found, skipping range check",
-                            "severity": "warn",
-                            "failed_count": 0,
-                            "total_count": 0,
-                        })
-                        continue
-                    from pyspark.sql.functions import col as spark_col
-                    non_null = df.filter(spark_col(col_name).isNotNull())
-                    total = non_null.count()
-                    if total == 0:
-                        continue
-                    conditions = []
-                    if "min" in bounds:
-                        conditions.append(spark_col(col_name) < bounds["min"])
-                    if "max" in bounds:
-                        conditions.append(spark_col(col_name) > bounds["max"])
-                    if conditions:
-                        from functools import reduce
-                        from operator import or_
-                        combined = reduce(or_, conditions)
-                        failed = non_null.filter(combined).count()
-                        if failed > 0:
-                            result.add_finding({
-                                "column": col_name,
-                                "check": "check_range",
-                                "message": f"{failed} values in '{col_name}' outside range [{bounds.get('min')}, {bounds.get('max')}]",
-                                "severity": "error",
-                                "failed_count": failed,
-                                "total_count": total,
-                            })
+                    raise NotImplementedError(
+                        "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+                    )
                 else:
                     if col_name not in df.columns:
                         result.add_finding({
@@ -348,29 +286,9 @@ class Validator:
         if check_values:
             for col_name, allowed in check_values.items():
                 if is_spark:
-                    if col_name not in df.columns:
-                        result.add_finding({
-                            "column": col_name,
-                            "check": "check_values",
-                            "message": f"Column '{col_name}' not found, skipping values check",
-                            "severity": "warn",
-                            "failed_count": 0,
-                            "total_count": 0,
-                        })
-                        continue
-                    from pyspark.sql.functions import col as spark_col
-                    non_null = df.filter(spark_col(col_name).isNotNull())
-                    total = non_null.count()
-                    failed = non_null.filter(~spark_col(col_name).isin(allowed)).count()
-                    if failed > 0:
-                        result.add_finding({
-                            "column": col_name,
-                            "check": "check_values",
-                            "message": f"{failed} values in '{col_name}' not in allowed set",
-                            "severity": "error",
-                            "failed_count": failed,
-                            "total_count": total,
-                        })
+                    raise NotImplementedError(
+                        "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+                    )
                 else:
                     if col_name not in df.columns:
                         result.add_finding({
@@ -402,31 +320,9 @@ class Validator:
         if check_pattern:
             for col_name, pattern in check_pattern.items():
                 if is_spark:
-                    if col_name not in df.columns:
-                        result.add_finding({
-                            "column": col_name,
-                            "check": "check_pattern",
-                            "message": f"Column '{col_name}' not found, skipping pattern check",
-                            "severity": "warn",
-                            "failed_count": 0,
-                            "total_count": 0,
-                        })
-                        continue
-                    from pyspark.sql.functions import col as spark_col
-                    non_null = df.filter(spark_col(col_name).isNotNull())
-                    total = non_null.count()
-                    if total == 0:
-                        continue
-                    failed = non_null.filter(~spark_col(col_name).rlike(pattern)).count()
-                    if failed > 0:
-                        result.add_finding({
-                            "column": col_name,
-                            "check": "check_pattern",
-                            "message": f"{failed} values in '{col_name}' do not match pattern '{pattern}'",
-                            "severity": "error",
-                            "failed_count": failed,
-                            "total_count": total,
-                        })
+                    raise NotImplementedError(
+                        "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+                    )
                 else:
                     if col_name not in df.columns:
                         result.add_finding({
@@ -520,23 +416,7 @@ class Validator:
 
     @staticmethod
     def level2_check_spark(df, config):
-        """Spark-native Level 2 checks."""
-        from pyspark.sql.functions import col as spark_col
-
-        checks = config.get('level2') or {}
-        check_nulls = checks.get('check_nulls') or config.get('check_nulls')
-
-        results = {"passed": True, "errors": []}
-
-        if check_nulls:
-            logger.info("Checking nulls in %d columns...", len(check_nulls))
-            for column in check_nulls:
-                if column in df.columns:
-                    logger.info("Checking nulls in column '%s'...", column)
-                    null_count = df.filter(spark_col(column).isNull()).count()
-                    if null_count > 0:
-                        logger.warning("Column '%s' has %d null values", column, null_count)
-                        results['passed'] = False
-                        results['errors'].append(f"Null values found in mandatory column: {column} (count: {null_count})")
-
-        return results
+        """Removed in v0.3 rewrite — see PLAN.md re-entry triggers."""
+        raise NotImplementedError(
+            "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+        )

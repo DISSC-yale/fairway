@@ -26,13 +26,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-spark = [
-    "pyspark==4.1.1",
-    "delta-spark>=3.0.0", # Added for Option B support
-    "pandas",
-    "numpy",
-    "pyarrow",
-]
 duckdb = [
     "duckdb",
     "numpy",
@@ -42,8 +35,6 @@ test-data-gen = [
     "numpy",
 ]
 all = [
-    "pyspark>=4.1.1",
-    "delta-spark>=3.0.0",
     "duckdb",
     "numpy",
     "pyarrow",

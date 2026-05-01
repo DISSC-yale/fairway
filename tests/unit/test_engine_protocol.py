@@ -29,69 +29,24 @@ def _signature_param_names(fn):
     return names
 
 
-def _assert_method_matches_protocol(engine_cls, method_name):
-    """Every protocol parameter name (barring **kwargs) must appear in the engine method.
-
-    Engines may accept *additional* parameters (e.g. PySparkEngine.ingest adds
-    target_file_size_mb), but they may NOT drop or rename a declared protocol
-    parameter — that would silently break callers that pass it positionally
-    or by keyword.
-    """
-    from fairway.engines.base import EngineProtocol
-
-    protocol_fn = getattr(EngineProtocol, method_name)
-    engine_fn = getattr(engine_cls, method_name, None)
-    assert callable(engine_fn), f"{engine_cls.__name__} missing {method_name}"
-
-    protocol_params = set(_signature_param_names(protocol_fn))
-    engine_params = set(_signature_param_names(engine_fn))
-    missing = protocol_params - engine_params
-    assert not missing, (
-        f"{engine_cls.__name__}.{method_name} is missing protocol parameters: {missing}"
-    )
-
-
 def test_protocol_defines_required_methods():
-    from fairway.engines.base import EngineProtocol
-    for method in _protocol_methods():
-        assert hasattr(EngineProtocol, method), f"EngineProtocol missing {method}"
+    pytest.skip("EngineProtocol removed in v0.3 Step 1 (engines/base.py deleted)")
 
 
 def test_duckdb_engine_satisfies_protocol_runtime():
-    pytest.importorskip("duckdb")
-    from fairway.engines.base import EngineProtocol
-    from fairway.engines.duckdb_engine import DuckDBEngine
-    engine = DuckDBEngine()
-    try:
-        # runtime_checkable only verifies attribute presence; we still want
-        # the isinstance bridge to confirm the engine duck-types as such.
-        assert isinstance(engine, EngineProtocol)
-    finally:
-        engine.stop()
+    pytest.skip("EngineProtocol removed in v0.3 Step 1 (engines/base.py deleted)")
 
 
 def test_duckdb_engine_signatures_match_protocol():
-    pytest.importorskip("duckdb")
-    from fairway.engines.duckdb_engine import DuckDBEngine
-    for method in _protocol_methods():
-        _assert_method_matches_protocol(DuckDBEngine, method)
+    pytest.skip("EngineProtocol removed in v0.3 Step 1 (engines/base.py deleted)")
 
 
 def test_pyspark_engine_class_has_protocol_methods():
-    """Class-level hasattr/callable — doesn't spin up a SparkSession."""
-    pytest.importorskip("pyspark")
-    from fairway.engines.pyspark_engine import PySparkEngine
-    for method in _protocol_methods():
-        assert callable(getattr(PySparkEngine, method, None)), (
-            f"PySparkEngine missing {method}"
-        )
+    pytest.skip("PySpark engine + EngineProtocol removed in v0.3 Step 1")
 
 
 def test_pyspark_engine_signatures_match_protocol():
-    pytest.importorskip("pyspark")
-    from fairway.engines.pyspark_engine import PySparkEngine
-    for method in _protocol_methods():
-        _assert_method_matches_protocol(PySparkEngine, method)
+    pytest.skip("PySpark engine + EngineProtocol removed in v0.3 Step 1")
 
 
 def test_duckdb_engine_stop_is_idempotent():

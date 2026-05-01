@@ -185,7 +185,7 @@ if [ "$USE_APPTAINER" = "yes" ]; then
 
     # Run pipeline inside container
     # Use --no-home to prevent classpath pollution (e.g., corrupted ~/.ivy2)
-    # Pass through SPARK_CONF_DIR so PySpark finds auth settings
+    # Pass through SPARK_CONF_DIR so the driver finds auth settings
     apptainer exec --no-home \
         --bind "$BIND_PATHS" \
         --env SPARK_CONF_DIR="${SPARK_CONF_DIR}" \

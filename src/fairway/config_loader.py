@@ -22,8 +22,21 @@ VALID_IDENTIFIER = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 # Single source of truth for validation keys lives in validations/checks.py;
 # re-use it here so config-load validation and runtime-check validation can't drift.
 from fairway.validations.checks import KNOWN_VALIDATION_KEYS, LEGACY_LEVEL_KEYS
-from fairway.engines import VALID_ENGINES, normalize_engine_name
 from fairway.paths import PathResolver
+
+# v0.3 rewrite (Step 1): the multi-engine layer was removed and only
+# duckdb remains. Inline the normalize/validate logic that used to live
+# in engines/__init__.py so the transitional engines package can stay
+# empty per Step 1's done-when.
+_VALID_ENGINES = frozenset({"duckdb"})
+
+
+def _normalize_engine_name(engine):
+    if engine is None:
+        return None
+    if not isinstance(engine, str):
+        return engine
+    return engine.strip().lower()
 
 # Keys declared in KNOWN_VALIDATION_KEYS but not yet implemented at runtime
 # (checks.py raises NotImplementedError). Caught at config load so users
@@ -213,9 +226,9 @@ class Config:
 
         # Engine Validation
         raw_engine = self.data.get('engine', 'duckdb')
-        self.engine = normalize_engine_name(raw_engine)
-        if self.engine not in VALID_ENGINES:
-            raise ValueError(f"Invalid engine: '{raw_engine}'. Must be one of {sorted(VALID_ENGINES)}")
+        self.engine = _normalize_engine_name(raw_engine)
+        if self.engine not in _VALID_ENGINES:
+            raise ValueError(f"Invalid engine: '{raw_engine}'. Must be one of {sorted(_VALID_ENGINES)}")
 
         self.storage = self.data.get('storage', {})
         # storage.root is user-visible data output location. Default
@@ -559,8 +572,8 @@ class Config:
 
 
                     execution_mode = tbl.get('preprocess', {}).get('execution_mode', 'driver')
-                    if execution_mode == 'cluster' and normalize_engine_name(self.engine) != 'pyspark':
-                         raise ValueError(f"Configuration Error: 'execution_mode: cluster' is only available with 'engine: pyspark'. Table: {tbl.get('name')}")
+                    if execution_mode == 'cluster':
+                         raise ValueError(f"Configuration Error: 'execution_mode: cluster' is no longer supported (PySpark removed in v0.3 rewrite). Table: {tbl.get('name')}")
 
                     # Resolve file paths relative to config dir
                     table_root = self._resolve_path(tbl.get('root'), config_dir)

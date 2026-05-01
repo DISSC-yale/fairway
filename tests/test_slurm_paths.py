@@ -19,7 +19,7 @@ pytestmark = pytest.mark.hpc_contract
 
 
 def test_spark_coord_override_routes_state_files(tmp_path):
-    from fairway.engines.slurm_cluster import SlurmSparkManager
+    pytest.skip("slurm_cluster removed in v0.3 Step 1; full file deleted in Step 4")
     coord = tmp_path / "state" / "spark"
     mgr = SlurmSparkManager(
         {"spark_coordination_dir": str(coord)},
@@ -32,7 +32,7 @@ def test_spark_coord_override_routes_state_files(tmp_path):
 
 
 def test_spark_coord_override_without_driver_id(tmp_path):
-    from fairway.engines.slurm_cluster import SlurmSparkManager
+    pytest.skip("slurm_cluster removed in v0.3 Step 1; full file deleted in Step 4")
     coord = tmp_path / "state" / "spark"
     mgr = SlurmSparkManager({"spark_coordination_dir": str(coord)})
     # Without driver_job_id, files live at coord root (no subdir), so
@@ -44,7 +44,7 @@ def test_spark_coord_override_without_driver_id(tmp_path):
 
 def test_spark_coord_missing_falls_back_to_home(tmp_path):
     """No spark_coordination_dir in config → legacy ~/ path, unchanged."""
-    from fairway.engines.slurm_cluster import SlurmSparkManager
+    pytest.skip("slurm_cluster removed in v0.3 Step 1; full file deleted in Step 4")
     mgr = SlurmSparkManager({}, driver_job_id="abc")
     assert ".fairway-spark/abc" in mgr.master_url_file
 

@@ -59,37 +59,7 @@ class Enricher:
 
     @staticmethod
     def enrich_spark(df):
-        """Spark-native enrichment using pandas UDFs.
-
-        UDFs call into the same deterministic helpers used by the pandas path
-        so Spark and DuckDB produce identical mock values for the same input.
-        """
-        try:
-            from pyspark.sql.functions import pandas_udf
-            from pyspark.sql.types import DoubleType, StringType
-        except ImportError:
-            raise ImportError("PySpark not installed")
-
-        import pandas as pd
-
-        @pandas_udf(DoubleType())
-        def get_lat(address_series: pd.Series) -> pd.Series:
-            return address_series.apply(_mock_lat_for)
-
-        @pandas_udf(DoubleType())
-        def get_lon(address_series: pd.Series) -> pd.Series:
-            return address_series.apply(_mock_lon_for)
-
-        @pandas_udf(StringType())
-        def get_h3(lat_series: pd.Series, lon_series: pd.Series) -> pd.Series:
-            return pd.Series(
-                [_mock_h3_for(lat, lon) for lat, lon in zip(lat_series, lon_series)],
-                index=lat_series.index,
-            )
-
-        if 'address' in df.columns:
-            df = df.withColumn("latitude", get_lat(df['address']))
-            df = df.withColumn("longitude", get_lon(df['address']))
-            df = df.withColumn("h3_index", get_h3(df['latitude'], df['longitude']))
-
-        return df
+        """Removed in v0.3 rewrite — see PLAN.md re-entry triggers."""
+        raise NotImplementedError(
+            "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+        )

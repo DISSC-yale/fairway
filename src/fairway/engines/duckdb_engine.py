@@ -58,10 +58,9 @@ class DuckDBEngine:
     def stop(self):
         """Close the underlying DuckDB connection; terminates the engine lifecycle.
 
-        Idempotent — a second call is a no-op. Must mirror PySparkEngine.stop()
-        so pipeline teardown doesn't need to know which engine it holds. After
-        stop(), any method that needs the connection raises RuntimeError
-        instead of a NoneType AttributeError.
+        Idempotent — a second call is a no-op. After stop(), any method
+        that needs the connection raises RuntimeError instead of a
+        NoneType AttributeError.
         """
         con = getattr(self, 'con', None)
         if con is not None:

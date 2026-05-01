@@ -500,16 +500,9 @@ class TestPySparkLoggingLevels:
         logger.setLevel(logging.DEBUG)
 
         try:
-            # Import after setting up logging to capture the message
-            from fairway.engines.pyspark_engine import PySparkEngine
-
-            # Check the source code for the log level used
-            import inspect
-            source = inspect.getsource(PySparkEngine.ingest)
-
-            # The maxRecordsPerFile message should use logger.debug, not logger.warning
-            assert 'logger.warning("maxRecordsPerFile' not in source, \
-                "maxRecordsPerFile should use DEBUG level, not WARNING"
-
+            import pytest
+            pytest.skip(
+                "PySpark engine removed in v0.3 Step 1; test culled in Step 4"
+            )
         finally:
             logger.removeHandler(handler)

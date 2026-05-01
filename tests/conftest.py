@@ -186,17 +186,8 @@ def duckdb_engine():
 
 @pytest.fixture(scope="session")
 def _pyspark_engine_shared():
-    """Session-scoped real PySpark engine — full __init__ with JVM flags, Delta, etc.
-
-    Skips entire session's PySpark tests if PySpark is unavailable.
-    """
-    require_pyspark_for_pipeline()
-    from fairway.engines.pyspark_engine import PySparkEngine
-    engine = PySparkEngine()
-    try:
-        yield engine
-    finally:
-        engine.stop()
+    """PySpark engine removed in v0.3 Step 1 — fixture skips."""
+    pytest.skip("PySpark engine removed in v0.3 rewrite — see PLAN.md re-entry triggers")
 
 
 @pytest.fixture

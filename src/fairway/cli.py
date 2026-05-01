@@ -12,9 +12,21 @@ from datetime import datetime
 from string import Template
 from .generate_test_data import generate_test_data
 from .apptainer import DEFAULT_SIF_NAME
-from .engines import normalize_engine_name
 from .config_loader import Config
 from .hpc import SlurmManager
+
+
+def _normalize_engine_name(engine):
+    """Inlined from engines/__init__.py for the v0.3 rewrite (Step 1).
+
+    Returns the lowercase, stripped form. The engines package is now
+    transitional (empty `__init__.py`) and goes away in Step 7.
+    """
+    if engine is None:
+        return None
+    if not isinstance(engine, str):
+        return engine
+    return engine.strip().lower()
 
 
 def _validate_slurm_param(value, param_name, pattern, max_length=64):
@@ -96,7 +108,7 @@ def main():
 
 @main.command()
 @click.argument('name')
-@click.option('--engine', type=click.Choice(['duckdb', 'spark', 'pyspark']), required=True, help="Compute engine to use.")
+@click.option('--engine', type=click.Choice(['duckdb']), required=True, help="Compute engine to use.")
 @click.option('--force', is_flag=True, default=False, help='Overwrite an existing project directory.')
 def init(name, engine, force):
     """Initialize a new fairway project."""
@@ -123,7 +135,7 @@ def init(name, engine, force):
     directories = ['config', 'data/raw', 'data/processed', 'data/curated', 'src/transformations', 'docs', 'scripts', 'logs/slurm']
     for d in directories: os.makedirs(os.path.join(name, d), exist_ok=True)
 
-    engine_type = normalize_engine_name(engine)
+    engine_type = _normalize_engine_name(engine)
     from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
     
     with open(os.path.join(name, "config/fairway.yaml"), 'w') as f:
@@ -164,7 +176,7 @@ def generate_data(size, partitioned, format):
 @click.argument('file_path', required=False)
 @click.option('--config', help='Path to fairway.yaml config.')
 @click.option('--output', help='Output file path for the schema.')
-@click.option('--engine', type=click.Choice(['duckdb', 'pyspark']), default=None)
+@click.option('--engine', type=click.Choice(['duckdb']), default=None)
 @click.option('--sampling-ratio', type=float, default=1.0)
 @click.option('--slurm', is_flag=True, help='Submit as a Slurm job.')
 @slurm_options
@@ -180,7 +192,7 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, **
     if config:
         from .schema_pipeline import SchemaDiscoveryPipeline
         cfg = Config(config, overrides=overrides)
-        effective_engine = normalize_engine_name(engine or cfg.engine)
+        effective_engine = _normalize_engine_name(engine or cfg.engine)
         pipeline = SchemaDiscoveryPipeline(config, engine_override=effective_engine)
         pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
         return
@@ -230,58 +242,6 @@ def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, **
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, 'w') as f: yaml.dump(schema_output, f)
     click.echo(f"Schema written to {out_path}")
-
-@main.group()
-def spark():
-    """Manage Spark clusters."""
-    pass
-
-@spark.command()
-@click.option('--config', default=None)
-@slurm_options
-@click.option('--driver-job-id', default=None)
-def start(config, driver_job_id, **overrides):
-    """Start a Spark cluster on Slurm."""
-    cfg = Config(config or discover_config(), overrides=overrides)
-    res = cfg.resolve_resources()
-    _validate_slurm_account(res['account'])
-
-    from .engines.slurm_cluster import SlurmSparkManager
-    spark_cfg = {
-        'slurm_nodes': res['nodes'],
-        'slurm_cpus_per_node': res['cpus'],
-        'slurm_mem_per_node': res['mem'],
-        'slurm_account': res['account'],
-        'slurm_time': res['time'],
-        'slurm_partition': res['partition'],
-        'dynamic_allocation': cfg.hpc.dynamic_allocation,
-        'spark_conf': cfg.hpc.spark_conf,
-        'apptainer_binds': cfg.binds_list,
-        'spark_coordination_dir': str(cfg.paths.spark_coordination_dir),
-        'slurm_log_dir': str(cfg.paths.slurm_log_dir),
-    }
-    spark_manager = SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id)
-    click.echo(f"Spark cluster started: {spark_manager.start_cluster()}")
-
-@spark.command()
-@click.option('--config', default=None)
-@click.option('--driver-job-id', default=None)
-def stop(config, driver_job_id):
-    """Stop the running Spark cluster."""
-    from .engines.slurm_cluster import SlurmSparkManager
-    spark_cfg = {}
-    cfg_path = None
-    if config:
-        cfg_path = config
-    else:
-        try:
-            cfg_path = discover_config()
-        except click.ClickException:
-            cfg_path = None
-    if cfg_path:
-        cfg = Config(cfg_path)
-        spark_cfg["spark_coordination_dir"] = str(cfg.paths.spark_coordination_dir)
-    SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id).stop_cluster()
 
 @main.command()
 @click.option('--config', default=None)

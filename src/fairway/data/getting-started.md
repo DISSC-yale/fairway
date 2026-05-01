@@ -35,29 +35,22 @@ Or use the CLI directly:
 # Local execution
 fairway run
 
-# Submit to Slurm (without Spark)
+# Submit to Slurm
 fairway submit
-
-# Submit to Slurm with Spark cluster
-fairway submit --with-spark
 ```
 
 ## HPC vs Local Execution
 
-- **Local (`make run`)**: Runs everything on the current machine. Great for small data (DuckDB) or testing.
+- **Local (`make run`)**: Runs everything on the current machine using DuckDB.
 - **HPC (`fairway submit`)**: Submits the pipeline as a Slurm job.
-- **HPC with Spark (`fairway submit --with-spark`)**: Provisions a Spark cluster and runs the pipeline.
 
 ## Configuration
 
-Edit `config/fairway.yaml` to change the engine:
+Edit `config/fairway.yaml` to set the engine:
 
 ```yaml
-# Use DuckDB (default, unrelated to Spark)
+# DuckDB (default; only supported engine in v0.3)
 engine: duckdb
-
-# Use Spark (triggers auto-provisioning on HPC)
-engine: pyspark
 
 tables:
   - name: "my_data"

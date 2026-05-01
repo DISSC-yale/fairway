@@ -34,53 +34,6 @@ class Summarizer:
         return summary_df
 
     @staticmethod
-    def generate_summary_spark(df, output_path):
-        """
-        Generates summary statistics using native PySpark (no toPandas).
-
-        Returns:
-            tuple: (summary_df, row_count) where summary_df is a pandas DataFrame
-                   and row_count is extracted from describe() output (no extra scan).
-        """
-        from pyspark.sql import functions as F
-
-        desc_df = df.describe()
-
-        # Extract row count from describe() output — first row is "count"
-        # This avoids a separate df.count() which would trigger another full scan
-        cols = [c for c in desc_df.columns if c != "summary"]
-        if cols:
-            count_row = desc_df.filter(F.col("summary") == "count")
-            first_col = cols[0]
-            row_count = int(count_row.select(first_col).first()[0])
-        else:
-            row_count = 0
-
-        # Transpose using stack(): unpivot all columns except 'summary'
-        stack_expr = ", ".join([f"'{c}', `{c}`" for c in cols])
-        transposed = desc_df.selectExpr(
-            "summary",
-            f"stack({len(cols)}, {stack_expr}) as (variable, value)"
-        )
-
-        # Pivot to get summary stats as columns (count, mean, stddev, min, max)
-        pivoted = transposed.groupBy("variable").pivot("summary").agg(F.first("value"))
-
-        # Write directly as single CSV file
-        pivoted.coalesce(1).write.mode("overwrite").option("header", "true").csv(output_path + "_temp")
-
-        # Move the part file to the final location
-        import glob
-        import shutil
-        csv_files = glob.glob(f"{output_path}_temp/part-*.csv")
-        if csv_files:
-            shutil.move(csv_files[0], output_path)
-            shutil.rmtree(output_path + "_temp")
-
-        # Read back the small summary file for the markdown report
-        return pd.read_csv(output_path), row_count
-
-    @staticmethod
     def generate_markdown_report(dataset_name, summary_df, stats, output_path):
         """
         Generates a MkDocs-compatible Markdown report for the dataset.

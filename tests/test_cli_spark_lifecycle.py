@@ -3,8 +3,12 @@ import pytest
 from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 from fairway.cli import main
-from fairway.engines.slurm_cluster import compute_executor_defaults, _parse_mem_to_gb
 import os
+
+pytest.skip(
+    "PySpark/Slurm tests stale after v0.3 Step 1 deletions; full file removed in Step 4",
+    allow_module_level=True,
+)
 
 pytestmark = pytest.mark.hpc_contract
 

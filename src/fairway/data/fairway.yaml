@@ -4,8 +4,8 @@
 # Name of the dataset being processed
 dataset_name: "$name"
 
-# Execution Engine: 'duckdb' (local/single-node) or 'pyspark' (distributed)
-# Options: 'duckdb', 'pyspark'
+# Execution Engine: 'duckdb' (local/single-node)
+# Options: 'duckdb'
 # Default is 'duckdb' if not specified.
 engine: "$engine_type"
 
@@ -22,7 +22,7 @@ storage:
   # curated: "/shared/nfs/final"
 
   # Output format for processed files
-  # Options: 'parquet' (default), 'delta' (requires pyspark + delta-spark)
+  # Options: 'parquet' (default)
   format: "parquet"
 
   # Optional: Temporary storage for intermediate writes (e.g., unzipping, scratch on HPC)
@@ -100,7 +100,7 @@ tables:
     # preprocess:
     #   action: "unzip" # or path to script: "scripts/my_script.py"
     #   scope: "per_file" # or 'global'
-    #   execution_mode: "driver" # or 'cluster' (requires pyspark)
+    #   execution_mode: "driver"
 
   # Example: Archive handling with archives/files keys (recommended for zipped data)
   # Multiple tables can share the same archive - extracted once, cached.
