@@ -4,7 +4,13 @@ import subprocess
 import sys
 import logging
 import click
-from fairway.apptainer import FAIRWAY_SIF_ENV_VAR, DEFAULT_SIF_NAME
+
+# Container/SIF identifiers were dropped in v0.3 Step 2 alongside the
+# container module. hpc.py is itself folded into cli + slurm_templates
+# in Step 9; until then the constants below preserve the legacy template
+# substitution surface so existing slurm_templates/*.sh keep rendering.
+_FAIRWAY_SIF_ENV_VAR = "FAIRWAY_SIF"
+_DEFAULT_SIF_NAME = "fairway.sif"
 
 logger = logging.getLogger("fairway.hpc")
 
@@ -40,14 +46,13 @@ class SlurmManager:
         resources = self.config.resolve_resources()
         params = {
             'log_dir': str(self.config.paths.slurm_log_dir),
-            'sif_env_var': FAIRWAY_SIF_ENV_VAR,
-            'default_sif': DEFAULT_SIF_NAME,
+            'sif_env_var': _FAIRWAY_SIF_ENV_VAR,
+            'default_sif': _DEFAULT_SIF_NAME,
             'slurm_time': resources['time'],
             'mem': resources['mem'],
             'cpus': resources['cpus'],
             'partition': resources['partition'],
             'account': resources['account'],
-            'apptainer_binds': self.config.binds_list,
             'config': self.config.config_path,
             'fairway_home': str(self.config.paths.state_root),
             'fairway_scratch': str(self.config.paths.scratch_root),

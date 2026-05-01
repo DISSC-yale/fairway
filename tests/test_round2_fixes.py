@@ -195,28 +195,8 @@ class TestSubmitDryRun:
         assert "#SBATCH --output=logs/fairway" not in result.output, \
             f"stale 'logs' literal leaked into dry-run:\n{result.output}"
 
-    def test_dry_run_with_spark_renders_apptainer_env_forwarding(self, tmp_path, monkeypatch, runner):
-        cfg = _write_config(tmp_path)
-        (Path(cfg).parent / "spark.yaml").write_text(
-            yaml.safe_dump({"slurm": {"account": "real_acct"}})
-        )
-        monkeypatch.chdir(tmp_path)
-        from fairway.config_loader import Config
-        c = Config(cfg)
-        expected_log_dir = str(c.paths.slurm_log_dir)
-
-        result = runner.invoke(
-            main, ["submit", "--config", cfg, "--with-spark", "--dry-run"]
-        )
-        assert result.exit_code == 0, result.output
-        # Spark template must use the resolved slurm_log_dir AND forward
-        # FAIRWAY_RUN_ID / FAIRWAY_RUN_MONTH into the Apptainer container.
-        assert expected_log_dir in result.output, result.output
-        assert "--env FAIRWAY_RUN_ID=" in result.output, result.output
-        assert "--env FAIRWAY_RUN_MONTH=" in result.output, result.output
-        assert "--env FAIRWAY_HOME=" in result.output, result.output
-        assert "--env FAIRWAY_SCRATCH=" in result.output, result.output
-        assert "fairway run-abandon" in result.output, result.output
+    # test_dry_run_with_spark_renders_container_env_forwarding removed in
+    # v0.3 Step 2 — the spark/container submit path was deleted.
 
     def test_binds_include_config_dir_for_with_spark(self, tmp_path, monkeypatch, runner):
         project = tmp_path / "project"

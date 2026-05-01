@@ -294,9 +294,11 @@ class Config:
         self.compression = performance.get('compression', 'snappy')
         self.max_records_per_file = performance.get('max_records_per_file')
 
-        # Container
-        container = self.data.get('container', {})
-        self.apptainer_binds = container.get('apptainer_binds')
+        # The container bundle was removed in v0.3 Step 2. Legacy
+        # `container:` blocks (extra bind paths, etc.) are silently
+        # ignored here; the whole loader is replaced by a minimal
+        # `config.py` in Step 5.
+        self.container_extra_binds = None
 
     def _load_hpc_config(self) -> HPCConfig:
         """Load spark.yaml from the same directory as fairway.yaml or the config/ subfolder."""
@@ -345,8 +347,8 @@ class Config:
         if self.temp_dir: bind_paths.add(os.path.abspath(self.temp_dir))
         for tbl in self.tables:
             if tbl.root: bind_paths.add(os.path.abspath(tbl.root))
-        if self.apptainer_binds:
-            for p in self.apptainer_binds.split(','):
+        if self.container_extra_binds:
+            for p in self.container_extra_binds.split(','):
                 if p.strip(): bind_paths.add(p.strip())
         return ','.join(sorted(bind_paths))
 
@@ -820,9 +822,9 @@ def validate_config_paths(config):
 
     Phase 3 rule: configs are portable. A fairway.yaml that resolves
     correctly when invoked from its own directory must also resolve
-    correctly when invoked from /tmp, from Slurm, from an Apptainer
-    container, etc. That requires every path to be either absolute
-    or deterministically relative to the config file — never to CWD.
+    correctly when invoked from /tmp, from Slurm, from a remote worker,
+    etc. That requires every path to be either absolute or
+    deterministically relative to the config file — never to CWD.
 
     Escape hatch: tables with `preprocess` or `archives` set may
     reference outputs that don't exist until preprocessing runs. The

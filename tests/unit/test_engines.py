@@ -45,8 +45,5 @@ def test_normalize_engine_name_is_idempotent():
     assert once == twice == "pyspark"
 
 
-def test_apptainer_identifiers_are_stable():
-    """SIF discovery relies on these exact strings — pin them."""
-    from fairway import apptainer
-    assert apptainer.FAIRWAY_SIF_ENV_VAR == "FAIRWAY_SIF"
-    assert apptainer.DEFAULT_SIF_NAME == "fairway.sif"
+# test_container_sif_identifiers_are_stable removed in v0.3 Step 2 —
+# the container module and its SIF identifiers were deleted.

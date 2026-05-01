@@ -27,17 +27,16 @@ def _read_data_file(filename):
                 return f.read()
         raise e
 
-HPC_SCRIPT = _read_data_file('scripts/fairway-hpc.sh')
-APPTAINER_DEF = _read_data_file('Apptainer.def')
-DOCKERFILE_TEMPLATE = _read_data_file('Dockerfile')
+# Container/spark template constants (APPTAINER_DEF, DOCKERFILE_TEMPLATE,
+# SPARK_YAML_TEMPLATE, DRIVER_TEMPLATE, SPARK_START_TEMPLATE, HPC_SCRIPT)
+# were removed in v0.3 Step 2 alongside the container bundle. The whole
+# `templates.py` loader is slated for deletion in a later step (see
+# PLAN.md categorization table).
 DOCKERIGNORE = _read_data_file('.dockerignore')
 MAKEFILE_TEMPLATE = _read_data_file('Makefile')
 CONFIG_TEMPLATE = _read_data_file('fairway.yaml')
-SPARK_YAML_TEMPLATE = _read_data_file('spark.yaml')
 
 TRANSFORM_TEMPLATE = _read_data_file('example_transform.py')
-DRIVER_TEMPLATE = _read_data_file('scripts/driver.sh')
 DRIVER_SCHEMA_TEMPLATE = _read_data_file('scripts/driver-schema.sh')
-SPARK_START_TEMPLATE = _read_data_file('scripts/fairway-spark-start.sh')
 README_TEMPLATE = _read_data_file('README.md')
 DOCS_TEMPLATE = _read_data_file('getting-started.md')

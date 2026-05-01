@@ -11,7 +11,6 @@ import sys
 from datetime import datetime
 from string import Template
 from .generate_test_data import generate_test_data
-from .apptainer import DEFAULT_SIF_NAME
 from .config_loader import Config
 from .hpc import SlurmManager
 
@@ -136,13 +135,10 @@ def init(name, engine, force):
     for d in directories: os.makedirs(os.path.join(name, d), exist_ok=True)
 
     engine_type = _normalize_engine_name(engine)
-    from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
-    
+    from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
+
     with open(os.path.join(name, "config/fairway.yaml"), 'w') as f:
         f.write(Template(CONFIG_TEMPLATE).safe_substitute(name=name, engine_type=engine_type))
-    
-    with open(os.path.join(name, 'config', 'spark.yaml'), 'w') as f:
-        f.write(SPARK_YAML_TEMPLATE)
 
     with open(os.path.join(name, 'Makefile'), 'w') as f:
         f.write(MAKEFILE_TEMPLATE)
@@ -153,8 +149,8 @@ def init(name, engine, force):
     with open(os.path.join(name, 'README.md'), 'w') as f:
         f.write(Template(README_TEMPLATE).safe_substitute(name=name, timestamp=datetime.now().isoformat(), engine=engine))
 
-    from .templates import DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, HPC_SCRIPT
-    for script, content in [('driver.sh', DRIVER_TEMPLATE), ('driver-schema.sh', DRIVER_SCHEMA_TEMPLATE), ('fairway-hpc.sh', HPC_SCRIPT)]:
+    from .templates import DRIVER_SCHEMA_TEMPLATE
+    for script, content in [('driver-schema.sh', DRIVER_SCHEMA_TEMPLATE)]:
         path = os.path.join(name, 'scripts', script)
         with open(path, 'w') as f: f.write(content)
         os.chmod(path, 0o755)
@@ -323,11 +319,13 @@ def summarize(config, slurm, **overrides):
     """Generate summary stats."""
     cfg = Config(config or discover_config(), overrides=overrides)
     if slurm:
-        _validate_slurm_account(cfg.resolve_resources()['account'])
-        SlurmManager(cfg).submit_job("summarize.sh", f"Submitting summary job for {cfg.config_path}...")
-    else:
-        from .pipeline import IngestionPipeline
-        IngestionPipeline(cfg.config_path, spark_conf=cfg.hpc.spark_conf).summarize()
+        # The slurm summarize template was removed in v0.3 Step 2; the
+        # summarize subcommand is rewritten in Step 9.7.
+        raise NotImplementedError(
+            "summarize --slurm removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+        )
+    from .pipeline import IngestionPipeline
+    IngestionPipeline(cfg.config_path, spark_conf=cfg.hpc.spark_conf).summarize()
 
 @main.command()
 @click.option('--config', default=None)
@@ -337,18 +335,24 @@ def summarize(config, slurm, **overrides):
 @slurm_options
 def submit(config, with_spark, with_summary, dry_run, **overrides):
     """Submit pipeline as a Slurm job."""
+    if with_spark:
+        # Spark/container submit pipeline was removed in v0.3 Step 2; the
+        # submit subcommand is rewritten in Step 9 around array jobs.
+        raise NotImplementedError(
+            "--with-spark removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+        )
     cfg = Config(config or discover_config(), overrides=overrides)
     res = cfg.resolve_resources()
     _validate_slurm_account(res['account'])
 
-    template = "submit_with_spark.sh" if with_spark else "submit_bare.sh"
+    template = "submit_bare.sh"
     extra = {'summary_flag': '' if with_summary else ' --skip-summary'}
-    
+
     if dry_run:
         mgr = SlurmManager(cfg)
         click.echo(mgr._render_template(template, **mgr.build_template_params(extra)))
     else:
-        SlurmManager(cfg).submit_job(template, f"Submitting job (with-spark={with_spark})...", extra_params=extra)
+        SlurmManager(cfg).submit_job(template, "Submitting job...", extra_params=extra)
 
 @main.command()
 @click.option('--file', '-f', 'log_file', default=None,
@@ -395,117 +399,28 @@ def logs(log_file, config, run_id, level, batch_id, last_n, output_json, errors)
             click.echo(f"{ts} [{lvl}]{bid} {msg}")
 
 @main.command()
-@click.option('--scripts', is_flag=True)
-@click.option('--container', is_flag=True)
-@click.option('--output', '-o', default='.')
-@click.option('--force', is_flag=True)
-def eject(scripts, container, output, force):
-    """Eject bundled scripts and container files."""
-    from .templates import APPTAINER_DEF, DOCKERFILE_TEMPLATE, DOCKERIGNORE, MAKEFILE_TEMPLATE, DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, SPARK_START_TEMPLATE, HPC_SCRIPT
-    e_scripts, e_cont = scripts or not container, container or not scripts
-    if output != '.': os.makedirs(output, exist_ok=True)
-    created = []
-    def write(rel, content, exe=False):
-        full = os.path.join(output, rel)
-        if os.path.exists(full) and not force:
-            click.echo(f"  Skipping (exists): {rel}")
-            return
-        if os.path.dirname(full): os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, 'w') as f: f.write(content)
-        if exe: os.chmod(full, 0o755)
-        click.echo(f"  Created: {rel}")
-        created.append(rel)
-    if e_cont:
-        click.echo("Ejecting container files...")
-        for f, c in [('Apptainer.def', APPTAINER_DEF), ('Dockerfile', DOCKERFILE_TEMPLATE), ('.dockerignore', DOCKERIGNORE), ('Makefile', MAKEFILE_TEMPLATE)]: write(f, c)
-    if e_scripts:
-        click.echo("Ejecting Slurm/HPC scripts...")
-        for f, c in [('scripts/driver.sh', DRIVER_TEMPLATE), ('scripts/driver-schema.sh', DRIVER_SCHEMA_TEMPLATE), ('scripts/fairway-spark-start.sh', SPARK_START_TEMPLATE), ('scripts/fairway-hpc.sh', HPC_SCRIPT)]: write(f, c, True)
-    if created: click.echo(f"\nEjected {len(created)} files to {output}")
-    else: click.echo("\nNo files created (all already exist). Use --force to overwrite.")
-
-def _get_apptainer_binds(cfg) -> str:
-    """Return a comma-separated bind spec derived from config dirs + table roots.
-
-    Mirrors `Config.binds_list` but accepts any object (including mocks) that
-    exposes `raw_dir`, `processed_dir`, `curated_dir`, `temp_dir`, `tables`,
-    and `apptainer_binds`. Non-existent storage dirs are skipped.
-    """
-    bind_paths = set()
-    for path in [getattr(cfg, "raw_dir", None), getattr(cfg, "processed_dir", None), getattr(cfg, "curated_dir", None)]:
-        if not path:
-            continue
-        abs_p = os.path.abspath(path)
-        if os.path.exists(abs_p):
-            bind_paths.add(os.path.dirname(abs_p) if os.path.isfile(abs_p) else abs_p)
-    temp_dir = getattr(cfg, "temp_dir", None)
-    if temp_dir:
-        bind_paths.add(os.path.abspath(temp_dir))
-    for tbl in getattr(cfg, "tables", []) or []:
-        root = tbl.get("root") if isinstance(tbl, dict) else getattr(tbl, "root", None)
-        if root:
-            bind_paths.add(os.path.abspath(root))
-    extra = getattr(cfg, "apptainer_binds", None)
-    if extra:
-        for p in str(extra).split(","):
-            if p.strip():
-                bind_paths.add(p.strip())
-    return ",".join(sorted(bind_paths))
-
-
-def _get_dev_bind_path() -> str | None:
-    """Return a `host:container` bind string that overlays the local source
-    checkout onto the container's installed fairway package. Used by --dev
-    to let edits on the host take effect inside the container.
-
-    Prefers ./src/fairway in CWD; falls back to the module's own location.
-    """
-    container_target = "/opt/venv/lib/python3.10/site-packages/fairway"
-    local_src = os.path.join(os.getcwd(), "src", "fairway")
-    if os.path.isdir(local_src):
-        return f"{os.path.abspath(local_src)}:{container_target}"
-    try:
-        import fairway as _fw
-        mod_path = os.path.dirname(os.path.abspath(_fw.__file__))
-        return f"{mod_path}:{container_target}"
-    except Exception:
-        return None
+def eject(*_args, **_kwargs):
+    """Removed in v0.3 Step 2 (container bundle deletion)."""
+    raise NotImplementedError(
+        "eject removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+    )
 
 
 @main.command()
-@click.option('--force', is_flag=True)
-def build(force):
-    """Build the container image."""
-    if os.path.exists('Apptainer.def'):
-        if os.path.exists('fairway.sif'):
-            if force:
-                click.echo("Overwriting existing fairway.sif")
-            elif not click.confirm("fairway.sif exists. Overwrite?"):
-                return
-        subprocess.run(["apptainer", "build", "fairway.sif", "Apptainer.def"], check=True)
-        click.echo("Build complete: fairway.sif")
-    elif os.path.exists("Dockerfile"):
-        subprocess.run(["docker", "build", "-t", "fairway", "."], check=True)
-        click.echo("Build complete: fairway:latest")
-    else: raise click.ClickException("No container definition found.")
+def build(*_args, **_kwargs):
+    """Removed in v0.3 Step 2 (container bundle deletion)."""
+    raise NotImplementedError(
+        "build removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+    )
+
 
 @main.command()
-@click.option('--config', default=None)
-@click.option('--image', default='fairway.sif')
-@click.option('--bind', multiple=True)
-@click.option('--dev', is_flag=True)
-def shell(config, image, bind, dev):
-    """Enter an interactive shell inside the container."""
-    cfg = Config(config or discover_config())
-    binds = set(cfg.binds_list.split(',')) | set(bind)
-    if dev:
-        dev_bind = _get_dev_bind_path()
-        if dev_bind:
-            binds.add(dev_bind)
-    cmd = ["apptainer", "shell"]
-    if binds: cmd.extend(["--bind", ",".join(filter(None, binds))])
-    cmd.append(image)
-    subprocess.run(cmd)
+def shell(*_args, **_kwargs):
+    """Removed in v0.3 Step 2 (container bundle deletion)."""
+    raise NotImplementedError(
+        "shell removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+    )
+
 
 @main.group()
 def cache():
@@ -553,9 +468,11 @@ def clean(config, force):
             click.echo(f"Cleared {target}.")
 
 @main.command()
-def pull():
-    """Pull the Apptainer container."""
-    subprocess.run(["apptainer", "pull", "--force", DEFAULT_SIF_NAME, "docker://ghcr.io/dissc-yale/fairway:latest"], check=True)
+def pull(*_args, **_kwargs):
+    """Removed in v0.3 Step 2 (container bundle deletion)."""
+    raise NotImplementedError(
+        "pull removed in v0.3 rewrite — see PLAN.md re-entry triggers"
+    )
 
 @main.group()
 def manifest():

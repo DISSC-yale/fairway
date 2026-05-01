@@ -268,8 +268,8 @@ class PathResolver:
         CWD is never consulted.
 
         Tilde expansion uses the *current* HOME, so `~/data` resolves
-        differently on submit host vs worker if HOMEs differ (common
-        under Apptainer binds). Prefer absolute paths in shared configs.
+        differently on submit host vs worker if HOMEs differ. Prefer
+        absolute paths in shared configs.
         """
         p = Path(os.fspath(value)).expanduser()
         if p.is_absolute():

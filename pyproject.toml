@@ -76,6 +76,6 @@ data_file = "build/coverage/.coverage"
 relative_files = true
 
 [tool.setuptools.package-data]
-"fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]
+"fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "Makefile", ".dockerignore"]
 "fairway.data.scripts" = ["*.sh", "*.py"]
 "fairway.slurm_templates" = ["*.sh"]

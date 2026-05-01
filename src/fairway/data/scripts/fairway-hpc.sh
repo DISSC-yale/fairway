@@ -27,14 +27,11 @@ DEFAULT_NODES=2
 DEFAULT_CPUS=32
 DEFAULT_MEM="200G"
 
-# Container configuration
-CONTAINER_IMAGE="docker://ghcr.io/dissc-yale/fairway:latest"
-CONTAINER_LOCAL="fairway.sif"
+# Container configuration was removed in v0.3 Step 2.
 
 # Module names - adjust these to match your HPC's module system
 MODULES_BASE=(
     "Python/3.10.8-GCCcore-12.2.0"
-    "Apptainer"
 )
 
 MODULES_SPARK=(
