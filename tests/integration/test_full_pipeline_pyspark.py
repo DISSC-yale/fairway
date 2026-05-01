@@ -65,7 +65,7 @@ def test_pyspark_cli_run_writes_all_pipeline_artifacts(tmp_path, monkeypatch):
     config_path = _write_pyspark_project(tmp_path)
 
     from fairway.cli import main
-    from fairway.config_loader import Config
+    from fairway.config import Config
 
     runner = CliRunner()
     result = runner.invoke(

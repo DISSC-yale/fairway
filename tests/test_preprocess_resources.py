@@ -6,7 +6,7 @@ import os
 from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 
-from fairway.config_loader import Config, ConfigValidationError
+from fairway.config import Config, ConfigValidationError
 
 
 class TestResourcesValidation:

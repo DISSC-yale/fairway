@@ -25,7 +25,7 @@ class TestPerformanceConfig:
             'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.salting is False, "Salting should be disabled by default"
@@ -41,7 +41,7 @@ class TestPerformanceConfig:
             'performance': {'salting': True}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.salting is True, "Salting should be enabled when configured"
@@ -56,7 +56,7 @@ class TestPerformanceConfig:
             'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.target_file_size_mb == 128, "target_file_size_mb should default to 128"
@@ -72,7 +72,7 @@ class TestPerformanceConfig:
             'performance': {'target_file_size_mb': 256}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.target_file_size_mb == 256, "target_file_size_mb should be customizable"
@@ -87,7 +87,7 @@ class TestPerformanceConfig:
             'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.compression == 'snappy', "Compression should default to snappy"
@@ -102,7 +102,7 @@ class TestPerformanceConfig:
             'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.max_records_per_file is None, "max_records_per_file should be None by default"
@@ -118,7 +118,7 @@ class TestPerformanceConfig:
             'performance': {'max_records_per_file': 2000000}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.max_records_per_file == 2000000, "max_records_per_file should be configurable"
@@ -133,7 +133,7 @@ class TestPerformanceConfig:
             'storage': {'processed': str(tmp_path), 'curated': str(tmp_path)}
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.temp_dir is None, "temp_dir should be None by default"
@@ -155,7 +155,7 @@ class TestPerformanceConfig:
             }
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.temp_dir == str(scratch), "temp_dir should be configurable"
@@ -176,7 +176,7 @@ class TestPerformanceConfig:
             }
         }))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config = Config(str(config_file))
 
         assert config.temp_dir == '/scratch/testuser/fairway', \

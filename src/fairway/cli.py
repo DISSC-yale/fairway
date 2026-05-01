@@ -11,7 +11,7 @@ import sys
 from datetime import datetime
 from string import Template
 from .generate_test_data import generate_test_data
-from .config_loader import Config
+from .config import Config
 from .hpc import SlurmManager
 
 
@@ -701,7 +701,7 @@ def preflight(config, require_account):
     checks that each table root / preprocess script actually exists,
     and optionally refuses placeholder slurm accounts. Never writes.
     """
-    from .config_loader import validate_config_paths
+    from .config import validate_config_paths
     cfg = Config(config or discover_config())
     errors = []
 

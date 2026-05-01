@@ -6,7 +6,7 @@ import yaml
 
 
 def test_table_config_provides_typed_access():
-    from fairway.config_loader import TableConfig
+    from fairway.config import TableConfig
     t = TableConfig(
         name="sales",
         path="/data/sales/*.csv",
@@ -25,7 +25,7 @@ def test_table_config_provides_typed_access():
 
 def test_table_config_does_not_leak_methods_through_getitem():
     """Method names like 'get', 'items', '__init__' must not be accessible as keys."""
-    from fairway.config_loader import TableConfig
+    from fairway.config import TableConfig
     t = TableConfig(name="x")
     assert t.get('get') is None
     assert t.get('items') is None
@@ -39,7 +39,7 @@ def test_table_config_does_not_leak_methods_through_getitem():
 
 def test_table_config_from_dict_ignores_caller_extra():
     """from_dict({'_extra': {...}}) must not overwrite the internal _extra dict."""
-    from fairway.config_loader import TableConfig
+    from fairway.config import TableConfig
     t = TableConfig.from_dict({'_extra': {'injected': 'bad'}, 'runtime_x': 1})
     assert 'injected' not in t
     assert t['runtime_x'] == 1
@@ -47,7 +47,7 @@ def test_table_config_from_dict_ignores_caller_extra():
 
 def test_table_config_dict_compatibility():
     """dict(t) and **t unpacking work — requires keys() + __getitem__."""
-    from fairway.config_loader import TableConfig
+    from fairway.config import TableConfig
     t = TableConfig(name="x", path="/p")
     t['_runtime'] = 'value'
     d = dict(t)
@@ -58,7 +58,7 @@ def test_table_config_dict_compatibility():
 
 def test_table_config_supports_dict_access():
     """Backward-compat: pipeline code uses table['key'] and table.get('key')."""
-    from fairway.config_loader import TableConfig
+    from fairway.config import TableConfig
     t = TableConfig(name="x", path="/data/*.csv")
     assert t['name'] == "x"
     assert t.get('name') == "x"
@@ -76,7 +76,7 @@ def test_table_config_supports_dict_access():
 
 
 def test_config_tables_returns_table_configs(tmp_path):
-    from fairway.config_loader import Config, TableConfig
+    from fairway.config import Config, TableConfig
     # Create a real CSV file so glob validation passes
     data_dir = tmp_path / "data"
     data_dir.mkdir()

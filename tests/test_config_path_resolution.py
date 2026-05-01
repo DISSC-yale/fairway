@@ -8,7 +8,7 @@ import os
 import pytest
 import yaml
 
-from fairway.config_loader import Config
+from fairway.config import Config
 
 
 class TestResolvePathConfigDirOnly:
@@ -183,7 +183,7 @@ class TestValidateConfigPaths:
 
     def test_rejects_non_absolute_path(self, tmp_path, monkeypatch):
         """validate_config_paths surfaces relative paths as errors."""
-        from fairway.config_loader import ConfigValidationError, validate_config_paths
+        from fairway.config import ConfigValidationError, validate_config_paths
 
         monkeypatch.chdir(tmp_path)
         data_dir = tmp_path / "data"
@@ -211,7 +211,7 @@ class TestValidateConfigPaths:
 
     def test_accepts_absolute_paths(self, tmp_path, monkeypatch):
         """Normally-loaded configs pass validation."""
-        from fairway.config_loader import validate_config_paths
+        from fairway.config import validate_config_paths
 
         monkeypatch.chdir(tmp_path)
         data_dir = tmp_path / "data"

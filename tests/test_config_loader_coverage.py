@@ -3,7 +3,7 @@ import pytest
 import yaml
 import json
 import os
-from fairway.config_loader import Config, ConfigValidationError
+from fairway.config import Config, ConfigValidationError
 
 
 class TestLoadSchema:

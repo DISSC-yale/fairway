@@ -28,7 +28,7 @@ def _make_archive(tmp_path):
 
 
 def _cache_with_config(tmp_path, monkeypatch, temp_dir=None):
-    from fairway.config_loader import Config
+    from fairway.config import Config
     from fairway.manifest import ManifestStore
     from fairway.pipeline import ArchiveCache
 

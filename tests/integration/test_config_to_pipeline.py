@@ -66,7 +66,7 @@ class TestSimplePipelineRun:
 
     def test_config_paths_derived_from_storage_root(self, simple_project, monkeypatch):
         monkeypatch.chdir(simple_project)
-        from fairway.config_loader import Config
+        from fairway.config import Config
         config_path = str(simple_project / "config" / "fairway.yaml")
         cfg = Config(config_path)
         assert cfg.curated_dir == str(simple_project / "data" / "curated")

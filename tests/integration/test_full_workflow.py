@@ -88,7 +88,7 @@ class TestGoldenPathWorkflow:
         config_path = tmp_path / "config" / "fairway.yaml"
         config_path.write_text(yaml.dump(config))
 
-        from fairway.config_loader import Config
+        from fairway.config import Config
         cfg = Config(str(config_path))
         assert cfg.raw_dir == str(custom_root / "raw")
         assert cfg.processed_dir == str(custom_root / "processed")

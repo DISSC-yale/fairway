@@ -10,7 +10,7 @@ import tarfile
 import hashlib
 import importlib.util
 import logging
-from .config_loader import Config
+from .config import Config
 from .manifest import ManifestStore, _get_file_hash_static
 from .batcher import PartitionBatcher
 from .summarize import Summarizer
