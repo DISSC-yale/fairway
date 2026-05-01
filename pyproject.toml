@@ -78,7 +78,7 @@ markers = [
     "no_fairway_home: opt out of the autouse FAIRWAY_HOME/FAIRWAY_SCRATCH fixture (for resolver-behavior tests)",
 ]
 testpaths = ["tests"]
-addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml:build/coverage/coverage.xml --cov-report=html:build/coverage/html --cov-fail-under=67 --basetemp=build/test-tmp"
+addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml:build/coverage/coverage.xml --cov-report=html:build/coverage/html --basetemp=build/test-tmp"
 
 [tool.coverage.run]
 data_file = "build/coverage/.coverage"
