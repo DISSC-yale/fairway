@@ -193,15 +193,13 @@ def enrich() -> None:
 
 @main.command()
 @click.argument("dataset_path", type=click.Path(exists=True))
-def summarize(dataset_path: str) -> None:
-    """Generate a column-level summary CSV (real body lands in Step 9.6)."""
-    try:
-        from .summarize import generate_summary  # type: ignore[attr-defined]
-    except ImportError as exc:
-        raise click.ClickException(
-            "fairway summarize: rewritten body lands in Step 9.6 — see PLAN.md."
-        ) from exc
-    generate_summary(Path(dataset_path))
+@click.option("--output", "output_path", required=True,
+              type=click.Path(dir_okay=False),
+              help="Path to write the summary CSV.")
+def summarize(dataset_path: str, output_path: str) -> None:
+    """Generate a column-level summary CSV via DuckDB over landed parquet."""
+    from .summarize import generate_summary
+    generate_summary(Path(dataset_path), Path(output_path))
 
 
 @main.group()
