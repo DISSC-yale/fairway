@@ -1,9 +1,8 @@
 """sbatch script + shards-manifest helpers for ``fairway submit``.
 
-The Step 10 work (`slurm_templates/job_array.sh`) will replace ``_TEMPLATE``
-with a file-on-disk loaded via :mod:`importlib.resources`. Until then the
-inline template here keeps Step 9.2 bounded to one new module plus the
-``submit`` body in :mod:`fairway.cli`. Variable substitution uses plain
+The job-array sbatch template lives at ``slurm_templates/job_array.sh`` and is
+loaded via :mod:`importlib.resources` so it ships in the wheel via
+``[tool.setuptools.package-data]``. Variable substitution uses plain
 ``str.format`` — no Jinja, no DSL (locked decision in PLAN.md).
 """
 from __future__ import annotations
@@ -12,6 +11,7 @@ import json
 import os
 import re
 import sys
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +21,14 @@ from . import manifest
 from .batcher import ShardSpec
 from .config import Config
 
-_TEMPLATE = """\
-#!/bin/bash
-#SBATCH --job-name=fairway-{dataset}
-{account}{partition}#SBATCH --array=0-{last}%{conc}
-#SBATCH --time={time}
-#SBATCH --mem={mem}
-#SBATCH --cpus-per-task={cpus}
-#SBATCH --output=logs/fairway-{dataset}-%A_%a.out
-set -euo pipefail
-mkdir -p logs
-cd {root}
-source .venv/bin/activate
-exec python -m fairway run --shards-file {shards} --shard-index $SLURM_ARRAY_TASK_ID
-"""
+
+def _load_template() -> str:
+    """Read ``slurm_templates/job_array.sh`` from package data."""
+    return (resources.files("fairway.slurm_templates")
+            .joinpath("job_array.sh").read_text(encoding="utf-8"))
+
+
+_TEMPLATE = _load_template()
 
 
 def render_script(
