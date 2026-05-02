@@ -363,3 +363,112 @@ class TestSubmit:
         assert rec["chunk_index"] == 0
         assert rec["sbatch_script"].endswith("submit_demo.sh")
         assert rec["submitted_at"]  # non-empty timestamp
+
+
+# ---------------------------------------------------------------------------
+# submit pre-scan validation (Step 9.3 — naming_pattern + --allow-skip)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def dirty_submit_env(submit_env: dict[str, Path]) -> dict[str, Path]:
+    """Augment ``submit_env`` with two files that don't match naming_pattern."""
+    inputs = submit_env["tmp"] / "inputs"
+    (inputs / "readme.csv").write_text("notes\n", encoding="utf-8")
+    (inputs / "lower_case.csv").write_text("notes\n", encoding="utf-8")
+    return submit_env
+
+
+class TestSubmitPreScan:
+    def test_help_shows_allow_skip_flag(self, runner: CliRunner) -> None:
+        result = runner.invoke(main, ["submit", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--allow-skip" in result.output
+
+    def test_rejects_unmatched_files_without_allow_skip(
+        self,
+        dirty_submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # If sbatch were invoked on a rejection the test must fail loudly.
+        def _explode(*_a: object, **_kw: object) -> None:
+            raise AssertionError("sbatch must not run on pre-scan rejection")
+        monkeypatch.setattr("fairway.cli.subprocess.run", _explode)
+        monkeypatch.setattr("fairway.cli.shutil.which", lambda _: "/bin/sbatch")
+
+        result = runner.invoke(main, ["submit", str(dirty_submit_env["yaml"])])
+        assert result.exit_code == 2
+        msg = (result.stderr if result.stderr_bytes else "") + result.output
+        assert "did not match naming_pattern" in msg
+        assert "readme.csv" in msg
+        assert "lower_case.csv" in msg
+
+        # No sbatch script and no submission record were written.
+        sbatch_dir = dirty_submit_env["tmp"] / "build" / "sbatch"
+        assert not sbatch_dir.exists() or not list(sbatch_dir.glob("*"))
+
+    def test_allow_skip_writes_skipped_log_and_proceeds(
+        self,
+        dirty_submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        proc = SimpleNamespace(stdout="Submitted batch job 4242\n", returncode=0)
+        monkeypatch.setattr("fairway.cli.shutil.which", lambda _: "/bin/sbatch")
+        monkeypatch.setattr(
+            "fairway.cli.subprocess.run",
+            lambda *a, **k: proc,
+        )
+
+        result = runner.invoke(
+            main, ["submit", str(dirty_submit_env["yaml"]), "--allow-skip"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Skipping 2 file(s)" in result.output
+        assert "readme.csv" in result.output and "lower_case.csv" in result.output
+        assert "Submitted Slurm array 4242" in result.output
+
+        skipped_dir = (dirty_submit_env["tmp"] / "store" / "raw" / "submit_demo"
+                       / "manifest" / "_skipped")
+        logs = list(skipped_dir.glob("*.json"))
+        assert len(logs) == 1, logs
+        payload = json.loads(logs[0].read_text())
+        names = {Path(entry["file"]).name for entry in payload}
+        assert names == {"readme.csv", "lower_case.csv"}
+        for entry in payload:
+            assert entry["reason"] == "naming_pattern mismatch"
+
+        # Matching shards still flow through.
+        shards = json.loads(
+            (dirty_submit_env["tmp"] / "build" / "sbatch"
+             / "submit_demo.shards.json").read_text()
+        )
+        assert {s["partition_values"]["state"] for s in shards["shards"]} == {"CT", "MA"}
+
+    def test_dry_run_with_allow_skip_prints_but_writes_no_log(
+        self,
+        dirty_submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _explode(*_a: object, **_kw: object) -> None:
+            raise AssertionError("sbatch must not run on --dry-run")
+        monkeypatch.setattr("fairway.cli.subprocess.run", _explode)
+
+        result = runner.invoke(
+            main,
+            ["submit", str(dirty_submit_env["yaml"]),
+             "--dry-run", "--allow-skip"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Would skip 2 file(s)" in result.output
+        assert "readme.csv" in result.output and "lower_case.csv" in result.output
+        assert "Would submit:" in result.output
+
+        skipped_dir = (dirty_submit_env["tmp"] / "store" / "raw" / "submit_demo"
+                       / "manifest" / "_skipped")
+        assert not skipped_dir.exists() or not list(skipped_dir.glob("*.json")), (
+            "dry-run must not write a _skipped log"
+        )

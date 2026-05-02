@@ -100,3 +100,15 @@ def write_submission_record(
               / f"{ts.replace(':', '-')}.json")
     _atomic_write_json(target, record)
     return target
+
+
+def write_skipped_log(
+    layer_root: Path, unmatched: list[Path], ts: str,
+) -> Path:
+    """Atomically write the Step 9.3 ``--allow-skip`` log."""
+    payload = [{"file": str(p), "reason": "naming_pattern mismatch"}
+               for p in unmatched]
+    target = (layer_root / "manifest" / "_skipped"
+              / f"{ts.replace(':', '-')}.json")
+    _atomic_write_json(target, payload)
+    return target

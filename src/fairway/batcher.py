@@ -1,110 +1,79 @@
-"""Partition-aware file batching for shuffle-free ingestion."""
+"""Filename-regex partition batcher + pre-scan validation gate.
+
+:class:`PartitionBatcher` is the silent helper used by
+:mod:`fairway.pipeline._enumerate_shards`. :func:`expand_and_validate`
+is the :mod:`fairway.cli.submit` pre-scan gate (Step 9.3) — it surfaces
+unmatched files so callers can hard-error or log + skip via
+``--allow-skip``.
+"""
+from __future__ import annotations
+
+import glob as _glob
 import os
 import re
-import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from . import manifest
+
+if TYPE_CHECKING:  # pragma: no cover — import-only
+    from .config import Config
+
+
+@dataclass(frozen=True)
+class ShardSpec:
+    """One pre-scan-validated shard: identity + inputs + partition values."""
+
+    shard_id: str
+    input_paths: list[Path]
+    partition_values: dict[str, str]
 
 
 class PartitionBatcher:
-    """Groups files into partition-aware batches using regex extraction.
-
-    Instead of reading all files at once (causing Spark shuffles),
-    files are pre-grouped by their partition values so each batch
-    can be written directly to the correct output partition.
-    """
+    """Group files by ``naming_pattern`` named-group values."""
 
     @staticmethod
     def extract_partition_values(file_path, naming_pattern, partition_by, compiled_re=None):
-        """Extract partition key values from a file path.
-
-        Applies naming_pattern regex to the file basename.
-        Returns tuple of values in partition_by order, or None if no match.
-        """
-        basename = os.path.basename(file_path)
-        if compiled_re:
-            match = compiled_re.search(basename)
-        else:
-            match = re.search(naming_pattern, basename)
-        if not match:
+        """Tuple of partition values in ``partition_by`` order, else ``None``."""
+        m = (compiled_re or re.compile(naming_pattern)).search(os.path.basename(file_path))
+        if not m or not all(k in m.groupdict() for k in partition_by):
             return None
-
-        groups = match.groupdict()
-
-        # All partition_by keys must be present in the regex match
-        values = []
-        for key in partition_by:
-            if key not in groups:
-                return None
-            values.append(groups[key])
-
-        return tuple(values)
+        return tuple(m.groupdict()[k] for k in partition_by)
 
     @staticmethod
     def group_files(file_paths, naming_pattern, partition_by):
-        """Group files into batches keyed by partition values.
-
-        Returns dict where:
-          - key = tuple of partition values (e.g., ("CT", "2023"))
-          - value = list of file paths belonging to that partition
-
-        Files that don't match naming_pattern are grouped under None key.
-        """
-        if not file_paths:
-            return {}
-
-        compiled = re.compile(naming_pattern)
-        batches = {}
-        for path in file_paths:
-            partition_values = PartitionBatcher.extract_partition_values(
-                path, naming_pattern, partition_by, compiled_re=compiled
-            )
-            if partition_values not in batches:
-                batches[partition_values] = []
-            batches[partition_values].append(path)
-
+        """Group files by partition tuple; unmatched keyed under ``None``."""
+        compiled = re.compile(naming_pattern) if file_paths else None
+        batches: dict = {}
+        for p in file_paths:
+            v = PartitionBatcher.extract_partition_values(p, naming_pattern, partition_by, compiled)
+            batches.setdefault(v, []).append(p)
         return batches
 
-    @staticmethod
-    def get_output_subpath(partition_by, partition_values):
-        """Generate Hive-style output subpath.
 
-        Example:
-            get_output_subpath(["state", "year"], ("CT", "2023"))
-            -> "state=CT/year=2023"
+def expand_and_validate(config: "Config") -> tuple[list[ShardSpec], list[Path]]:
+    """Pre-scan ``config.source_glob`` and cluster files into ShardSpecs.
 
-        Partition values are sanitized to prevent path traversal.
-        """
-        parts = []
-        for key, val in zip(partition_by, partition_values):
-            # Sanitize: remove path separators and traversal sequences
-            safe_val = val.replace("/", "_").replace("\\", "_").replace("..", "_")
-            parts.append(f"{key}={safe_val}")
-        return "/".join(parts)
-
-    @staticmethod
-    def generate_batch_id(table_name, partition_key, file_paths):
-        """Generate a deterministic batch ID.
-
-        Format: {table}_{partition_key_sanitized}_{hash[:8]}
-
-        The hash is computed from sorted file paths to ensure determinism
-        regardless of input order.
-
-        Args:
-            table_name: Name of the table being processed
-            partition_key: Partition key string (e.g., "state=CT/year=2023")
-            file_paths: List of file paths in this batch
-
-        Returns:
-            Deterministic batch ID string
-        """
-        # Sanitize partition key for use in ID (replace special chars)
-        sanitized_partition = partition_key.replace("/", "_").replace("=", "-")
-
-        # Sort files for determinism
-        sorted_files = sorted(file_paths)
-
-        # Create hash of sorted file paths
-        content = "\n".join(sorted_files)
-        file_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
-
-        return f"{table_name}_{sanitized_partition}_{file_hash}"
+    Matching files (``re.fullmatch`` of ``naming_pattern`` on basename)
+    cluster by named-group ``partition_values`` into one :class:`ShardSpec`
+    per cluster; non-matching files are returned in the second tuple element.
+    """
+    pattern = re.compile(config.naming_pattern)
+    matched: dict[tuple, list[Path]] = {}
+    unmatched: list[Path] = []
+    for f in sorted(_glob.glob(config.source_glob)):
+        path = Path(f)
+        m = pattern.fullmatch(path.name)
+        if m is None:
+            unmatched.append(path)
+            continue
+        g = m.groupdict()
+        pv_key = tuple(sorted((k, g[k]) for k in config.partition_by if k in g))
+        matched.setdefault(pv_key, []).append(path)
+    shards = sorted(
+        (ShardSpec(manifest.compute_task_id(dict(k)), sorted(paths), dict(k))
+         for k, paths in matched.items()),
+        key=lambda s: s.shard_id,
+    )
+    return shards, unmatched

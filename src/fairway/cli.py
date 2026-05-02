@@ -24,19 +24,14 @@ def _scaffold_project(root: Path) -> None:
                 "transforms/processed_to_curated", "data", "build"):
         (root / sub).mkdir(parents=True, exist_ok=True)
     (root / ".gitignore").write_text(_t.GITIGNORE, encoding="utf-8")
-    (root / "README.md").write_text(
-        _t.README.format(name=root.name), encoding="utf-8"
-    )
+    (root / "README.md").write_text(_t.README.format(name=root.name), encoding="utf-8")
 
 
 def _scaffold_dataset(root: Path, name: str) -> None:
     (root / "datasets").mkdir(parents=True, exist_ok=True)
-    (root / "datasets" / f"{name}.yaml").write_text(
-        _t.DATASET_YAML.format(name=name), encoding="utf-8"
-    )
-    (root / "datasets" / f"{name}.py").write_text(
-        _t.DATASET_PY.format(name=name), encoding="utf-8"
-    )
+    for ext, tmpl in (("yaml", _t.DATASET_YAML), ("py", _t.DATASET_PY)):
+        (root / "datasets" / f"{name}.{ext}").write_text(
+            tmpl.format(name=name), encoding="utf-8")
 
 
 @main.command()
@@ -98,17 +93,14 @@ def run(shards_file: str, shard_index: int) -> None:
     import duckdb
     from .duckdb_runner import run_shard
     payload = json.loads(Path(shards_file).read_text(encoding="utf-8"))
-    if not (isinstance(payload, dict) and "config" in payload
-            and "shards" in payload):
+    if not (isinstance(payload, dict) and "config" in payload and "shards" in payload):
         raise click.ClickException(
             "shards file must be {'config': <path>, 'shards': [...]} "
-            "(Step 9.2 finalises this format)."
-        )
+            "(Step 9.2 finalises this format).")
     shards = payload["shards"]
     if shard_index < 0 or shard_index >= len(shards):
         raise click.ClickException(
-            f"shard_index {shard_index} out of range (0..{len(shards) - 1})"
-        )
+            f"shard_index {shard_index} out of range (0..{len(shards) - 1})")
     config = load_config(payload["config"])
     ctx = _build_ctx_from_shard(config, shards[shard_index])
     con = duckdb.connect(":memory:")
@@ -139,17 +131,13 @@ def status(dataset_name: str, storage_root: str, layer: str) -> None:
         click.echo(f"No submission record under {sub_dir}")
     counts: dict[str, int] = {"ok": 0, "error": 0}
     frag_dir = layer_root / "_fragments"
-    if frag_dir.is_dir():
-        for f in frag_dir.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                continue
-            counts[data.get("status", "error")] = (
-                counts.get(data.get("status", "error"), 0) + 1
-            )
-    click.echo(f"Fragments: ok={counts.get('ok', 0)}  "
-               f"error={counts.get('error', 0)}")
+    for f in (frag_dir.glob("*.json") if frag_dir.is_dir() else ()):
+        try:
+            s = json.loads(f.read_text(encoding="utf-8")).get("status", "error")
+        except (json.JSONDecodeError, OSError):
+            continue
+        counts[s] = counts.get(s, 0) + 1
+    click.echo(f"Fragments: ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
 
 
 @main.command()
@@ -176,9 +164,7 @@ def validate(dataset_path: str, rules: str) -> None:
     from .config import _parse_validations
     from .validations import ShardValidationError, apply_validations
     spec = yaml.safe_load(Path(rules).read_text(encoding="utf-8")) or {}
-    validations_cfg = _parse_validations(
-        spec.get("validations") if isinstance(spec, dict) else spec
-    )
+    validations_cfg = _parse_validations(spec.get("validations") if isinstance(spec, dict) else spec)
     con = duckdb.connect(":memory:")
     glob = str(Path(dataset_path)).replace("'", "''") + "/**/*.parquet"
     try:
@@ -225,54 +211,69 @@ def manifest_finalize(layer_root: str) -> None:
     merged = _manifest.finalize(layer_root)
     counts: dict[str, int] = {"ok": 0, "error": 0}
     for frag in merged.get("fragments", []):
-        s = frag.get("status", "error")
-        counts[s] = counts.get(s, 0) + 1
-    click.echo(f"finalized {layer_root}")
-    click.echo(f"  fragments merged: {merged.get('fragment_count', 0)}")
-    click.echo(f"  ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
+        counts[frag.get("status", "error")] = counts.get(frag.get("status", "error"), 0) + 1
+    click.echo(f"finalized {layer_root}\n  fragments merged: {merged.get('fragment_count', 0)}\n"
+               f"  ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
+
+
+def _handle_unmatched(unmatched, layer_root, *, allow_skip, dry_run):
+    """Step 9.3 pre-scan: hard-error, dry-run-print, or write _skipped log."""
+    from . import _sbatch
+    if not unmatched:
+        return
+    if not allow_skip:
+        click.echo(f"Error: {len(unmatched)} file(s) in source_glob did not "
+                   "match naming_pattern:", err=True)
+        for p in unmatched:
+            click.echo(f"  {p}", err=True)
+        sys.exit(2)
+    click.echo(f"{'Would skip' if dry_run else 'Skipping'} {len(unmatched)} "
+               "file(s) (naming_pattern mismatch):")
+    for p in unmatched:
+        click.echo(f"  {p}")
+    if not dry_run:
+        _sbatch.write_skipped_log(layer_root, unmatched, _manifest.utc_now_iso())
 
 
 @main.command()
 @click.argument("config_yaml", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True,
               help="Render shards.json + sbatch script; do not invoke sbatch.")
-def submit(config_yaml: str, dry_run: bool) -> None:
-    """Render an sbatch script and submit a Slurm array (Step 9.2 core)."""
-    from . import _sbatch
+@click.option("--allow-skip", is_flag=True,
+              help="Skip files in source_glob not matching naming_pattern "
+                   "(logged to manifest/_skipped/<ts>.json).")
+def submit(config_yaml: str, dry_run: bool, allow_skip: bool) -> None:
+    """Render an sbatch script and submit a Slurm array (Steps 9.2 + 9.3)."""
+    from . import _sbatch, batcher
     from .duckdb_runner import _layer_root
-    from .pipeline import _enumerate_shards
     config = load_config(config_yaml)
-    specs = _enumerate_shards(config)
-    if not specs:
+    matched, unmatched = batcher.expand_and_validate(config)
+    _handle_unmatched(unmatched, _layer_root(config),
+                      allow_skip=allow_skip, dry_run=dry_run)
+    if not matched:
         raise click.ClickException(
             f"No shards from source_glob={config.source_glob!r}.")
-    payload = _sbatch.shards_payload(specs, Path(config_yaml))
+    payload = _sbatch.shards_payload(matched, Path(config_yaml))
     out_dir = Path("build/sbatch")
     out_dir.mkdir(parents=True, exist_ok=True)
     shards_path = out_dir / f"{config.dataset_name}.shards.json"
-    shards_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    shards_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     script = out_dir / f"{config.dataset_name}.sh"
-    script.write_text(
-        _sbatch.render_script(config, len(payload["shards"]), shards_path),
-        encoding="utf-8")
+    script.write_text(_sbatch.render_script(config, len(payload["shards"]), shards_path), encoding="utf-8")
     script.chmod(0o755)
     if dry_run:
         click.echo(f"Would submit: sbatch {script}")
         return
     if shutil.which("sbatch") is None:
-        click.echo("Error: sbatch not found on PATH. Run from a Slurm-"
-                   "enabled host or pass --dry-run to render scripts only.",
-                   err=True)
+        click.echo("Error: sbatch not found on PATH. Run from a Slurm-enabled "
+                   "host or pass --dry-run to render scripts only.", err=True)
         sys.exit(2)
-    proc = subprocess.run(["sbatch", str(script)],
-                          check=True, capture_output=True, text=True)
+    proc = subprocess.run(["sbatch", str(script)], check=True, capture_output=True, text=True)
     job_id = _sbatch.parse_array_job_id(proc.stdout)
     _sbatch.write_submission_record(
         _layer_root(config), sbatch_script=script, array_job_id=job_id,
         n_shards=len(payload["shards"]), ts=_manifest.utc_now_iso())
-    click.echo(f"Submitted Slurm array {job_id} with {len(payload['shards'])} "
-               f"tasks. Script: {script}.")
+    click.echo(f"Submitted Slurm array {job_id} with {len(payload['shards'])} tasks. Script: {script}.")
 
 
 if __name__ == "__main__":
