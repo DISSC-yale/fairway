@@ -1,12 +1,20 @@
-"""Focused tests for Slurm CLI validation helpers."""
+"""Focused tests for Slurm CLI validation helpers (v0.2).
+
+The validators were inlined in the v0.2 ``cli.py``; the v0.3 rewrite
+(Step 9.1) drops them in favour of a tighter command surface.
+``submit``-level argument validation re-lands when Step 9.2 wires the
+sbatch invocation. Skipped at module level until then so the whole
+file collects cleanly without resurrecting deleted symbols.
+"""
 from __future__ import annotations
 
-import click
 import pytest
 
-pytestmark = pytest.mark.hpc_contract
-
-from fairway.cli import _validate_slurm_mem, _validate_slurm_param, _validate_slurm_time
+pytest.skip(
+    "v0.2 cli helpers removed in rewrite/v0.3 Step 9.1; "
+    "submit-level validation lands in Step 9.2.",
+    allow_module_level=True,
+)
 
 
 def test_validate_slurm_param_accepts_none():
