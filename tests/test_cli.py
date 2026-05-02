@@ -675,3 +675,216 @@ class TestSubmitIdempotent:
         assert not sub_dir.exists() or not list(sub_dir.glob("*.json"))
         skipped_dir = layer_root / "manifest" / "_skipped"
         assert not skipped_dir.exists() or not list(skipped_dir.glob("*.json"))
+
+
+# ---------------------------------------------------------------------------
+# submit chunking for large arrays (Step 9.5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def big_submit_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    """5-input variant of ``submit_env`` so chunk_size=2 produces 3 chunks."""
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    for state in ("CT", "MA", "NY", "NJ", "PA"):
+        (inputs / f"{state}_2023.csv").write_text(
+            "id,v\n1,a\n2,b\n", encoding="utf-8")
+    transform_py = tmp_path / "ds.py"
+    transform_py.write_text(
+        "from fairway.defaults import default_ingest\n"
+        "def transform(con, ctx):\n"
+        "    return default_ingest(con, ctx)\n",
+        encoding="utf-8",
+    )
+    yaml_path = tmp_path / "ds.yaml"
+    yaml_path.write_text(yaml.safe_dump({
+        "dataset_name": "chunky",
+        "python": str(transform_py),
+        "storage_root": str(tmp_path / "store"),
+        "source_glob": str(inputs / "*.csv"),
+        "naming_pattern": r"(?P<state>[A-Z]+)_(?P<year>\d{4})\.csv",
+        "partition_by": ["state", "year"],
+        "delimiter": ",",
+        "slurm_chunk_size": 2,  # config-default chunk size for this test
+        "slurm_concurrency": 4,
+    }), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    return {"yaml": yaml_path, "tmp": tmp_path}
+
+
+@pytest.fixture
+def stub_sbatch_seq(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
+    """Stub sbatch with a sequence of distinct array_job_ids per call."""
+    from types import SimpleNamespace
+    job_ids = iter(["1001", "1002", "1003", "1004", "1005"])
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kw: object) -> SimpleNamespace:
+        calls.append(list(cmd))
+        return SimpleNamespace(
+            stdout=f"Submitted batch job {next(job_ids)}\n", returncode=0)
+
+    monkeypatch.setattr("fairway.cli.shutil.which", lambda _: "/bin/sbatch")
+    monkeypatch.setattr("fairway.cli.subprocess.run", fake_run)
+    return {"calls": calls}
+
+
+class TestSubmitChunking:
+    def test_help_shows_chunk_size_flag(self, runner: CliRunner) -> None:
+        result = runner.invoke(main, ["submit", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--chunk-size" in result.output
+
+    def test_small_input_emits_single_chunk(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch: list[list[str]],
+    ) -> None:
+        """Regression: 2 shards <= default 4000 chunk_size → existing single
+        un-suffixed shards.json + one Submit-array message + one record."""
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        assert "Submit array 7777" in result.output
+        sbatch_dir = submit_env["tmp"] / "build" / "sbatch"
+        assert (sbatch_dir / "submit_demo.shards.json").is_file()
+        assert (sbatch_dir / "submit_demo.sh").is_file()
+        # Chunked filenames must NOT be created for the single-chunk path.
+        assert not list(sbatch_dir.glob("*-chunk-*"))
+        sub_dir = (submit_env["tmp"] / "store" / "raw" / "submit_demo"
+                   / "manifest" / "_submissions")
+        assert len(list(sub_dir.glob("*.json"))) == 1
+        # Only one sbatch invocation happened.
+        assert len(stub_sbatch) == 1
+
+    def test_chunk_size_flag_overrides_config(
+        self,
+        big_submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch_seq: dict[str, list],
+    ) -> None:
+        """--chunk-size 5 forces a single chunk even though config says 2."""
+        result = runner.invoke(
+            main, ["submit", str(big_submit_env["yaml"]), "--chunk-size", "5"])
+        assert result.exit_code == 0, result.output
+        assert "Submit array 1001" in result.output
+        sbatch_dir = big_submit_env["tmp"] / "build" / "sbatch"
+        assert (sbatch_dir / "chunky.shards.json").is_file()
+        assert not list(sbatch_dir.glob("*-chunk-*"))
+        assert len(stub_sbatch_seq["calls"]) == 1
+
+    def test_large_input_emits_n_chunks_with_separate_artifacts(
+        self,
+        big_submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch_seq: dict[str, list],
+    ) -> None:
+        """5 shards with config slurm_chunk_size=2 → ceil(5/2) = 3 chunks."""
+        result = runner.invoke(main, ["submit", str(big_submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        assert "Submitting 3 chunks" in result.output
+        assert "total 5 shards" in result.output
+        assert "Job IDs: 1001, 1002, 1003" in result.output
+        sbatch_dir = big_submit_env["tmp"] / "build" / "sbatch"
+        for i in range(3):
+            assert (sbatch_dir / f"chunky-chunk-{i}.shards.json").is_file()
+            assert (sbatch_dir / f"chunky-chunk-{i}.sh").is_file()
+        # Un-suffixed names must NOT be created.
+        assert not (sbatch_dir / "chunky.shards.json").exists()
+        assert not (sbatch_dir / "chunky.sh").exists()
+        # Three sbatch invocations, one per chunk.
+        assert len(stub_sbatch_seq["calls"]) == 3
+        # Three submission records, one per chunk, sharing submitted_at.
+        sub_dir = (big_submit_env["tmp"] / "store" / "raw" / "chunky"
+                   / "manifest" / "_submissions")
+        records = sorted(sub_dir.glob("*.json"))
+        assert len(records) == 3
+        loaded = [json.loads(r.read_text()) for r in records]
+        loaded.sort(key=lambda r: r["chunk_index"])
+        assert [r["chunk_index"] for r in loaded] == [0, 1, 2]
+        assert [r["array_job_id"] for r in loaded] == ["1001", "1002", "1003"]
+        assert [r["n_shards"] for r in loaded] == [2, 2, 1]
+        # All chunks share the same submitted_at instant (parallel submission).
+        assert len({r["submitted_at"] for r in loaded}) == 1
+        # Each chunk's sbatch_script points at its own per-chunk file.
+        for i, rec in enumerate(loaded):
+            assert rec["sbatch_script"].endswith(f"chunky-chunk-{i}.sh")
+
+    def test_chunked_dry_run_renders_all_scripts_no_sbatch(
+        self,
+        big_submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _explode(*_a: object, **_kw: object) -> None:
+            raise AssertionError("sbatch must not be invoked on --dry-run")
+        monkeypatch.setattr("fairway.cli.subprocess.run", _explode)
+        result = runner.invoke(
+            main, ["submit", str(big_submit_env["yaml"]), "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert result.output.count("Would submit: sbatch") == 3
+        sbatch_dir = big_submit_env["tmp"] / "build" / "sbatch"
+        for i in range(3):
+            assert (sbatch_dir / f"chunky-chunk-{i}.shards.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# status aggregates across chunks of the most recent submission (Step 9.5)
+# ---------------------------------------------------------------------------
+
+
+class TestStatusAggregation:
+    def test_status_aggregates_squeue_across_chunks(
+        self,
+        tmp_path: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two chunked submission records (same submitted_at) → status calls
+        squeue once per array_job_id and aggregates the parsed state counts."""
+        from types import SimpleNamespace
+        from fairway import _sbatch
+        layer_root = tmp_path / "data" / "raw" / "agg_demo"
+        ts = "2026-05-02T12-00-00"
+        # Two chunked records sharing submitted_at; -chunk-<i>.json filenames.
+        _sbatch.write_submission_record(
+            layer_root, sbatch_script=Path("/x/agg_demo-chunk-0.sh"),
+            array_job_id="2001", n_shards=2, ts=ts,
+            chunk_index=0, total_chunks=2)
+        _sbatch.write_submission_record(
+            layer_root, sbatch_script=Path("/x/agg_demo-chunk-1.sh"),
+            array_job_id="2002", n_shards=3, ts=ts,
+            chunk_index=1, total_chunks=2)
+        squeue_outputs = {
+            "2001": "RUNNING\nPENDING\n",          # 2 tasks
+            "2002": "RUNNING\nRUNNING\nPENDING\n", # 3 tasks
+        }
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kw: object) -> SimpleNamespace:
+            calls.append(list(cmd))
+            jid = cmd[cmd.index("-j") + 1]
+            return SimpleNamespace(stdout=squeue_outputs[jid], returncode=0)
+
+        monkeypatch.setattr("fairway.cli.shutil.which", lambda _: "/usr/bin/squeue")
+        monkeypatch.setattr("fairway.cli.subprocess.run", fake_run)
+
+        result = runner.invoke(main, [
+            "status", "--dataset", "agg_demo",
+            "--storage-root", str(tmp_path / "data"), "--layer", "raw"])
+        assert result.exit_code == 0, result.output
+        # Header line shows chunk count + aggregated total + both job ids.
+        assert "2 chunks" in result.output
+        assert "total 5 shards" in result.output
+        assert "2001" in result.output and "2002" in result.output
+        # squeue invoked once per chunk's array_job_id.
+        invoked_jids = [c[c.index("-j") + 1] for c in calls
+                        if c and c[0] == "squeue"]
+        assert invoked_jids == ["2001", "2002"]
+        # Aggregated state counts across both chunks: PENDING=2, RUNNING=3.
+        assert "Slurm states (aggregated):" in result.output
+        assert "PENDING=2" in result.output
+        assert "RUNNING=3" in result.output

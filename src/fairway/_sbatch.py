@@ -87,23 +87,63 @@ def shards_payload(specs: list, config_yaml: Path) -> dict[str, Any]:
 
 def write_artifacts(
     config: Config, shards: list[ShardSpec], config_yaml: Path,
+    *, chunk_index: int | None = None,
 ) -> tuple[Path, Path]:
     """Render ``shards.json`` + sbatch script under ``build/sbatch/``.
 
-    Returns ``(shards_path, script_path)``. The script is marked executable.
+    When ``chunk_index`` is ``None`` (single-chunk path), files are named
+    ``<dataset>.shards.json`` / ``<dataset>.sh``. When ``chunk_index`` is an
+    int (Step 9.5 chunked path), names embed ``-chunk-<i>``. Returns
+    ``(shards_path, script_path)``; the script is marked executable.
     """
     out_dir = Path("build/sbatch")
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = shards_payload(shards, config_yaml)
-    shards_path = out_dir / f"{config.dataset_name}.shards.json"
+    suffix = f"-chunk-{chunk_index}" if chunk_index is not None else ""
+    shards_path = out_dir / f"{config.dataset_name}{suffix}.shards.json"
     shards_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    script = out_dir / f"{config.dataset_name}.sh"
+    script = out_dir / f"{config.dataset_name}{suffix}.sh"
     script.write_text(
         render_script(config, len(payload["shards"]), shards_path),
         encoding="utf-8")
     script.chmod(0o755)
     return shards_path, script
+
+
+def chunk_shards(
+    shards: list[ShardSpec], chunk_size: int,
+) -> list[list[ShardSpec]]:
+    """Split ``shards`` into contiguous slices of ``<= chunk_size`` (Step 9.5).
+
+    Single chunk when ``len(shards) <= chunk_size`` — caller can detect by
+    checking ``len(result) == 1``. Raises ``ValueError`` for non-positive
+    ``chunk_size``.
+    """
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+    if not shards:
+        return []
+    return [shards[i:i + chunk_size]
+            for i in range(0, len(shards), chunk_size)]
+
+
+def write_chunk_artifacts(
+    config: Config, chunks: list[list[ShardSpec]], config_yaml: Path,
+) -> list[Path]:
+    """Render artifacts for each chunk; return script paths in chunk-index order.
+
+    Single-chunk case (``len(chunks) == 1``) keeps the un-suffixed legacy
+    filenames; multi-chunk case uses ``<dataset>-chunk-<i>.{shards.json,sh}``.
+    """
+    is_chunked = len(chunks) > 1
+    scripts: list[Path] = []
+    for i, chunk in enumerate(chunks):
+        _, script = write_artifacts(
+            config, chunk, config_yaml,
+            chunk_index=i if is_chunked else None)
+        scripts.append(script)
+    return scripts
 
 
 def _shard_resumable(shard: ShardSpec, layer_root: Path) -> bool:
@@ -170,16 +210,96 @@ def _atomic_write_json(target: Path, payload: Any) -> None:
 
 def write_submission_record(
     layer_root: Path, *, sbatch_script: Path, array_job_id: str,
-    n_shards: int, ts: str, chunk_index: int = 0,
+    n_shards: int, ts: str, chunk_index: int = 0, total_chunks: int = 1,
 ) -> Path:
-    """Atomically write a submission record under ``manifest/_submissions``."""
+    """Atomically write a submission record under ``manifest/_submissions``.
+
+    Single-chunk submissions (``total_chunks == 1``) keep the legacy
+    ``<ts>.json`` filename so the existing one-record-per-submit invariant
+    holds. Chunked submissions (``total_chunks > 1``) embed ``-chunk-<i>`` in
+    the filename so all chunks of one submission can coexist while sharing
+    the same ``submitted_at`` field for aggregation in :func:`read_recent_submission_records`.
+    """
     record = {"submitted_at": ts, "chunk_index": chunk_index,
               "sbatch_script": str(sbatch_script),
               "array_job_id": array_job_id, "n_shards": n_shards}
-    target = (layer_root / "manifest" / "_submissions"
-              / f"{ts.replace(':', '-')}.json")
+    base = ts.replace(":", "-")
+    name = f"{base}-chunk-{chunk_index}.json" if total_chunks > 1 else f"{base}.json"
+    target = layer_root / "manifest" / "_submissions" / name
     _atomic_write_json(target, record)
     return target
+
+
+def read_recent_submission_records(layer_root: Path) -> list[dict[str, Any]]:
+    """Return all submission records sharing the most recent ``submitted_at``.
+
+    Used by ``fairway status`` to aggregate across chunks of one submission
+    (Step 9.5). Sorted by ``chunk_index``. Empty list if none exist.
+    """
+    sub_dir = layer_root / "manifest" / "_submissions"
+    if not sub_dir.is_dir():
+        return []
+    records: list[dict[str, Any]] = []
+    for f in sorted(sub_dir.glob("*.json")):
+        try:
+            records.append(json.loads(f.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            continue
+    if not records:
+        return []
+    most_recent_ts = max(r.get("submitted_at", "") for r in records)
+    same = [r for r in records if r.get("submitted_at") == most_recent_ts]
+    return sorted(same, key=lambda r: r.get("chunk_index", 0))
+
+
+def format_status_summary(
+    layer_root: Path,
+) -> tuple[list[str], list[str]]:
+    """Build the human-readable lines + job-ids-to-squeue for ``fairway status``.
+
+    Returns ``(lines, job_ids)``. ``job_ids`` is non-empty only when the most
+    recent submission was chunked (>1 records); the caller is responsible for
+    invoking ``squeue`` and feeding outputs back to :func:`aggregate_squeue_states`.
+    """
+    records = read_recent_submission_records(layer_root)
+    if not records:
+        sub_dir = layer_root / "manifest" / "_submissions"
+        return [f"No submission record under {sub_dir}"], []
+    if len(records) == 1:
+        rec = records[0]
+        lines = [f"Most recent submission: {rec.get('submitted_at')}"]
+        for k in ("array_job_id", "n_shards", "sbatch_script"):
+            if k in rec:
+                lines.append(f"  {k}: {rec[k]}")
+        return lines, []
+    total = sum(int(r.get("n_shards", 0)) for r in records)
+    ids = [str(r.get("array_job_id", "?")) for r in records]
+    return [f"Most recent submission: {len(records)} chunks at "
+            f"{records[0].get('submitted_at')} (total {total} shards). "
+            f"Job IDs: {', '.join(ids)}."], ids
+
+
+def aggregate_squeue_states(squeue_outputs: list[str]) -> dict[str, int]:
+    """Tally Slurm task states across multiple ``squeue -h ... -o '%T'`` outputs."""
+    counts: dict[str, int] = {}
+    for output in squeue_outputs:
+        for line in output.splitlines():
+            state = line.strip()
+            if state:
+                counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+def format_submission_summary(
+    n_shards: int, n_skipped: int, n_chunks: int, job_ids: list[str],
+) -> str:
+    """Render the operator-facing summary line for ``fairway submit``."""
+    if n_chunks > 1:
+        return (f"Submitting {n_chunks} chunks (total {n_shards} shards, "
+                f"skipped {n_skipped} existing-ok shards). "
+                f"Job IDs: {', '.join(job_ids)}.")
+    return (f"Submitting {n_shards} shards (skipped {n_skipped} "
+            f"existing-ok shards). Submit array {job_ids[0]}.")
 
 
 def write_skipped_log(
