@@ -1,135 +1,315 @@
-"""Canonical cross-stack integration tests.
+"""Tests for :func:`fairway.pipeline.run_pipeline` (rewrite/v0.3 Step 8.2).
 
-These are the reference tests showing the correct pattern for any new
-pipeline feature tests: write input → build_config → run → read_curated → assert.
-Covers CSV, ZIP, naming_pattern, write mode, and multi-table scenarios.
+Verifies the pipeline-level wiring of the duckdb_runner manifest-fragment
+contract. The runner is the sole writer of manifest fragments
+(:func:`fairway.duckdb_runner.run_shard` calls
+:func:`fairway.manifest.write_fragment` in both the ok and error branches);
+the pipeline only orchestrates and aggregates results. These tests confirm
+that:
+
+* a happy-path single shard produces a ``status="ok"`` fragment with
+  non-empty ``schema``/``schema_fingerprint``/``row_count``;
+* a forced validation failure produces a ``status="error"`` fragment with
+  a populated ``error`` string and the pipeline does NOT re-raise;
+* ``shard_index=0`` runs exactly that one shard;
+* ``shard_index=None`` runs every shard and ``ok_count + error_count``
+  equals ``total_shards``.
+
+Each test materialises its own YAML config + transform.py inside
+``tmp_path`` and instantiates :class:`fairway.config.Config` via
+:func:`fairway.config.load_config` — no shared fixture state.
 """
-import zipfile
-import pytest
-import pandas as pd
+from __future__ import annotations
 
-from tests.helpers import build_config, read_curated
+import json
+import textwrap
+from pathlib import Path
+
+import yaml
+
+from fairway.config import load_config
+from fairway.pipeline import PipelineResult, run_pipeline
 
 
-def _write_csv(path, header, rows):
+# ---------------------------------------------------------------------------
+# Helpers — keep each test self-contained.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TRANSFORM = textwrap.dedent(
+    """\
+    from fairway.defaults import default_ingest
+
+    def transform(con, ctx):
+        return default_ingest(con, ctx)
+    """
+)
+
+
+def _write_transform(path: Path, body: str = _DEFAULT_TRANSFORM) -> Path:
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _write_csv(path: Path, header: list[str], rows: list[tuple]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        f.write(",".join(header) + "\n")
-        for row in rows:
-            f.write(",".join(str(x) for x in row) + "\n")
+    lines = [",".join(header)]
+    lines.extend(",".join(str(c) for c in row) for row in rows)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
-def _write_zip(zip_path, csv_name, header, rows):
-    zip_path.parent.mkdir(parents=True, exist_ok=True)
-    content = ",".join(header) + "\n"
-    for row in rows:
-        content += ",".join(str(x) for x in row) + "\n"
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr(csv_name, content)
+def _write_config(
+    yaml_path: Path,
+    *,
+    dataset_name: str,
+    python: Path,
+    storage_root: Path,
+    source_glob: str,
+    naming_pattern: str = r"(?P<state>[A-Z]+)_(?P<year>\d{4})\.csv",
+    partition_by: list[str] | None = None,
+    extra: dict | None = None,
+) -> Path:
+    payload: dict = {
+        "dataset_name": dataset_name,
+        "python": str(python),
+        "storage_root": str(storage_root),
+        "source_glob": source_glob,
+        "naming_pattern": naming_pattern,
+        "partition_by": partition_by or ["state", "year"],
+        "delimiter": ",",
+        "slurm_cpus_per_task": 2,
+        "slurm_mem": "1G",
+    }
+    if extra:
+        payload.update(extra)
+    yaml_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return yaml_path
 
 
-class TestCSVIngestion:
-
-    @pytest.mark.local
-    def test_csv_ingested_correctly(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        csv_path = tmp_path / "raw" / "employees.csv"
-        _write_csv(csv_path, ["emp_id", "name", "dept"], [
-            (1, "alice", "eng"), (2, "bob", "sales"), (3, "carol", "eng"),
-        ])
-        config_path = build_config(tmp_path, table={
-            "name": "employees", "path": str(csv_path), "format": "csv",
-        })
-        from fairway.pipeline import IngestionPipeline
-        IngestionPipeline(config_path).run(skip_summary=True)
-        df = read_curated(tmp_path, "employees")
-        assert len(df) == 3
-        assert set(df["dept"].tolist()) == {"eng", "sales"}
-
-    @pytest.mark.local
-    def test_numeric_columns_preserved(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        csv_path = tmp_path / "raw" / "readings.csv"
-        _write_csv(csv_path, ["sensor_id", "temp_c"], [(101, 22.5), (102, 18.3)])
-        config_path = build_config(tmp_path, table={
-            "name": "readings", "path": str(csv_path), "format": "csv",
-        })
-        from fairway.pipeline import IngestionPipeline
-        IngestionPipeline(config_path).run(skip_summary=True)
-        df = read_curated(tmp_path, "readings")
-        assert pd.api.types.is_numeric_dtype(df["temp_c"]), \
-            f"temp_c should be numeric, got {df['temp_c'].dtype}"
+def _fragment_dir(config) -> Path:
+    """Mirror :func:`fairway.duckdb_runner._layer_root` for assertions."""
+    return Path(config.storage_root) / config.layer / config.dataset_name / "_fragments"
 
 
-class TestZipIngestion:
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
-    @pytest.mark.local
-    def test_zip_extracted_and_ingested(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        zip_path = tmp_path / "raw" / "archive.zip"
-        _write_zip(zip_path, "records.csv", ["rec_id", "category"], [
-            (10, "A"), (11, "B"), (12, "A"),
-        ])
-        config_path = build_config(tmp_path, table={
-            "name": "records", "path": str(zip_path), "format": "csv",
-            "preprocess": {"action": "unzip", "scope": "per_file"},
-        })
-        from fairway.pipeline import IngestionPipeline
-        IngestionPipeline(config_path).run(skip_summary=True)
-        df = read_curated(tmp_path, "records")
-        assert len(df) == 3
-        assert set(df["category"].tolist()) == {"A", "B"}
+def test_run_pipeline_happy_path_writes_ok_fragment(tmp_path: Path) -> None:
+    """One matching CSV → one shard → status=ok fragment with full payload."""
+    _write_csv(
+        tmp_path / "inputs" / "CT_2023.csv",
+        ["id", "value"],
+        [(1, "a"), (2, "b"), (3, "c")],
+    )
+    transform = _write_transform(tmp_path / "ds.py")
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name="ds_happy",
+        python=transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(tmp_path / "inputs" / "*.csv"),
+        extra={"scratch_dir": str(tmp_path / "scratch")},
+    )
+    config = load_config(yaml_path)
 
+    result = run_pipeline(config)
 
-class TestNamingPatternMetadata:
+    assert isinstance(result, PipelineResult)
+    assert result.total_shards == 1
+    assert result.ok_count == 1
+    assert result.error_count == 0
+    assert len(result.shard_results) == 1
+    sr = result.shard_results[0]
+    assert sr.status == "ok"
+    assert sr.error is None
+    assert sr.row_count == 3
+    assert sr.schema_fingerprint and len(sr.schema_fingerprint) == 16
 
-    @pytest.mark.local
-    def test_year_extracted_from_filename(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        csv_path = tmp_path / "raw" / "sales_2022.csv"
-        _write_csv(csv_path, ["product", "amount"], [("widget", 500), ("gadget", 750)])
-        config_path = build_config(tmp_path, table={
-            "name": "sales", "path": str(csv_path), "format": "csv",
-            "naming_pattern": r"sales_(?P<year>\d{4})\.csv",
-        })
-        from fairway.pipeline import IngestionPipeline
-        IngestionPipeline(config_path).run(skip_summary=True)
-        df = read_curated(tmp_path, "sales")
-        assert "year" in df.columns, f"year column missing. Columns: {list(df.columns)}"
-        assert all(str(y) == "2022" for y in df["year"])
-
-
-class TestWriteMode:
-
-    @pytest.mark.local
-    def test_second_run_overwrites_by_default(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        csv_path = tmp_path / "raw" / "orders.csv"
-        _write_csv(csv_path, ["order_id", "total"], [(1, 100), (2, 200)])
-        config_path = build_config(tmp_path, table={
-            "name": "orders", "path": str(csv_path), "format": "csv",
-        })
-        from fairway.pipeline import IngestionPipeline
-        IngestionPipeline(config_path).run(skip_summary=True)
-        IngestionPipeline(config_path).run(skip_summary=True)
-        df = read_curated(tmp_path, "orders")
-        assert len(df) == 2, f"Expected 2 rows after overwrite, got {len(df)}"
+    fragments = list(_fragment_dir(config).glob("*.json"))
+    assert len(fragments) == 1, fragments
+    payload = json.loads(fragments[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+    assert payload["error"] is None
+    assert payload["row_count"] == 3
+    assert payload["partition_values"] == {"state": "CT", "year": "2023"}
+    assert payload["schema_fingerprint"] == sr.schema_fingerprint
+    assert payload["schema"], "expected non-empty schema in fragment"
 
 
-class TestMultiTablePipeline:
+def test_run_pipeline_validation_error_records_fragment_without_reraising(
+    tmp_path: Path,
+) -> None:
+    """Forced ShardValidationError surfaces as error_count, NOT an exception."""
+    _write_csv(
+        tmp_path / "inputs" / "CT_2023.csv",
+        ["id", "value"],
+        [(1, "a"), (2, "b")],
+    )
+    transform = _write_transform(tmp_path / "ds.py")
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name="ds_validate_err",
+        python=transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(tmp_path / "inputs" / "*.csv"),
+        extra={
+            "scratch_dir": str(tmp_path / "scratch"),
+            "validations": {"min_rows": 999},
+        },
+    )
+    config = load_config(yaml_path)
 
-    @pytest.mark.local
-    def test_two_tables_both_curated(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        csv_a = tmp_path / "raw" / "accounts.csv"
-        _write_csv(csv_a, ["acct_id", "name"], [(1, "acme"), (2, "globex")])
-        csv_b = tmp_path / "raw" / "transactions.csv"
-        _write_csv(csv_b, ["txn_id", "acct_id", "amount"], [(101, 1, 500), (102, 2, 750), (103, 1, 250)])
-        config_path = build_config(tmp_path,
-            table={"name": "accounts", "path": str(csv_a), "format": "csv"},
-            extra_tables=[{"name": "transactions", "path": str(csv_b), "format": "csv"}],
+    # Must NOT raise: pipeline absorbs shard failures into PipelineResult.
+    result = run_pipeline(config)
+
+    assert result.total_shards == 1
+    assert result.ok_count == 0
+    assert result.error_count == 1
+    sr = result.shard_results[0]
+    assert sr.status == "error"
+    assert sr.error and "min_rows" in sr.error
+
+    fragments = list(_fragment_dir(config).glob("*.json"))
+    assert len(fragments) == 1, fragments
+    payload = json.loads(fragments[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "error"
+    assert payload["error"], "error fragment must record a non-empty error string"
+    assert "min_rows" in payload["error"]
+    assert payload["row_count"] == 0
+
+
+def test_run_pipeline_user_transform_exception_recorded_as_error_fragment(
+    tmp_path: Path,
+) -> None:
+    """Custom exception from user transform.py → error fragment, no re-raise."""
+    _write_csv(
+        tmp_path / "inputs" / "CT_2023.csv",
+        ["id"],
+        [(1,)],
+    )
+    bad_transform = _write_transform(
+        tmp_path / "ds.py",
+        body=(
+            "def transform(con, ctx):\n"
+            "    raise RuntimeError('user-transform-boom')\n"
+        ),
+    )
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name="ds_user_err",
+        python=bad_transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(tmp_path / "inputs" / "*.csv"),
+        extra={"scratch_dir": str(tmp_path / "scratch")},
+    )
+    config = load_config(yaml_path)
+
+    result = run_pipeline(config)
+
+    assert result.total_shards == 1
+    assert result.error_count == 1
+    assert result.ok_count == 0
+    payload = json.loads(
+        next(_fragment_dir(config).glob("*.json")).read_text(encoding="utf-8")
+    )
+    assert payload["status"] == "error"
+    assert "user-transform-boom" in payload["error"]
+
+
+def test_run_pipeline_single_shard_index_zero_runs_that_shard(
+    tmp_path: Path,
+) -> None:
+    """``shard_index=0`` against a one-shard source: total_shards=1, one ok result."""
+    _write_csv(
+        tmp_path / "inputs" / "CT_2023.csv",
+        ["id", "v"],
+        [(1, "a"), (2, "b")],
+    )
+    transform = _write_transform(tmp_path / "ds.py")
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name="ds_single",
+        python=transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(tmp_path / "inputs" / "*.csv"),
+        extra={"scratch_dir": str(tmp_path / "scratch")},
+    )
+    config = load_config(yaml_path)
+
+    result = run_pipeline(config, shard_index=0)
+
+    assert result.total_shards == 1
+    assert len(result.shard_results) == 1
+    assert result.ok_count == 1
+    assert result.error_count == 0
+    assert len(list(_fragment_dir(config).glob("*.json"))) == 1
+
+
+def test_run_pipeline_shard_index_selects_exactly_one_of_many(
+    tmp_path: Path,
+) -> None:
+    """With N enumerated shards, ``shard_index=k`` runs exactly one of them.
+
+    ``total_shards`` reflects discovery (all enumerated specs), but
+    ``shard_results`` and the on-disk fragment count must reflect only the
+    single shard requested — that is the Slurm-array contract.
+    """
+    for state in ("CT", "MA"):
+        _write_csv(
+            tmp_path / "inputs" / f"{state}_2023.csv",
+            ["id", "v"],
+            [(1, "a")],
         )
-        from fairway.pipeline import IngestionPipeline
-        IngestionPipeline(config_path).run(skip_summary=True)
-        assert len(read_curated(tmp_path, "accounts")) == 2
-        assert len(read_curated(tmp_path, "transactions")) == 3
+    transform = _write_transform(tmp_path / "ds.py")
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name="ds_pick_one",
+        python=transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(tmp_path / "inputs" / "*.csv"),
+        extra={"scratch_dir": str(tmp_path / "scratch")},
+    )
+    config = load_config(yaml_path)
+
+    result = run_pipeline(config, shard_index=0)
+
+    assert result.total_shards == 2  # both partitions enumerated
+    assert len(result.shard_results) == 1  # only one executed
+    assert result.ok_count + result.error_count == 1
+    # Only one fragment written, despite two shards being known.
+    assert len(list(_fragment_dir(config).glob("*.json"))) == 1
+
+
+def test_run_pipeline_all_shards_iterates_every_partition(tmp_path: Path) -> None:
+    """``shard_index=None`` runs all shards; counts must reconcile."""
+    for state in ("CT", "MA", "NY"):
+        _write_csv(
+            tmp_path / "inputs" / f"{state}_2023.csv",
+            ["id", "v"],
+            [(1, "x"), (2, "y")],
+        )
+    transform = _write_transform(tmp_path / "ds.py")
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name="ds_all",
+        python=transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(tmp_path / "inputs" / "*.csv"),
+        extra={"scratch_dir": str(tmp_path / "scratch")},
+    )
+    config = load_config(yaml_path)
+
+    result = run_pipeline(config, shard_index=None)
+
+    assert result.total_shards == 3
+    assert result.ok_count + result.error_count == result.total_shards
+    assert result.ok_count == 3
+    assert result.error_count == 0
+    # One fragment per shard, all with status=ok.
+    fragments = sorted(_fragment_dir(config).glob("*.json"))
+    assert len(fragments) == 3
+    for f in fragments:
+        payload = json.loads(f.read_text(encoding="utf-8"))
+        assert payload["status"] == "ok"
+        assert payload["error"] is None
