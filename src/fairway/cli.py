@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -232,9 +234,45 @@ def manifest_finalize(layer_root: str) -> None:
 
 @main.command()
 @click.argument("config_yaml", type=click.Path(exists=True, dir_okay=False))
-def submit(config_yaml: str) -> None:
-    """Render sbatch script and submit Slurm array (filled in Step 9.2)."""
-    raise NotImplementedError("Step 9.2 fills this in")
+@click.option("--dry-run", is_flag=True,
+              help="Render shards.json + sbatch script; do not invoke sbatch.")
+def submit(config_yaml: str, dry_run: bool) -> None:
+    """Render an sbatch script and submit a Slurm array (Step 9.2 core)."""
+    from . import _sbatch
+    from .duckdb_runner import _layer_root
+    from .pipeline import _enumerate_shards
+    config = load_config(config_yaml)
+    specs = _enumerate_shards(config)
+    if not specs:
+        raise click.ClickException(
+            f"No shards from source_glob={config.source_glob!r}.")
+    payload = _sbatch.shards_payload(specs, Path(config_yaml))
+    out_dir = Path("build/sbatch")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shards_path = out_dir / f"{config.dataset_name}.shards.json"
+    shards_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    script = out_dir / f"{config.dataset_name}.sh"
+    script.write_text(
+        _sbatch.render_script(config, len(payload["shards"]), shards_path),
+        encoding="utf-8")
+    script.chmod(0o755)
+    if dry_run:
+        click.echo(f"Would submit: sbatch {script}")
+        return
+    if shutil.which("sbatch") is None:
+        click.echo("Error: sbatch not found on PATH. Run from a Slurm-"
+                   "enabled host or pass --dry-run to render scripts only.",
+                   err=True)
+        sys.exit(2)
+    proc = subprocess.run(["sbatch", str(script)],
+                          check=True, capture_output=True, text=True)
+    job_id = _sbatch.parse_array_job_id(proc.stdout)
+    _sbatch.write_submission_record(
+        _layer_root(config), sbatch_script=script, array_job_id=job_id,
+        n_shards=len(payload["shards"]), ts=_manifest.utc_now_iso())
+    click.echo(f"Submitted Slurm array {job_id} with {len(payload['shards'])} "
+               f"tasks. Script: {script}.")
 
 
 if __name__ == "__main__":

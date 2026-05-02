@@ -230,3 +230,136 @@ def test_deferred_subcommands_have_help(cmd: str, runner: CliRunner) -> None:
     result = runner.invoke(main, [cmd, "--help"])
     assert result.exit_code == 0, result.output
     assert "Usage" in result.output
+
+
+# ---------------------------------------------------------------------------
+# submit (Step 9.2 — sbatch core, dry-run, sbatch-not-found)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def submit_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    """Materialize a project + 2 input CSVs + config.yaml; chdir to ``tmp_path``."""
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / "CT_2023.csv").write_text("id,v\n1,a\n2,b\n", encoding="utf-8")
+    (inputs / "MA_2023.csv").write_text("id,v\n3,c\n4,d\n", encoding="utf-8")
+    transform_py = tmp_path / "ds.py"
+    transform_py.write_text(
+        "from fairway.defaults import default_ingest\n"
+        "def transform(con, ctx):\n"
+        "    return default_ingest(con, ctx)\n",
+        encoding="utf-8",
+    )
+    yaml_path = tmp_path / "ds.yaml"
+    yaml_path.write_text(yaml.safe_dump({
+        "dataset_name": "submit_demo",
+        "python": str(transform_py),
+        "storage_root": str(tmp_path / "store"),
+        "source_glob": str(inputs / "*.csv"),
+        "naming_pattern": r"(?P<state>[A-Z]+)_(?P<year>\d{4})\.csv",
+        "partition_by": ["state", "year"],
+        "delimiter": ",",
+        "slurm_account": "myacct",
+        "slurm_partition": "day",
+        "slurm_concurrency": 4,
+    }), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    return {"yaml": yaml_path, "tmp": tmp_path}
+
+
+class TestSubmit:
+    def test_dry_run_renders_scripts_without_invoking_sbatch(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # If anything tries to invoke sbatch the test must fail loudly.
+        def _explode(*_a: object, **_kw: object) -> None:
+            raise AssertionError("sbatch must not be invoked on --dry-run")
+        monkeypatch.setattr("fairway.cli.subprocess.run", _explode)
+
+        result = runner.invoke(
+            main, ["submit", str(submit_env["yaml"]), "--dry-run"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Would submit:" in result.output
+
+        shards_path = (submit_env["tmp"] / "build" / "sbatch"
+                       / "submit_demo.shards.json")
+        script_path = submit_env["tmp"] / "build" / "sbatch" / "submit_demo.sh"
+        assert shards_path.is_file()
+        assert script_path.is_file()
+
+        payload = json.loads(shards_path.read_text())
+        assert payload["config"] == str(submit_env["yaml"])
+        assert len(payload["shards"]) == 2
+        ids = [s["shard_id"] for s in payload["shards"]]
+        assert ids == sorted(ids), "shards must be sorted by shard_id"
+        states = {s["partition_values"]["state"] for s in payload["shards"]}
+        assert states == {"CT", "MA"}
+
+        body = script_path.read_text()
+        assert "#SBATCH --job-name=fairway-submit_demo" in body
+        assert "#SBATCH --account=myacct" in body
+        assert "#SBATCH --partition=day" in body
+        assert "#SBATCH --array=0-1%4" in body
+        assert "#SBATCH --output=logs/fairway-submit_demo-%A_%a.out" in body
+        assert "python -m fairway run --shards-file" in body
+        assert "$SLURM_ARRAY_TASK_ID" in body
+
+        sub_dir = (submit_env["tmp"] / "store" / "raw" / "submit_demo"
+                   / "manifest" / "_submissions")
+        assert not sub_dir.exists() or not list(sub_dir.glob("*.json")), (
+            "dry-run must not write a submission record"
+        )
+
+    def test_refuses_when_sbatch_missing_on_path(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("fairway.cli.shutil.which", lambda _: None)
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 2
+        msg = (result.stderr if result.stderr_bytes else "") + result.output
+        assert "sbatch not found on PATH" in msg
+
+    def test_writes_submission_record_with_parsed_array_job_id(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        proc = SimpleNamespace(
+            stdout="Submitted batch job 9988776\n", returncode=0
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kw: object) -> SimpleNamespace:
+            calls.append(list(cmd))
+            return proc
+
+        monkeypatch.setattr("fairway.cli.shutil.which", lambda _: "/bin/sbatch")
+        monkeypatch.setattr("fairway.cli.subprocess.run", fake_run)
+
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        assert calls and calls[0][0] == "sbatch"
+        assert "Submitted Slurm array 9988776" in result.output
+
+        sub_dir = (submit_env["tmp"] / "store" / "raw" / "submit_demo"
+                   / "manifest" / "_submissions")
+        records = list(sub_dir.glob("*.json"))
+        assert len(records) == 1, records
+        rec = json.loads(records[0].read_text())
+        assert rec["array_job_id"] == "9988776"
+        assert rec["n_shards"] == 2
+        assert rec["chunk_index"] == 0
+        assert rec["sbatch_script"].endswith("submit_demo.sh")
+        assert rec["submitted_at"]  # non-empty timestamp
