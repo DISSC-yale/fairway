@@ -426,8 +426,16 @@ class IngestionPipeline:
         engine_type = (raw.strip().lower() if isinstance(raw, str) else raw)
 
         if engine_type == 'duckdb':
-            from .engines.duckdb_engine import DuckDBEngine
-            return DuckDBEngine()
+            # v0.3 Step 7.4 cutover: imports retargeted from the deleted
+            # fairway.engines.duckdb_engine module to the new shard runner.
+            # Step 8 rewrites _get_engine + call sites to consume the
+            # functional run_shard API directly. Until then, instantiating
+            # the legacy engine wrapper raises at runtime — by design.
+            from .duckdb_runner import run_shard, ShardResult, ColumnSpec  # noqa: F401
+            raise NotImplementedError(
+                "Old DuckDBEngine wrapper removed in v0.3 Step 7.4 — "
+                "Step 8 rewrites pipeline.py to call duckdb_runner.run_shard directly"
+            )
         else:
             raise NotImplementedError(
                 "PySpark removed in v0.3 rewrite — see PLAN.md re-entry triggers"

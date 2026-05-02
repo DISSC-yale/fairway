@@ -6,7 +6,12 @@ import pytest
 from pathlib import Path
 
 from fairway.fixed_width import load_spec, validate_spec, FixedWidthSpecError
-from fairway.engines.duckdb_engine import DuckDBEngine
+
+# v0.3 Step 7.4: fairway.engines.duckdb_engine deleted. Tests below that
+# reference DuckDBEngine fail at runtime with NameError (recorded as
+# expected per PLAN.md — Step 8 rewrites pipeline.py to remove the
+# legacy engine wrapper entirely). The TestSpecLoader / TestSpecValidation
+# tests in this file remain valid and continue to pass.
 
 # Test fixtures path
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "formats" / "fixed_width"

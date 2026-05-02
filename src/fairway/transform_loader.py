@@ -1,27 +1,20 @@
-"""Minimal Python plugin loader for user-supplied transforms.
+"""Minimal Python plugin loader: file path → top-level ``transform`` callable.
 
-Imports a user's ``<dataset>.py`` from a file path and returns its
-top-level ``transform`` callable. There is no registry, no base class,
-and no discovery — just file-path-to-function lookup. The runner stage
-hands the returned callable an open ``DuckDBPyConnection`` and an
-:class:`~fairway.ctx.IngestCtx`.
+The runner hands the returned callable a DuckDB connection and an
+``IngestCtx``. No registry, no base class, no discovery.
 """
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
-
-if TYPE_CHECKING:  # pragma: no cover — import-only
-    from .ctx import IngestCtx
+from typing import Any, Callable
 
 
-def load_transform(path: Path) -> Callable[[Any, "IngestCtx"], Any]:
-    """Import ``path`` as a module and return its top-level ``transform``.
+def load_transform(path: Path) -> Callable[[Any, Any], Any]:
+    """Import ``path`` and return its top-level ``transform`` callable.
 
-    Raises:
-        FileNotFoundError: if ``path`` does not exist on disk.
-        AttributeError: if the imported module has no ``transform`` attribute.
+    Raises ``FileNotFoundError`` if missing, ``ImportError`` if the spec
+    cannot be built, ``AttributeError`` if no ``transform`` is defined.
     """
     if not path.exists():
         raise FileNotFoundError(f"transform file not found: {path}")
