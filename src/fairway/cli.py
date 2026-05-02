@@ -216,25 +216,6 @@ def manifest_finalize(layer_root: str) -> None:
                f"  ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
 
 
-def _handle_unmatched(unmatched, layer_root, *, allow_skip, dry_run):
-    """Step 9.3 pre-scan: hard-error, dry-run-print, or write _skipped log."""
-    from . import _sbatch
-    if not unmatched:
-        return
-    if not allow_skip:
-        click.echo(f"Error: {len(unmatched)} file(s) in source_glob did not "
-                   "match naming_pattern:", err=True)
-        for p in unmatched:
-            click.echo(f"  {p}", err=True)
-        sys.exit(2)
-    click.echo(f"{'Would skip' if dry_run else 'Skipping'} {len(unmatched)} "
-               "file(s) (naming_pattern mismatch):")
-    for p in unmatched:
-        click.echo(f"  {p}")
-    if not dry_run:
-        _sbatch.write_skipped_log(layer_root, unmatched, _manifest.utc_now_iso())
-
-
 @main.command()
 @click.argument("config_yaml", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True,
@@ -242,25 +223,28 @@ def _handle_unmatched(unmatched, layer_root, *, allow_skip, dry_run):
 @click.option("--allow-skip", is_flag=True,
               help="Skip files in source_glob not matching naming_pattern "
                    "(logged to manifest/_skipped/<ts>.json).")
-def submit(config_yaml: str, dry_run: bool, allow_skip: bool) -> None:
-    """Render an sbatch script and submit a Slurm array (Steps 9.2 + 9.3)."""
+@click.option("--force", is_flag=True,
+              help="Re-submit every shard, bypassing idempotent-resume skip.")
+def submit(config_yaml: str, dry_run: bool, allow_skip: bool,
+           force: bool) -> None:
+    """Render an sbatch script and submit a Slurm array (Steps 9.2–9.4)."""
     from . import _sbatch, batcher
     from .duckdb_runner import _layer_root
     config = load_config(config_yaml)
+    layer_root = _layer_root(config)
     matched, unmatched = batcher.expand_and_validate(config)
-    _handle_unmatched(unmatched, _layer_root(config),
-                      allow_skip=allow_skip, dry_run=dry_run)
+    _sbatch.handle_unmatched(unmatched, layer_root, allow_skip=allow_skip, dry_run=dry_run)
     if not matched:
-        raise click.ClickException(
-            f"No shards from source_glob={config.source_glob!r}.")
-    payload = _sbatch.shards_payload(matched, Path(config_yaml))
-    out_dir = Path("build/sbatch")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    shards_path = out_dir / f"{config.dataset_name}.shards.json"
-    shards_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    script = out_dir / f"{config.dataset_name}.sh"
-    script.write_text(_sbatch.render_script(config, len(payload["shards"]), shards_path), encoding="utf-8")
-    script.chmod(0o755)
+        raise click.ClickException(f"No shards from source_glob={config.source_glob!r}.")
+    to_submit, skipped_ok = _sbatch.filter_resumable_shards(matched, layer_root, force)
+    if dry_run:
+        click.echo(f"Would submit: {len(to_submit)} shards")
+        click.echo(f"Would skip (existing ok): {len(skipped_ok)} shards")
+    if not to_submit:
+        click.echo("All shards already complete — nothing to submit. "
+                   "Use --force to override.")
+        return
+    _, script = _sbatch.write_artifacts(config, to_submit, Path(config_yaml))
     if dry_run:
         click.echo(f"Would submit: sbatch {script}")
         return
@@ -271,9 +255,10 @@ def submit(config_yaml: str, dry_run: bool, allow_skip: bool) -> None:
     proc = subprocess.run(["sbatch", str(script)], check=True, capture_output=True, text=True)
     job_id = _sbatch.parse_array_job_id(proc.stdout)
     _sbatch.write_submission_record(
-        _layer_root(config), sbatch_script=script, array_job_id=job_id,
-        n_shards=len(payload["shards"]), ts=_manifest.utc_now_iso())
-    click.echo(f"Submitted Slurm array {job_id} with {len(payload['shards'])} tasks. Script: {script}.")
+        layer_root, sbatch_script=script, array_job_id=job_id,
+        n_shards=len(to_submit), ts=_manifest.utc_now_iso())
+    click.echo(f"Submitting {len(to_submit)} shards (skipped {len(skipped_ok)} "
+               f"existing-ok shards). Submit array {job_id}.")
 
 
 if __name__ == "__main__":

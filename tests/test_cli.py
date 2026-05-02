@@ -351,7 +351,10 @@ class TestSubmit:
         result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
         assert result.exit_code == 0, result.output
         assert calls and calls[0][0] == "sbatch"
-        assert "Submitted Slurm array 9988776" in result.output
+        # Step 9.4 message: "Submitting <N> shards (skipped <M> ...). Submit array <id>."
+        assert "Submit array 9988776" in result.output
+        assert "Submitting 2 shards" in result.output
+        assert "skipped 0 existing-ok shards" in result.output
 
         sub_dir = (submit_env["tmp"] / "store" / "raw" / "submit_demo"
                    / "manifest" / "_submissions")
@@ -428,7 +431,7 @@ class TestSubmitPreScan:
         assert result.exit_code == 0, result.output
         assert "Skipping 2 file(s)" in result.output
         assert "readme.csv" in result.output and "lower_case.csv" in result.output
-        assert "Submitted Slurm array 4242" in result.output
+        assert "Submit array 4242" in result.output
 
         skipped_dir = (dirty_submit_env["tmp"] / "store" / "raw" / "submit_demo"
                        / "manifest" / "_skipped")
@@ -472,3 +475,203 @@ class TestSubmitPreScan:
         assert not skipped_dir.exists() or not list(skipped_dir.glob("*.json")), (
             "dry-run must not write a _skipped log"
         )
+
+
+# ---------------------------------------------------------------------------
+# submit idempotent resume + --force (Step 9.4)
+# ---------------------------------------------------------------------------
+
+
+def _layer_root_from_env(env: dict[str, Path]) -> Path:
+    return env["tmp"] / "store" / "raw" / "submit_demo"
+
+
+def _ok_fragment_for(env: dict[str, Path], state: str, year: str) -> dict:
+    fpath = env["tmp"] / "inputs" / f"{state}_{year}.csv"
+    return manifest_mod.build_fragment(
+        partition_values={"state": state, "year": year},
+        source_files=[str(fpath)],
+        source_hashes=[manifest_mod.source_hash(fpath)],
+        schema=[{"name": "id", "dtype": "BIGINT"}],
+        row_count=2,
+        status="ok",
+        error=None,
+        encoding_used="utf-8",
+    )
+
+
+def _err_fragment_for(env: dict[str, Path], state: str, year: str) -> dict:
+    fpath = env["tmp"] / "inputs" / f"{state}_{year}.csv"
+    return manifest_mod.build_fragment(
+        partition_values={"state": state, "year": year},
+        source_files=[str(fpath)],
+        source_hashes=[manifest_mod.source_hash(fpath)],
+        schema=[],
+        row_count=0,
+        status="error",
+        error="boom",
+        encoding_used="utf-8",
+    )
+
+
+@pytest.fixture
+def stub_sbatch(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    from types import SimpleNamespace
+    proc = SimpleNamespace(stdout="Submitted batch job 7777\n", returncode=0)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kw: object) -> SimpleNamespace:
+        calls.append(list(cmd))
+        return proc
+
+    monkeypatch.setattr("fairway.cli.shutil.which", lambda _: "/bin/sbatch")
+    monkeypatch.setattr("fairway.cli.subprocess.run", fake_run)
+    return calls
+
+
+class TestSubmitIdempotent:
+    def test_clean_dataset_submits_all_matched_shards(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch: list[list[str]],
+    ) -> None:
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        assert "Submitting 2 shards" in result.output
+        assert "skipped 0 existing-ok shards" in result.output
+        shards = json.loads(
+            (submit_env["tmp"] / "build" / "sbatch"
+             / "submit_demo.shards.json").read_text()
+        )
+        assert len(shards["shards"]) == 2
+
+    def test_partial_dataset_skips_ok_shards(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch: list[list[str]],
+    ) -> None:
+        layer_root = _layer_root_from_env(submit_env)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "CT", "2023"), root_dir=layer_root)
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        assert "Submitting 1 shards" in result.output
+        assert "skipped 1 existing-ok shards" in result.output
+        shards = json.loads(
+            (submit_env["tmp"] / "build" / "sbatch"
+             / "submit_demo.shards.json").read_text()
+        )
+        states = {s["partition_values"]["state"] for s in shards["shards"]}
+        assert states == {"MA"}, "CT was already ok and must be skipped"
+
+    def test_source_hash_mismatch_resubmits_shard(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch: list[list[str]],
+    ) -> None:
+        layer_root = _layer_root_from_env(submit_env)
+        ct_frag = _ok_fragment_for(submit_env, "CT", "2023")
+        ct_frag["source_hashes"] = ["deadbeefdeadbeef"]  # forced mismatch
+        manifest_mod.write_fragment(ct_frag, root_dir=layer_root)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "MA", "2023"), root_dir=layer_root)
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        # Only CT (hash drift) re-submits; MA is skipped.
+        assert "Submitting 1 shards" in result.output
+        assert "skipped 1 existing-ok shards" in result.output
+        shards = json.loads(
+            (submit_env["tmp"] / "build" / "sbatch"
+             / "submit_demo.shards.json").read_text()
+        )
+        states = {s["partition_values"]["state"] for s in shards["shards"]}
+        assert states == {"CT"}, "hash-drifted CT must be re-submitted"
+
+    def test_error_status_fragment_resubmits_shard(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch: list[list[str]],
+    ) -> None:
+        layer_root = _layer_root_from_env(submit_env)
+        manifest_mod.write_fragment(
+            _err_fragment_for(submit_env, "CT", "2023"), root_dir=layer_root)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "MA", "2023"), root_dir=layer_root)
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        # status="error" is not "done" — must re-submit; MA still skipped.
+        assert "Submitting 1 shards" in result.output
+        assert "skipped 1 existing-ok shards" in result.output
+        shards = json.loads(
+            (submit_env["tmp"] / "build" / "sbatch"
+             / "submit_demo.shards.json").read_text()
+        )
+        states = {s["partition_values"]["state"] for s in shards["shards"]}
+        assert states == {"CT"}
+
+    def test_force_flag_resubmits_every_matched_shard(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        stub_sbatch: list[list[str]],
+    ) -> None:
+        layer_root = _layer_root_from_env(submit_env)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "CT", "2023"), root_dir=layer_root)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "MA", "2023"), root_dir=layer_root)
+        result = runner.invoke(
+            main, ["submit", str(submit_env["yaml"]), "--force"])
+        assert result.exit_code == 0, result.output
+        assert "Submitting 2 shards" in result.output
+        assert "skipped 0 existing-ok shards" in result.output
+
+    def test_all_ok_prints_nothing_to_submit_and_exits_zero(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _explode(*_a: object, **_kw: object) -> None:
+            raise AssertionError("sbatch must not be invoked when all shards "
+                                 "are already ok")
+        monkeypatch.setattr("fairway.cli.subprocess.run", _explode)
+        layer_root = _layer_root_from_env(submit_env)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "CT", "2023"), root_dir=layer_root)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "MA", "2023"), root_dir=layer_root)
+        result = runner.invoke(main, ["submit", str(submit_env["yaml"])])
+        assert result.exit_code == 0, result.output
+        assert "nothing to submit" in result.output.lower()
+        assert "--force" in result.output
+        sbatch_dir = submit_env["tmp"] / "build" / "sbatch"
+        assert not sbatch_dir.exists() or not list(sbatch_dir.glob("*.sh"))
+        sub_dir = layer_root / "manifest" / "_submissions"
+        assert not sub_dir.exists() or not list(sub_dir.glob("*.json"))
+
+    def test_dry_run_prints_would_submit_and_would_skip_counts(
+        self,
+        submit_env: dict[str, Path],
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _explode(*_a: object, **_kw: object) -> None:
+            raise AssertionError("sbatch must not be invoked on --dry-run")
+        monkeypatch.setattr("fairway.cli.subprocess.run", _explode)
+        layer_root = _layer_root_from_env(submit_env)
+        manifest_mod.write_fragment(
+            _ok_fragment_for(submit_env, "CT", "2023"), root_dir=layer_root)
+        result = runner.invoke(
+            main, ["submit", str(submit_env["yaml"]), "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "Would submit: 1 shards" in result.output
+        assert "Would skip (existing ok): 1 shards" in result.output
+        sub_dir = layer_root / "manifest" / "_submissions"
+        assert not sub_dir.exists() or not list(sub_dir.glob("*.json"))
+        skipped_dir = layer_root / "manifest" / "_skipped"
+        assert not skipped_dir.exists() or not list(skipped_dir.glob("*.json"))

@@ -11,9 +11,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
+import click
+
+from . import manifest
+from .batcher import ShardSpec
 from .config import Config
 
 _TEMPLATE = """\
@@ -80,6 +85,81 @@ def shards_payload(specs: list, config_yaml: Path) -> dict[str, Any]:
     return {"config": str(config_yaml.resolve()), "shards": shards}
 
 
+def write_artifacts(
+    config: Config, shards: list[ShardSpec], config_yaml: Path,
+) -> tuple[Path, Path]:
+    """Render ``shards.json`` + sbatch script under ``build/sbatch/``.
+
+    Returns ``(shards_path, script_path)``. The script is marked executable.
+    """
+    out_dir = Path("build/sbatch")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = shards_payload(shards, config_yaml)
+    shards_path = out_dir / f"{config.dataset_name}.shards.json"
+    shards_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    script = out_dir / f"{config.dataset_name}.sh"
+    script.write_text(
+        render_script(config, len(payload["shards"]), shards_path),
+        encoding="utf-8")
+    script.chmod(0o755)
+    return shards_path, script
+
+
+def _shard_resumable(shard: ShardSpec, layer_root: Path) -> bool:
+    """Step 9.4 hash-comparison gate: True iff shard's existing fragment is
+    ``status="ok"`` and every recorded ``source_hash`` matches the current
+    on-disk file hash via :func:`fairway.manifest.source_hash`."""
+    frag_path = manifest.fragment_path(layer_root, shard.shard_id)
+    if not frag_path.is_file():
+        return False
+    try:
+        frag = json.loads(frag_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if frag.get("status") != "ok":
+        return False
+    recorded_files = list(frag.get("source_files") or [])
+    recorded_hashes = list(frag.get("source_hashes") or [])
+    current_paths = [str(p) for p in shard.input_paths]
+    if recorded_files != current_paths:
+        return False
+    if len(recorded_hashes) != len(current_paths):
+        return False
+    for path, recorded in zip(current_paths, recorded_hashes):
+        try:
+            if manifest.source_hash(path) != recorded:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def filter_resumable_shards(
+    matched_shards: list[ShardSpec], layer_root: Path, force: bool,
+) -> tuple[list[ShardSpec], list[ShardSpec]]:
+    """Idempotent-resume filter (Step 9.4).
+
+    Returns ``(shards_to_submit, shards_skipped_existing_ok)``. With
+    ``force=True`` every matched shard is re-submitted (skipped list empty).
+    Otherwise a shard is skipped iff a fragment exists at
+    ``layer_root/_fragments/<shard_id>.json`` with ``status="ok"`` AND every
+    recorded ``source_hash`` matches the current file hash (in order matching
+    ``fragment.source_files``). Anything else — missing fragment, status
+    ``"error"``, hash drift, file-list drift, corrupt JSON — re-submits.
+    """
+    if force:
+        return list(matched_shards), []
+    to_submit: list[ShardSpec] = []
+    skipped: list[ShardSpec] = []
+    for shard in matched_shards:
+        if _shard_resumable(shard, layer_root):
+            skipped.append(shard)
+        else:
+            to_submit.append(shard)
+    return to_submit, skipped
+
+
 def _atomic_write_json(target: Path, payload: Any) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
@@ -112,3 +192,24 @@ def write_skipped_log(
               / f"{ts.replace(':', '-')}.json")
     _atomic_write_json(target, payload)
     return target
+
+
+def handle_unmatched(
+    unmatched: list[Path], layer_root: Path,
+    *, allow_skip: bool, dry_run: bool,
+) -> None:
+    """Step 9.3 pre-scan: hard-error, dry-run-print, or write _skipped log."""
+    if not unmatched:
+        return
+    if not allow_skip:
+        click.echo(f"Error: {len(unmatched)} file(s) in source_glob did not "
+                   "match naming_pattern:", err=True)
+        for p in unmatched:
+            click.echo(f"  {p}", err=True)
+        sys.exit(2)
+    click.echo(f"{'Would skip' if dry_run else 'Skipping'} {len(unmatched)} "
+               "file(s) (naming_pattern mismatch):")
+    for p in unmatched:
+        click.echo(f"  {p}")
+    if not dry_run:
+        write_skipped_log(layer_root, unmatched, manifest.utc_now_iso())
