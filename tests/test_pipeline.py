@@ -27,6 +27,7 @@ from pathlib import Path
 
 import yaml
 
+from fairway import manifest
 from fairway.config import load_config
 from fairway.pipeline import PipelineResult, run_pipeline
 
@@ -313,3 +314,149 @@ def test_run_pipeline_all_shards_iterates_every_partition(tmp_path: Path) -> Non
         payload = json.loads(f.read_text(encoding="utf-8"))
         assert payload["status"] == "ok"
         assert payload["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# Step 12 smoke test — end-to-end on a synthetic state×date fixture.
+# ---------------------------------------------------------------------------
+
+def _write_tsv(path: Path, header: list[str], rows: int, *, extra_col: bool) -> Path:
+    """Materialize ~1 MB of synthetic TSV in ``path``.
+
+    The ``id`` and ``value`` columns are present in every file; ``extra_col``
+    appends a third column that produces the schema-divergent shard.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        f.write("\t".join(header) + "\n")
+        for i in range(rows):
+            cells = [str(i), f"value_{i:08d}"]
+            if extra_col:
+                cells.append(f"extra_{i:08d}")
+            f.write("\t".join(cells) + "\n")
+    return path
+
+
+def test_run_pipeline_smoke_state_date_synthetic_fixture(tmp_path: Path) -> None:
+    """Step 12 smoke test — covers the full ingest pipeline end-to-end on a
+    < 100 MB synthetic fixture. Real-data scale validation is the operator's
+    responsibility, not in-loop CI.
+
+    Fixture: 4 TSVs (~1 MB each) named ``mortality_<STATE>_<YYYY-MM-DD>.tsv``
+    spanning two states × two dates. Three files share schema ``[id, value]``;
+    the fourth (NY, 2019-04-01) carries an additional ``extra`` column. The
+    NY/2019 partition is deliberately the divergent one because its
+    deterministic ``shard_id`` (sha256 prefix) sorts FIRST among the four
+    combos — its in-process ``DESCRIBE`` therefore observes only its own
+    parquet output and produces a fingerprint that includes ``extra``,
+    while subsequent shards' ``DESCRIBE`` runs intersect mixed-schema
+    parquet and converge on the ``[id, value]`` fingerprint.
+    """
+    rows_per_file = 50_000  # ~1 MB per TSV — well under the 100 MB cap.
+    inputs = tmp_path / "inputs"
+    schema_a = ["id", "value"]
+    schema_b = ["id", "value", "extra"]
+    _write_tsv(inputs / "mortality_CT_2018-03-15.tsv", schema_a, rows_per_file, extra_col=False)
+    _write_tsv(inputs / "mortality_NY_2018-03-15.tsv", schema_a, rows_per_file, extra_col=False)
+    _write_tsv(inputs / "mortality_CT_2019-04-01.tsv", schema_a, rows_per_file, extra_col=False)
+    _write_tsv(inputs / "mortality_NY_2019-04-01.tsv", schema_b, rows_per_file, extra_col=True)
+
+    # Sanity: every fixture file is between 0.5 MB and 10 MB; aggregate < 100 MB.
+    sizes = [p.stat().st_size for p in sorted(inputs.glob("*.tsv"))]
+    assert all(500_000 < s < 10 * 1024 * 1024 for s in sizes), sizes
+    assert sum(sizes) < 100 * 1024 * 1024
+
+    transform = _write_transform(tmp_path / "ds.py")
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name="ds_smoke",
+        python=transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(inputs / "*.tsv"),
+        naming_pattern=r"mortality_(?P<state>[A-Z]+)_(?P<date>\d{4}-\d{2}-\d{2})\.tsv",
+        partition_by=["state", "date"],
+        extra={"scratch_dir": str(tmp_path / "scratch"), "delimiter": "\t"},
+    )
+    config = load_config(yaml_path)
+
+    # (3) Full all-shards iteration.
+    result = run_pipeline(config, shard_index=None)
+
+    # (4f) PipelineResult shape.
+    assert isinstance(result, PipelineResult)
+    assert result.total_shards == 4
+    assert result.ok_count == 4
+    assert result.error_count == 0
+    assert result.ok_count + result.error_count == result.total_shards
+
+    dataset_root = Path(config.storage_root) / config.layer / config.dataset_name
+
+    # (4a) Output partition tree shape — Hive-style ``__key=val`` directories
+    # with at least one parquet file inside each (state, date) combo.
+    expected_partitions = {
+        ("CT", "2018-03-15"),
+        ("NY", "2018-03-15"),
+        ("CT", "2019-04-01"),
+        ("NY", "2019-04-01"),
+    }
+    for state, date in expected_partitions:
+        part_dir = dataset_root / f"__state={state}" / f"__date={date}"
+        assert part_dir.is_dir(), f"missing partition dir {part_dir}"
+        assert list(part_dir.glob("*.parquet")), f"no parquet in {part_dir}"
+
+    # (4b) One manifest fragment per shard, written by the runner under
+    # ``<dataset_root>/_fragments/<shard_id>.json``.
+    fragments = sorted(_fragment_dir(config).glob("*.json"))
+    assert len(fragments) == len(expected_partitions)
+
+    payloads = [json.loads(f.read_text(encoding="utf-8")) for f in fragments]
+
+    # (4c) Every fragment is status='ok' with non-empty schema/fingerprint.
+    for p in payloads:
+        assert p["status"] == "ok", f"unexpected error fragment: {p.get('error')!r}"
+        assert p["error"] is None
+        assert p["schema"], "ok fragment must record a schema"
+        assert p["schema_fingerprint"] and len(p["schema_fingerprint"]) == 16
+        assert p["row_count"] == rows_per_file
+
+    by_partition = {
+        (p["partition_values"]["state"], p["partition_values"]["date"]): p
+        for p in payloads
+    }
+    assert set(by_partition) == expected_partitions
+
+    # (4d) ``manifest.finalize`` materialises both merged outputs.
+    merged = manifest.finalize(dataset_root)
+    manifest_json = dataset_root / "manifest.json"
+    schema_summary_json = dataset_root / "schema_summary.json"
+    assert manifest_json.is_file()
+    assert schema_summary_json.is_file()
+    assert merged["fragment_count"] == len(expected_partitions)
+    assert merged["version"] == manifest.MANIFEST_VERSION
+    assert {f["shard_id"] for f in merged["fragments"]} == {p["shard_id"] for p in payloads}
+
+    # (4e) Schema fingerprint detection: the divergent (NY, 2019-04-01)
+    # shard's fingerprint is unique; the three same-schema shards share one.
+    divergent_fp = by_partition[("NY", "2019-04-01")]["schema_fingerprint"]
+    same_schema_fps = {
+        by_partition[k]["schema_fingerprint"]
+        for k in expected_partitions
+        if k != ("NY", "2019-04-01")
+    }
+    assert len(same_schema_fps) == 1, (
+        f"shards with identical [id, value] schema must share a fingerprint; got {same_schema_fps}"
+    )
+    assert divergent_fp not in same_schema_fps, (
+        "shard with the extra column must produce a distinct fingerprint"
+    )
+
+    # (4g) ``schema_summary.json`` reflects exactly the two unique schemas
+    # observed across shards — and only ok shards contribute.
+    summary = json.loads(schema_summary_json.read_text(encoding="utf-8"))
+    assert summary["ok_shard_count"] == len(expected_partitions)
+    summary_fingerprints = {d["fingerprint"] for d in summary["distinct_schemas"]}
+    assert summary_fingerprints == same_schema_fps | {divergent_fp}
+    assert len(summary["distinct_schemas"]) == 2
+    by_fp = {d["fingerprint"]: d for d in summary["distinct_schemas"]}
+    assert by_fp[divergent_fp]["shard_count"] == 1
+    assert by_fp[next(iter(same_schema_fps))]["shard_count"] == 3
