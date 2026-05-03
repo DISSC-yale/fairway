@@ -1,33 +1,48 @@
+# Build + caches
 build/
-.reports
-codemaps
-teams
-/notes/
-/site/
-/data/
-/logs/
 __pycache__/
 *.pyc
 *.egg-info/
-.DS_Store
 .coverage
+coverage.json
+coverage.xml
 htmlcov/
 dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local-only
+.DS_Store
+.fairway_cache/
+.venv/
+
+# v0.2 era directories (left untracked)
+.reports
+codemaps
+teams
+/site/
+/data/
+/logs/
+/manifest/
 mock_apptainer
 tests/output
-config/sales_schema.yaml
-/manifest/
-.fairway_cache/
+config/
 
-# Environment and secrets
+# User notes (not tracked by policy)
+/notes/
+notes
+
+# Environment + secrets
 .env
 .env.*
 
-# Coverage artifacts
-coverage.json
-coverage.xml
-config/census_1950.yaml
-.reports/security-analysis.md
-.claude
-notes
+# Forge debate review snapshots leaked to repo root
+.review_*.py
+
+# Conversation exports (large, scratch)
+2026-*-git-pub*.txt
+
+# Per-user agent state — DO commit .claude/{commands,hooks}, NOT these
+.claude/settings.local.json
+.claude/worktrees/
