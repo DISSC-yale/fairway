@@ -344,13 +344,15 @@ def test_run_pipeline_smoke_state_date_synthetic_fixture(tmp_path: Path) -> None
 
     Fixture: 4 TSVs (~1 MB each) named ``mortality_<STATE>_<YYYY-MM-DD>.tsv``
     spanning two states × two dates. Three files share schema ``[id, value]``;
-    the fourth (NY, 2019-04-01) carries an additional ``extra`` column. The
-    NY/2019 partition is deliberately the divergent one because its
-    deterministic ``shard_id`` (sha256 prefix) sorts FIRST among the four
-    combos — its in-process ``DESCRIBE`` therefore observes only its own
-    parquet output and produces a fingerprint that includes ``extra``,
-    while subsequent shards' ``DESCRIBE`` runs intersect mixed-schema
-    parquet and converge on the ``[id, value]`` fingerprint.
+    the fourth (NY, 2019-04-01) carries an additional ``extra`` column.
+
+    Step 13.5 correctness fix: each shard's ``DESCRIBE`` reads ONLY its own
+    Hive partition leaf (``__state=<S>/__date=<D>/**/*.parquet``), so the
+    schema fingerprint depends solely on what THAT shard wrote — not on
+    sibling shards visible to a dataset-root glob. The divergent shard's
+    fingerprint must therefore be unique regardless of ``shard_id`` sort
+    order. (See companion tests for the determinism / reverse-order
+    invariants.)
     """
     rows_per_file = 50_000  # ~1 MB per TSV — well under the 100 MB cap.
     inputs = tmp_path / "inputs"
@@ -460,3 +462,104 @@ def test_run_pipeline_smoke_state_date_synthetic_fixture(tmp_path: Path) -> None
     by_fp = {d["fingerprint"]: d for d in summary["distinct_schemas"]}
     assert by_fp[divergent_fp]["shard_count"] == 1
     assert by_fp[next(iter(same_schema_fps))]["shard_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Step 13.5 — schema_fingerprint correctness across orderings.
+#
+# The pre-fix runner globbed the dataset root for ``DESCRIBE``; under
+# Slurm-array concurrency the recorded fingerprint depended on which
+# sibling shards happened to be visible. The fix narrows ``DESCRIBE`` to
+# the shard's own Hive partition leaf, so fingerprints must be:
+#
+# * deterministic — same fixture run twice produces byte-identical fps;
+# * order-independent — running shards individually in any order
+#   produces the same fp each shard produces in all-shards mode.
+# ---------------------------------------------------------------------------
+
+def _build_smoke_config(tmp_path: Path, *, dataset_name: str) -> object:
+    """Materialise the Step 12 four-shard state×date fixture in ``tmp_path``."""
+    inputs = tmp_path / "inputs"
+    schema_a = ["id", "value"]
+    schema_b = ["id", "value", "extra"]
+    rows_per_file = 2_000  # smaller than smoke (≪ 1 MB) — these tests run more iterations.
+    _write_tsv(inputs / "mortality_CT_2018-03-15.tsv", schema_a, rows_per_file, extra_col=False)
+    _write_tsv(inputs / "mortality_NY_2018-03-15.tsv", schema_a, rows_per_file, extra_col=False)
+    _write_tsv(inputs / "mortality_CT_2019-04-01.tsv", schema_a, rows_per_file, extra_col=False)
+    _write_tsv(inputs / "mortality_NY_2019-04-01.tsv", schema_b, rows_per_file, extra_col=True)
+    transform = _write_transform(tmp_path / "ds.py")
+    yaml_path = _write_config(
+        tmp_path / "ds.yaml",
+        dataset_name=dataset_name,
+        python=transform,
+        storage_root=tmp_path / "store",
+        source_glob=str(inputs / "*.tsv"),
+        naming_pattern=r"mortality_(?P<state>[A-Z]+)_(?P<date>\d{4}-\d{2}-\d{2})\.tsv",
+        partition_by=["state", "date"],
+        extra={"scratch_dir": str(tmp_path / "scratch"), "delimiter": "\t"},
+    )
+    return load_config(yaml_path)
+
+
+def test_schema_fingerprints_are_byte_identical_across_repeated_runs(
+    tmp_path: Path,
+) -> None:
+    """Running the same pipeline twice yields identical fingerprints per shard.
+
+    Determinism gate: the fix must NOT introduce any run-to-run variance
+    (e.g. dependence on filesystem mtimes, file enumeration order, or
+    DuckDB session state).
+    """
+    config_a = _build_smoke_config(tmp_path / "run_a", dataset_name="ds_det_a")
+    config_b = _build_smoke_config(tmp_path / "run_b", dataset_name="ds_det_b")
+
+    res_a = run_pipeline(config_a, shard_index=None)
+    res_b = run_pipeline(config_b, shard_index=None)
+
+    assert res_a.ok_count == 4 and res_b.ok_count == 4
+    fp_a = {r.schema_fingerprint for r in res_a.shard_results}
+    fp_b = {r.schema_fingerprint for r in res_b.shard_results}
+    # Same fingerprints (as a set) — same divergent + same same-schema fp.
+    assert fp_a == fp_b, (fp_a, fp_b)
+    # Two distinct fingerprints overall: the divergent NY/2019 + the shared one.
+    assert len(fp_a) == 2
+
+
+def test_schema_fingerprints_match_when_shards_run_in_reverse_order(
+    tmp_path: Path,
+) -> None:
+    """Per-shard fingerprints must be invariant to execution order.
+
+    Runs once with ``shard_index=None`` (the reference), then re-runs
+    every shard individually in REVERSE ``shard_id`` order and asserts
+    the per-partition fingerprint matches the reference for every shard.
+    This is the property that the broken pre-fix DESCRIBE-over-root
+    behavior could NOT satisfy.
+    """
+    config_ref = _build_smoke_config(tmp_path / "ref", dataset_name="ds_ref")
+    ref = run_pipeline(config_ref, shard_index=None)
+    assert ref.ok_count == 4
+    ref_by_part = {
+        (
+            json.loads(p.read_text(encoding="utf-8"))["partition_values"]["state"],
+            json.loads(p.read_text(encoding="utf-8"))["partition_values"]["date"],
+        ): json.loads(p.read_text(encoding="utf-8"))["schema_fingerprint"]
+        for p in sorted(_fragment_dir(config_ref).glob("*.json"))
+    }
+
+    config_rev = _build_smoke_config(tmp_path / "rev", dataset_name="ds_rev")
+    # Walk shard_index in REVERSE: 3, 2, 1, 0.
+    rev_by_part: dict[tuple[str, str], str] = {}
+    for idx in range(3, -1, -1):
+        result = run_pipeline(config_rev, shard_index=idx)
+        assert result.ok_count == 1, result.shard_results
+        # The single freshly-written fragment carries this iteration's outcome.
+        # Match it via partition_values (independent of fragment filename).
+        for frag in _fragment_dir(config_rev).glob("*.json"):
+            payload = json.loads(frag.read_text(encoding="utf-8"))
+            key = (payload["partition_values"]["state"], payload["partition_values"]["date"])
+            rev_by_part[key] = payload["schema_fingerprint"]
+
+    assert set(rev_by_part) == set(ref_by_part)
+    for key, ref_fp in ref_by_part.items():
+        assert rev_by_part[key] == ref_fp, (key, ref_fp, rev_by_part[key])

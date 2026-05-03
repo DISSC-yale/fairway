@@ -64,10 +64,28 @@ def _configure(con: Any, ctx: "IngestCtx") -> None:
     con.execute(f"PRAGMA temp_directory='{tmp}'")
 
 
-def _describe(con: Any, output_path: Path) -> list[dict[str, str]]:
-    glob = str(output_path).replace("'", "''") + "/**/*.parquet"
+def _describe_shard_output(
+    con: Any,
+    output_root: Path,
+    partition_values: dict[str, str],
+    partition_by: list[str],
+) -> list[dict[str, str]]:
+    """DESCRIBE only the parquet leaf written by THIS shard.
+
+    Globbing the dataset root would let DuckDB intersect schemas across
+    sibling shards (non-deterministic under Slurm-array concurrency). We
+    join ``__<key>=<value>`` directories onto ``output_root`` in the
+    same order as ``config.partition_by`` (DuckDB's ``write_parquet``
+    Hive order) and glob only that leaf — sub-partition levels are
+    picked up by the recursive ``**``. ``hive_partitioning=true``
+    reconstitutes partition columns in the schema view.
+    """
+    leaf = output_root
+    for k in partition_by:
+        leaf = leaf / f"__{k}={partition_values[k]}"
+    pattern = str(leaf).replace("'", "''") + "/**/*.parquet"
     rows = con.sql(
-        f"DESCRIBE SELECT * FROM read_parquet('{glob}')"
+        f"DESCRIBE SELECT * FROM read_parquet('{pattern}', hive_partitioning=true)"
     ).fetchall()
     return [{"name": r[0], "dtype": r[1]} for r in rows]
 
@@ -153,7 +171,9 @@ def run_shard(con: Any, ctx: "IngestCtx") -> ShardResult:
             overwrite=True,
         )
 
-        schema = _describe(con, ctx.output_path)
+        schema = _describe_shard_output(
+            con, ctx.output_path, active_ctx.partition_values, list(cfg.partition_by)
+        )
         fp = manifest.schema_fingerprint(schema)
         row_count = int(rel.count("*").fetchone()[0])
         fragment = manifest.build_fragment(
