@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -19,6 +20,33 @@ class ColumnRenameCollision(RuntimeError):
     def __init__(self, originals: list[str], cleaned: str) -> None:
         super().__init__(f"Type A collision: {originals!r} -> {cleaned!r}")
         self.originals, self.cleaned = originals, cleaned
+
+
+class ZipSlipError(ValueError):
+    """A zip member's resolved path escapes the extraction root or is a symlink.
+
+    Raised by :func:`unzip_inputs` when an archive contains a path-traversal
+    entry (e.g. ``../escape.txt``) or a symlink entry — both can be used to
+    write outside the intended extraction directory. v0.2 had this guard
+    (commits f481f5b, 206f93f); restored after forge code-review (Step 13.6).
+    """
+
+    def __init__(self, member: str, reason: str) -> None:
+        super().__init__(f"Refusing unsafe zip member {member!r}: {reason}")
+        self.member, self.reason = member, reason
+
+
+def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:
+    """Detect a Unix-style symlink entry in a zip archive.
+
+    Unix-zip entries encode the file type in the upper 4 bits of the
+    high 16 bits of ``external_attr``; ``0xA`` is ``S_IFLNK``.
+    ``create_system == 3`` identifies the entry as Unix-originated.
+    """
+    return (
+        info.create_system == 3
+        and ((info.external_attr >> 28) & 0xF) == 0xA
+    )
 
 
 def default_ingest_read_only(con: Any, ctx: "IngestCtx") -> Any:
@@ -66,14 +94,39 @@ def apply_type_a(rel: Any) -> Any:
 def unzip_inputs(zip_paths: list[Path], scratch_dir: Path,
                  inner_pattern: str = "*.csv|*.tsv|*.txt",
                  password_file: Path | None = None) -> list[Path]:
+    """Extract zip archives with Zip Slip + symlink protection.
+
+    Each member is validated before extraction:
+
+    * Symlink entries (Unix file-type ``S_IFLNK``) are rejected outright.
+    * Each member's resolved path must stay within the per-archive target
+      directory; ``../`` entries are rejected.
+
+    A failing archive raises :class:`ZipSlipError` naming the offending
+    member; no partial extraction is left in place beyond the members that
+    had already passed validation when the bad member was reached. Members
+    are extracted one-by-one with :meth:`zipfile.ZipFile.extract` (NOT
+    ``extractall``) to keep the validation gate authoritative.
+    """
     patterns = [p.strip() for p in inner_pattern.split("|") if p.strip()]
     pwd = password_file.read_bytes().strip() if password_file else None
     extracted: list[Path] = []
     for zp in zip_paths:
         target = scratch_dir / zp.stem
         target.mkdir(parents=True, exist_ok=True)
+        target_root = os.path.realpath(target)
         with zipfile.ZipFile(zp) as zf:
-            zf.extractall(path=target, pwd=pwd)
+            for info in zf.infolist():
+                if _is_zip_symlink(info):
+                    raise ZipSlipError(info.filename, "symlink entries forbidden")
+                # Resolve member's eventual on-disk location; must stay
+                # within ``target_root``. ``os.path.realpath`` collapses
+                # ``..`` components and any pre-existing symlinks.
+                dest = os.path.realpath(os.path.join(target_root, info.filename))
+                if dest != target_root and not dest.startswith(target_root + os.sep):
+                    raise ZipSlipError(
+                        info.filename, "path escapes extraction root")
+                zf.extract(info, path=target, pwd=pwd)
         for p in target.rglob("*"):
             if p.is_file() and any(fnmatch.fnmatch(p.name, pat) for pat in patterns):
                 extracted.append(p)

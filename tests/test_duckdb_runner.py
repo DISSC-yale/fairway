@@ -190,6 +190,59 @@ def test_run_shard_storage_layer_override_is_respected(tmp_path: Path) -> None:
     assert not (cfg.storage_root / "raw" / cfg.dataset_name / "_fragments").exists()
 
 
+def test_run_shard_does_not_rerun_pipeline_for_row_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step 13.6 forge-review regression: ``run_shard`` must NOT call
+    ``rel.count('*')`` AFTER ``write_parquet`` — DuckDB relations are lazy
+    and re-executing them would re-run the entire transform + Type A +
+    validations + sort pipeline a second time. Instead, ``row_count`` is
+    derived from the parquet leaf we just wrote.
+
+    We monkey-patch :meth:`duckdb.DuckDBPyRelation.count` and
+    :meth:`duckdb.DuckDBPyRelation.write_parquet` to record their calls in
+    invocation order. The validations step legitimately uses ``rel.count``
+    once *before* ``write_parquet``; the regression is any ``count`` call
+    *after* ``write_parquet`` (the previously redundant row-count step).
+    """
+    csv = tmp_path / "CT_2018-03-15.csv"
+    csv.write_text(
+        "id,name\n1,a\n2,b\n3,c\n4,d\n5,e\n", encoding="utf-8")
+    transform = _write_transform(tmp_path / "ds.py")
+    cfg = _make_config(tmp_path, transform)
+    ctx = _make_ctx(tmp_path, cfg, csv)
+
+    events: list[str] = []
+    real_count = duckdb.DuckDBPyRelation.count
+    real_write_parquet = duckdb.DuckDBPyRelation.write_parquet
+
+    def spy_count(self: duckdb.DuckDBPyRelation, *args: object,
+                  **kwargs: object) -> object:
+        events.append("count")
+        return real_count(self, *args, **kwargs)
+
+    def spy_write_parquet(self: duckdb.DuckDBPyRelation, *args: object,
+                          **kwargs: object) -> object:
+        events.append("write_parquet")
+        return real_write_parquet(self, *args, **kwargs)
+
+    monkeypatch.setattr(duckdb.DuckDBPyRelation, "count", spy_count)
+    monkeypatch.setattr(
+        duckdb.DuckDBPyRelation, "write_parquet", spy_write_parquet)
+
+    con = duckdb.connect(":memory:")
+    result = run_shard(con, ctx)
+
+    assert result.status == "ok", result.error
+    assert result.row_count == 5, "row_count must reflect parquet contents"
+    assert "write_parquet" in events, "write_parquet was not invoked"
+    write_idx = events.index("write_parquet")
+    post_write_counts = [e for e in events[write_idx + 1:] if e == "count"]
+    assert post_write_counts == [], (
+        "rel.count must not be invoked after write_parquet; "
+        f"event order was {events!r}")
+
+
 @pytest.mark.parametrize("apply_type_a", [True, False])
 def test_run_shard_apply_type_a_flag(tmp_path: Path, apply_type_a: bool) -> None:
     csv = tmp_path / "CT_2018-03-15.csv"

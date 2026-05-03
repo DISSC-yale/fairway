@@ -8,6 +8,6 @@
 #SBATCH --output=logs/fairway-{dataset}-%A_%a.out
 set -euo pipefail
 mkdir -p logs
-cd {root}
+cd "{root}"
 source .venv/bin/activate
-exec python -m fairway run --shards-file {shards} --shard-index $SLURM_ARRAY_TASK_ID
+exec python -m fairway run --shards-file "{shards}" --shard-index $SLURM_ARRAY_TASK_ID

@@ -175,7 +175,19 @@ def run_shard(con: Any, ctx: "IngestCtx") -> ShardResult:
             con, ctx.output_path, active_ctx.partition_values, list(cfg.partition_by)
         )
         fp = manifest.schema_fingerprint(schema)
-        row_count = int(rel.count("*").fetchone()[0])
+        # Read row_count from the parquet files we just wrote rather than
+        # ``rel.count("*")`` — the latter would re-execute the entire lazy
+        # transform + Type A + validations + sort pipeline a second time.
+        # Globbing the per-shard leaf (same scope as ``_describe_shard_output``)
+        # keeps the count scoped to this shard and avoids cross-shard reads.
+        leaf = ctx.output_path
+        for k in cfg.partition_by:
+            leaf = leaf / f"__{k}={active_ctx.partition_values[k]}"
+        count_pattern = str(leaf).replace("'", "''") + "/**/*.parquet"
+        row_count = int(con.sql(
+            f"SELECT COUNT(*) FROM read_parquet('{count_pattern}', "
+            f"hive_partitioning=true)"
+        ).fetchone()[0])
         fragment = manifest.build_fragment(
             partition_values=ctx.partition_values,
             source_files=sources,

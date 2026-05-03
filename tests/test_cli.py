@@ -309,6 +309,12 @@ class TestSubmit:
         assert "#SBATCH --output=logs/fairway-submit_demo-%A_%a.out" in body
         assert "python -m fairway run --shards-file" in body
         assert "$SLURM_ARRAY_TASK_ID" in body
+        # Step 13.6 forge-review fix: paths must be double-quoted in the
+        # rendered script so that any space in ``cwd`` or shards-file path
+        # cannot break ``cd`` or argv splitting.
+        assert 'cd "' in body, "rendered script must quote the cd target"
+        assert '--shards-file "' in body, (
+            "rendered script must quote the --shards-file value")
 
         sub_dir = (submit_env["tmp"] / "store" / "raw" / "submit_demo"
                    / "manifest" / "_submissions")

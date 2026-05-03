@@ -1,6 +1,7 @@
 """Tests for :mod:`fairway.defaults` (read, Type A rename, unzip)."""
 from __future__ import annotations
 
+import stat
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -12,6 +13,7 @@ from fairway.config import Config
 from fairway.ctx import IngestCtx
 from fairway.defaults import (
     ColumnRenameCollision,
+    ZipSlipError,
     apply_type_a,
     default_ingest_read_only,
     unzip_inputs,
@@ -143,5 +145,65 @@ def test_unzip_inputs_password_protected(tmp_path: Path) -> None:
     scratch = tmp_path / "scratch_pwd"
     scratch.mkdir()
     out = unzip_inputs([enc_zip], scratch, inner_pattern="*.csv", password_file=pwd_file)
+    assert len(out) == 1
+    assert out[0].read_text() == "a,b\n1,2\n"
+
+
+# ---------------------------------------------------------------------------
+# Step 13.6 — Zip Slip + symlink protection (forge-review regression)
+# ---------------------------------------------------------------------------
+
+
+def test_unzip_inputs_rejects_path_traversal(tmp_path: Path) -> None:
+    """An archive whose member name escapes the target dir must be refused.
+
+    We craft the ZipInfo manually with name ``../escape.txt`` because
+    ``ZipFile.write`` would normalize the arcname.
+    """
+    bad_zip = tmp_path / "evil.zip"
+    with zipfile.ZipFile(bad_zip, "w") as zf:
+        info = zipfile.ZipInfo("../escape.txt")
+        zf.writestr(info, "pwn\n")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    with pytest.raises(ZipSlipError) as ei:
+        unzip_inputs([bad_zip], scratch, inner_pattern="*.txt")
+    assert "../escape.txt" in str(ei.value)
+    assert "escapes" in str(ei.value).lower()
+    # The escape file must NOT have been written to scratch's parent.
+    assert not (scratch.parent / "escape.txt").exists()
+
+
+def test_unzip_inputs_rejects_symlink_member(tmp_path: Path) -> None:
+    """A symlink entry (Unix create_system + S_IFLNK) must be refused.
+
+    We craft a ZipInfo with ``create_system=3`` (Unix) and an ``external_attr``
+    whose upper-4-bits encode ``S_IFLNK`` (0xA). The data payload is the
+    symlink target — a classic write-anywhere vector.
+    """
+    bad_zip = tmp_path / "linky.zip"
+    with zipfile.ZipFile(bad_zip, "w") as zf:
+        info = zipfile.ZipInfo("link.txt")
+        info.create_system = 3  # Unix
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "/etc/passwd")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    with pytest.raises(ZipSlipError) as ei:
+        unzip_inputs([bad_zip], scratch, inner_pattern="*.txt")
+    assert "link.txt" in str(ei.value)
+    assert "symlink" in str(ei.value).lower()
+
+
+def test_unzip_inputs_normal_archive_still_extracts(tmp_path: Path) -> None:
+    """The happy path is unaffected by the new validation gate."""
+    payload = tmp_path / "raw.csv"
+    payload.write_text("a,b\n1,2\n", encoding="utf-8")
+    zp = tmp_path / "ok.zip"
+    with zipfile.ZipFile(zp, "w") as zf:
+        zf.write(payload, arcname="raw.csv")
+    scratch = tmp_path / "scratch_ok"
+    scratch.mkdir()
+    out = unzip_inputs([zp], scratch, inner_pattern="*.csv")
     assert len(out) == 1
     assert out[0].read_text() == "a,b\n1,2\n"
