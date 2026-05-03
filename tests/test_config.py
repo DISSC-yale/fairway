@@ -10,7 +10,6 @@ import yaml
 from fairway.config import (
     Config,
     ConfigError,
-    ConfigValidationError,
     ExpectedColumns,
     Validations,
     load_config,
@@ -150,13 +149,6 @@ def test_legacy_field_rejected(tmp_path, legacy_field, expected_message):
     with pytest.raises(ConfigError) as exc:
         load_config(_write(tmp_path, data))
     assert str(exc.value) == expected_message
-
-
-# -- ConfigValidationError compat alias --------------------------------------
-
-
-def test_config_validation_error_is_config_error_alias():
-    assert ConfigValidationError is ConfigError
 
 
 # -- top-level shape ---------------------------------------------------------

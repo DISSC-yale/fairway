@@ -19,10 +19,6 @@ class ConfigError(Exception):
     """Raised when a YAML config is invalid or uses removed v0.2 fields."""
 
 
-# Back-compat alias for legacy test imports.
-ConfigValidationError = ConfigError
-
-
 @dataclass(frozen=True)
 class RangeSpec:
     min: float | None = None
@@ -202,15 +198,3 @@ def load_config(path: Path | str) -> Config:
     )
 
 
-# Legacy import shims so pre-rewrite tests collect (they raise on use).
-class TableConfig:  # pragma: no cover - legacy import shim
-    def __init__(self, *_a: Any, **_kw: Any) -> None:
-        raise ConfigError("TableConfig was removed in v0.3")
-
-    @classmethod
-    def from_dict(cls, _d: dict) -> "TableConfig":
-        raise ConfigError("TableConfig was removed in v0.3")
-
-
-def validate_config_paths(_config: Any) -> None:  # pragma: no cover - legacy shim
-    raise ConfigError("validate_config_paths was removed in v0.3")

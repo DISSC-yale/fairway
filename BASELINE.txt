@@ -125,17 +125,23 @@ post-rewrite codebase. The v3.2 forge-review fix floors the threshold at
   test_config, test_paths, test_defaults, test_validations,
   test_transform_loader, test_cli — 190 passed, 2 xfailed)
 - `new_threshold`: `max(60, 73 - 5)` = 68
-- Final source LOC: `find src/fairway -name '*.py' -print0 | xargs -0 wc -l | tail -1` → 2744 total
-- Final test count: `find tests -name 'test_*.py' | wc -l` → 48
 
-Note on full-tree pytest run (`tests/ -m "not spark and not hpc"`): TOTAL
-coverage is 86% but ~166 pre-existing v0.2 tests fail at runtime (e.g.
-`test_archive_cache_paths`, `test_fixed_width::TestDuckDBTypeEnforcement`,
-`unit/test_engines`, `unit/test_table_config`, `test_run_metadata`,
-`test_signal_finalization`, `test_templates`, `test_preprocessing`, etc.)
-because they reference deleted v0.2 surfaces (DuckDBEngine, schema_pipeline,
-old Config/TableConfig classes, run-metadata helpers, removed templates).
-Step 13's final tidy will cull these. The threshold is anchored to the
-focused (passing) v0.3-clean test set's coverage so the gate is meaningful
-under the current rewrite state, not gamed by the higher full-tree number
-that includes coverage from modules exercised by failing tests.
+### Step 13 final-tidy snapshot (2026-05-02)
+
+After culling pre-rewrite v0.2 test files, deleting four dead source
+modules (`hpc.py`, `logging_config.py`, `templates.py`,
+`generate_test_data.py`), removing the v0.2 import shims
+(`IngestionPipeline` in `pipeline.py`, `TableConfig` /
+`validate_config_paths` / `ConfigValidationError` in `config.py`,
+`ManifestStore` / `_get_file_hash_static` in `manifest.py`), and
+trimming the dead test classes from `test_fixed_width.py` /
+`test_manifest.py` plus stale fixtures from `tests/conftest.py`:
+
+- `final_source_loc`: 2321  (was 2744; cap ≤ 2500) — `find src/fairway -name '*.py' -print0 | xargs -0 wc -l | tail -1`
+- `final_test_count`: 13  (was 48; cap ≤ 20) — `find tests -name 'test_*.py' | wc -l`
+- `final_coverage_pct`: 91.5  (target ≥ 68 — the Step 11.5 gate) — measured from `pytest tests/ -m "not spark and not hpc"` with all 211 tests passing on the trimmed surface
+
+The full-tree v0.2 noise that Step 11.5 had to anchor *around* is now
+gone, so the focused-set vs full-tree distinction in the previous
+section no longer applies — every collected test now exercises the
+v0.3 surface, and coverage is honestly measured on the live code.

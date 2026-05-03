@@ -149,21 +149,3 @@ def run_pipeline(
         error_count=err,
         shard_results=results,
     )
-
-
-# --- Transitional v0.2 shim ---------------------------------------------------
-# A handful of pre-rewrite tests still ``from fairway.pipeline import
-# IngestionPipeline`` at module scope; without an importable symbol the
-# collect gate breaks. The class is intentionally non-functional — any
-# instantiation surfaces a clear ``NotImplementedError`` pointing at the
-# replacement entry point. Removed when the pre-rewrite test modules are
-# culled in the Step 9 / Step 11 cleanup waves.
-class IngestionPipeline:  # pragma: no cover - shim
-    """Deprecated v0.2 shim. New code: :func:`run_pipeline`."""
-
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise NotImplementedError(
-            "IngestionPipeline removed in v0.3 rewrite — use "
-            "fairway.pipeline.run_pipeline(config) instead"
-        )
-

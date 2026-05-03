@@ -199,22 +199,3 @@ def finalize(root_dir: Path | str) -> dict[str, Any]:
     return merged
 
 
-# Transitional shims — kept ONLY so ``pipeline.py`` and ``cli.py`` (still on the
-# v0.2 manifest API) remain importable until they are migrated to the fragment
-# API in Step 8 / Step 9. Any actual call raises NotImplementedError.
-_REMOVED = "removed in v0.3 fragment manifest; use fairway.manifest.write_fragment / finalize"
-
-
-def _get_file_hash_static(file_path: str, fast_check: bool = True) -> str | None:
-    """Deprecated v0.2 shim. New code: :func:`source_hash`."""
-    raise NotImplementedError(f"_get_file_hash_static {_REMOVED}")
-
-
-class ManifestStore:
-    """Deprecated v0.2 shim. New code: :func:`write_fragment` / :func:`finalize`."""
-
-    def __init__(self, manifest_dir: str = "manifest") -> None:
-        self.manifest_dir = manifest_dir
-
-    def __getattr__(self, name: str) -> Any:
-        raise NotImplementedError(f"ManifestStore.{name} {_REMOVED}")
