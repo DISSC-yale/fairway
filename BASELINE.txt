@@ -111,3 +111,31 @@ addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml:build/co
 Step 0.5 will strip the `--cov-fail-under=67` token and write back; Step
 11.5 will re-anchor a new `--cov-fail-under = max(60, M-5)` based on
 post-rewrite measured coverage `M`.
+
+## After
+
+Captured 2026-05-02 on branch `rewrite/v0.3` after Step 11.5 — coverage
+gate re-anchored from the v0.2 hardcoded 67% to a value derived from the
+post-rewrite codebase. The v3.2 forge-review fix floors the threshold at
+60% to prevent silent ratchet-down across future rewrites.
+
+- `original_addopts`: `--cov=src/fairway --cov-report=term-missing --cov-report=xml:build/coverage/coverage.xml --cov-report=html:build/coverage/html --cov-fail-under=67 --basetemp=build/test-tmp`
+- `measured_coverage_pct`: 73 (focused v0.3-clean test set: test_pipeline,
+  test_batcher, test_manifest, test_duckdb_runner, test_summarize,
+  test_config, test_paths, test_defaults, test_validations,
+  test_transform_loader, test_cli — 190 passed, 2 xfailed)
+- `new_threshold`: `max(60, 73 - 5)` = 68
+- Final source LOC: `find src/fairway -name '*.py' -print0 | xargs -0 wc -l | tail -1` → 2744 total
+- Final test count: `find tests -name 'test_*.py' | wc -l` → 48
+
+Note on full-tree pytest run (`tests/ -m "not spark and not hpc"`): TOTAL
+coverage is 86% but ~166 pre-existing v0.2 tests fail at runtime (e.g.
+`test_archive_cache_paths`, `test_fixed_width::TestDuckDBTypeEnforcement`,
+`unit/test_engines`, `unit/test_table_config`, `test_run_metadata`,
+`test_signal_finalization`, `test_templates`, `test_preprocessing`, etc.)
+because they reference deleted v0.2 surfaces (DuckDBEngine, schema_pipeline,
+old Config/TableConfig classes, run-metadata helpers, removed templates).
+Step 13's final tidy will cull these. The threshold is anchored to the
+focused (passing) v0.3-clean test set's coverage so the gate is meaningful
+under the current rewrite state, not gamed by the higher full-tree number
+that includes coverage from modules exercised by failing tests.
