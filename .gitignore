@@ -1,4 +1,6 @@
 # Build + caches
+.claude 
+.agent-sync
 build/
 __pycache__/
 *.pyc
