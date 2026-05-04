@@ -1,94 +1,94 @@
-"""Shared pytest configuration and fixtures for Fairway tests."""
+"""Shared pytest configuration for Fairway tests (v0.3).
+
+Three responsibilities:
+
+1. Repo-root leak detector. Snapshot ``os.listdir(repo_root)`` at
+   ``pytest_configure`` and diff again at ``pytest_terminal_summary``;
+   anything new (excluding sanctioned build/cache dirs) is flagged so
+   we catch tests that scatter manifest / logs / cache into the repo.
+2. Per-test ``FAIRWAY_HOME`` / ``FAIRWAY_SCRATCH`` isolation via an
+   autouse fixture; opt out with ``@pytest.mark.no_fairway_home`` for
+   resolver-level tests that exercise unset-env paths directly.
+3. Per-session basetemp cleanup. The ``--basetemp=build/test-tmp``
+   addopts setting isolates pytest temp dirs; this conftest removes the
+   directory at session teardown so successive runs don't accumulate
+   stale per-test scratch trees.
+"""
+from __future__ import annotations
+
 import os
-import pytest
+import shutil
 from pathlib import Path
 
+import pytest
 
-# ============ PySpark Skip Policy (RULE-113) ============
+
+_repo_root_baseline: "set[str] | None" = None
+
+
+def pytest_configure(config):
+    """Bootstrap ``build/coverage`` and snapshot repo root for leak detection."""
+    global _repo_root_baseline
+    repo_root = Path(__file__).parent.parent
+    (repo_root / "build" / "coverage").mkdir(parents=True, exist_ok=True)
+    try:
+        _repo_root_baseline = set(os.listdir(repo_root))
+    except OSError:
+        _repo_root_baseline = None
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Remove ``build/test-tmp`` after each pytest session.
+
+    The basetemp directory is created fresh per session at
+    ``--basetemp=build/test-tmp``; without explicit cleanup pytest keeps
+    the last 3 runs' worth of per-test directories around. We delete
+    the entire tree so a re-run starts clean and disk usage stays
+    bounded.
+    """
+    repo_root = Path(__file__).parent.parent
+    basetemp = repo_root / "build" / "test-tmp"
+    if basetemp.exists():
+        shutil.rmtree(basetemp, ignore_errors=True)
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Warn when PySpark tests were skipped (local dev without Spark/Java)."""
-    skipped = terminalreporter.stats.get("skipped", [])
-    spark_skips = [s for s in skipped if "pyspark" in str(getattr(s, "longrepr", "")).lower()]
-    if spark_skips:
+    """Flag any new repo-root entries created during the test session."""
+    if _repo_root_baseline is None:
+        return
+    repo_root = Path(__file__).parent.parent
+    ignored = {
+        "build", ".pytest_cache", ".ruff_cache", ".venv",
+        "__pycache__", ".reports", "htmlcov",
+        "coverage.xml", "coverage.json",
+    }
+    try:
+        after = set(os.listdir(repo_root))
+    except OSError:
+        return
+    leaked = sorted((after - _repo_root_baseline) - ignored)
+    if leaked:
         terminalreporter.write_line(
-            f"WARNING: {len(spark_skips)} PySpark test(s) skipped "
-            f"— run `make test-docker` for full coverage",
-            yellow=True,
+            f"TEST LEAK DETECTED — new repo-root entries after session: {leaked}",
+            red=True,
         )
 
 
-def pytest_collection_modifyitems(config, items):
-    """In Docker (FAIRWAY_TEST_ENV=docker), convert PySpark skips to failures."""
-    if os.environ.get("FAIRWAY_TEST_ENV") != "docker":
+@pytest.fixture(autouse=True)
+def _fairway_home(request, tmp_path, monkeypatch):
+    """Point FAIRWAY_HOME and FAIRWAY_SCRATCH at per-test tmp dirs.
+
+    Autouse so every test gets an isolated state root; opt out with
+    ``@pytest.mark.no_fairway_home`` for resolver tests that need to
+    exercise the env-unset / platformdirs fallback path.
+    """
+    if request.node.get_closest_marker("no_fairway_home"):
+        yield
         return
-    for item in items:
-        for marker in item.iter_markers("skip"):
-            reason = marker.kwargs.get("reason", "")
-            if "pyspark" in reason.lower():
-                item.add_marker(pytest.mark.xfail(
-                    reason=f"FAIRWAY_TEST_ENV=docker: PySpark must be available ({reason})",
-                    strict=True,
-                ))
-
-
-# ============ Path Fixtures ============
-@pytest.fixture
-def fixtures_dir():
-    """Path to test fixtures directory."""
-    return Path(__file__).parent / "fixtures"
-
-
-@pytest.fixture
-def temp_output(tmp_path):
-    """Temporary output directory for test artifacts."""
-    output = tmp_path / "output"
-    output.mkdir()
-    return output
-
-
-# ============ Engine Fixtures ============
-@pytest.fixture
-def duckdb_engine():
-    """DuckDB engine instance."""
-    from fairway.engines.duckdb_engine import DuckDBEngine
-    return DuckDBEngine()
-
-
-@pytest.fixture(scope="session")
-def _pyspark_engine_shared():
-    """Session-scoped real PySpark engine — full __init__ with JVM flags, Delta, etc.
-
-    Skips entire session's PySpark tests if PySpark is unavailable.
-    """
-    pytest.importorskip("pyspark")
-    from fairway.engines.pyspark_engine import PySparkEngine
-    engine = PySparkEngine()
-    yield engine
-    engine.stop()
-
-
-@pytest.fixture
-def pyspark_engine(_pyspark_engine_shared):
-    """Per-test PySpark engine (shared session, real constructor)."""
-    return _pyspark_engine_shared
-
-
-@pytest.fixture(params=["duckdb", "pyspark"])
-def engine(request):
-    """Parametrized fixture — tests run against both engines.
-
-    DuckDB runs always. PySpark skips if not available.
-    """
-    if request.param == "duckdb":
-        from fairway.engines.duckdb_engine import DuckDBEngine
-        return DuckDBEngine()
-    else:
-        return request.getfixturevalue("pyspark_engine")
-
-
-# ============ CLI Fixtures ============
-@pytest.fixture
-def cli_runner():
-    """Click CLI test runner."""
-    from click.testing import CliRunner
-    return CliRunner()
+    state = tmp_path / "_state"
+    scratch = tmp_path / "_scratch"
+    state.mkdir()
+    scratch.mkdir()
+    monkeypatch.setenv("FAIRWAY_HOME", str(state))
+    monkeypatch.setenv("FAIRWAY_SCRATCH", str(scratch))
+    yield

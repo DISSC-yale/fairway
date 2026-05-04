@@ -1,1607 +1,278 @@
-import click
-import os
-import re
+"""fairway CLI — rewrite/v0.3 Step 9.1 skeleton (≤ 280 LOC after 9.5)."""
+from __future__ import annotations
+
+import json
 import shutil
 import subprocess
 import sys
-from datetime import datetime
-from string import Template
-from .generate_test_data import generate_test_data
+from pathlib import Path
 
+import click
 
-def _validate_slurm_param(value, param_name, pattern, max_length=64):
-    """Validate Slurm parameter against allowed pattern to prevent command injection."""
-    if not value:
-        return value
-    value = str(value)
-    if len(value) > max_length:
-        raise click.ClickException(f"Parameter '{param_name}' exceeds maximum length ({max_length})")
-    if not re.match(pattern, value):
-        raise click.ClickException(f"Invalid {param_name}: '{value}' (contains disallowed characters)")
-    return value
-
-
-def _validate_slurm_time(time_str):
-    """Validate Slurm time format (HH:MM:SS or D-HH:MM:SS)."""
-    if not re.match(r'^(\d+-)?(\d{1,2}:)?\d{1,2}:\d{2}$', time_str):
-        raise click.ClickException(f"Invalid time format: '{time_str}' (expected HH:MM:SS or D-HH:MM:SS)")
-    return time_str
-
-
-def _validate_slurm_mem(mem_str):
-    """Validate Slurm memory format (e.g., 16G, 1024M)."""
-    if not re.match(r'^\d+[KMGT]?$', mem_str, re.IGNORECASE):
-        raise click.ClickException(f"Invalid memory format: '{mem_str}' (expected e.g., 16G, 1024M)")
-    return mem_str
-
-
-def discover_config():
-    """Auto-discover config file in config/ folder.
-    
-    Returns the path to the config file if exactly one is found.
-    Raises ClickException if zero or multiple configs exist.
-    """
-    config_dir = 'config'
-    if not os.path.isdir(config_dir):
-        raise click.ClickException("No config/ directory found. Run 'fairway init' first.")
-    
-    # Exclude schema files and spark.yaml
-    configs = [f for f in os.listdir(config_dir) 
-               if f.endswith(('.yaml', '.yml')) 
-               and not f.endswith('_schema.yaml')
-               and f != 'spark.yaml']
-    
-    if len(configs) == 0:
-        raise click.ClickException("No config files found in config/")
-    elif len(configs) == 1:
-        return os.path.join(config_dir, configs[0])
-    else:
-        raise click.ClickException(
-            f"Multiple config files found: {configs}. Use --config to specify one.")
-
-
-def _get_apptainer_binds(cfg):
-    """Calculate Apptainer bind paths from config.
-
-    Auto-detects paths that need to be bound based on:
-    - Storage directories (raw, processed, curated)
-    - Temp directory
-    - Table root directories
-    - Explicit apptainer_binds from config
-    """
-    bind_paths = set()
-
-    # 1. Check storage directories (must already exist)
-    for path in [cfg.raw_dir, cfg.processed_dir, cfg.curated_dir]:
-        if path:
-            abs_path = os.path.abspath(path)
-            if not os.path.exists(abs_path):
-                continue
-            bind_paths.add(os.path.dirname(abs_path) if os.path.isfile(abs_path) else abs_path)
-
-    # 2. Check temp/scratch directory
-    if cfg.temp_dir:
-        bind_paths.add(os.path.abspath(cfg.temp_dir))
-    elif os.environ.get('SCRATCH'):
-        bind_paths.add(os.path.join(os.environ['SCRATCH'], 'fairway'))
-    else:
-        import tempfile
-        bind_paths.add(os.path.join(tempfile.gettempdir(), f'fairway_{os.getenv("USER", "default")}'))
-
-    # 3. Check table root directories
-    if cfg.tables:
-        for tbl in cfg.tables:
-            root = tbl.get('root')
-            if root:
-                bind_paths.add(os.path.abspath(root))
-
-    # 4. Add explicit binds from config
-    if cfg.apptainer_binds:
-        for path in cfg.apptainer_binds.split(','):
-            path = path.strip()
-            if path:
-                bind_paths.add(path)
-
-    return bind_paths
+from . import _init_templates as _t
+from . import manifest as _manifest
+from .config import load_config
 
 
 @click.group()
-def main():
-    """fairway: A portable data ingestion framework."""
-    pass
-
-@main.command()
-@click.argument('name')
-@click.option('--engine', type=click.Choice(['duckdb', 'spark']), required=True, help='Compute engine to use (duckdb or spark).')
-def init(name, engine):
-    """Initialize a new fairway project."""
-    click.echo(f"Initializing new fairway project: {name} with engine: {engine}")
-    
-    directories = [
-        'config',
-        'data/raw',
-        'data/processed',
-        'data/curated',
-        'src/transformations',
-        'docs',
-        'scripts',
-        'logs/slurm',
-    ]
-    
-    for d in directories:
-        os.makedirs(os.path.join(name, d), exist_ok=True)
-        click.echo(f"  Created directory: {d}")
-
-    # Create config.yaml
-    engine_type = 'pyspark' if engine == 'spark' else 'duckdb'
-    from .templates import MAKEFILE_TEMPLATE, CONFIG_TEMPLATE, SPARK_YAML_TEMPLATE, TRANSFORM_TEMPLATE, README_TEMPLATE, DOCS_TEMPLATE
-    config_content = Template(CONFIG_TEMPLATE).safe_substitute(name=name, engine_type=engine_type)
-    
-    with open(os.path.join(name, 'config', 'fairway.yaml'), 'w') as f:
-        f.write(config_content)
-    click.echo("  Created file: config/fairway.yaml")
-    
-    # Write .dockerignore
-    from .templates import DOCKERIGNORE
-    with open(os.path.join(name, '.dockerignore'), 'w') as f:
-        f.write(DOCKERIGNORE)
-    click.echo("  Created file: .dockerignore")
-
-    # Create spark.yaml with defaults
-    with open(os.path.join(name, 'config', 'spark.yaml'), 'w') as f:
-        f.write(SPARK_YAML_TEMPLATE)
-    click.echo("  Created file: config/spark.yaml")
+def main() -> None:
+    """fairway — shuffle-free Slurm-array data ingestion."""
 
 
+def _scaffold_project(root: Path) -> None:
+    for sub in ("datasets", "transforms/raw_to_processed",
+                "transforms/processed_to_curated", "data", "build"):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+    (root / ".gitignore").write_text(_t.GITIGNORE, encoding="utf-8")
+    (root / "README.md").write_text(_t.README.format(name=root.name), encoding="utf-8")
 
-    # Write Makefile
-    with open(os.path.join(name, 'Makefile'), 'w') as f:
-        f.write(MAKEFILE_TEMPLATE)
-    click.echo("  Created file: Makefile")
-    
 
-
-    # Create example transformation
-    with open(os.path.join(name, 'src', 'transformations', 'example_transform.py'), 'w') as f:
-        f.write(TRANSFORM_TEMPLATE.strip())
-    click.echo("  Created file: src/transformations/example_transform.py")
-
-    # Create README.md with usage examples
-
-    readme_content = Template(README_TEMPLATE).safe_substitute(
-        name=name,
-        timestamp=datetime.now().isoformat(),
-        engine=engine
-    )
-    with open(os.path.join(name, 'README.md'), 'w') as f:
-        f.write(readme_content)
-    click.echo("  Created file: README.md")
-
-    # Create scripts/driver.sh and scripts/fairway-hpc.sh
-    from .templates import DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, HPC_SCRIPT
-    with open(os.path.join(name, 'scripts', 'driver.sh'), 'w') as f:
-        f.write(DRIVER_TEMPLATE)
-    os.chmod(os.path.join(name, 'scripts', 'driver.sh'), 0o755)
-    click.echo("  Created file: scripts/driver.sh")
-
-    with open(os.path.join(name, 'scripts', 'driver-schema.sh'), 'w') as f:
-        f.write(DRIVER_SCHEMA_TEMPLATE)
-    os.chmod(os.path.join(name, 'scripts', 'driver-schema.sh'), 0o755)
-    click.echo("  Created file: scripts/driver-schema.sh")
-
-    with open(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 'w') as f:
-        f.write(HPC_SCRIPT)
-    os.chmod(os.path.join(name, 'scripts', 'fairway-hpc.sh'), 0o755)
-    click.echo("  Created file: scripts/fairway-hpc.sh")
-
-    # Create docs/getting-started.md
-    docs_content = Template(DOCS_TEMPLATE).safe_substitute(
-        name=name,
-        engine_type=engine_type
-    )
-    with open(os.path.join(name, 'docs', 'getting-started.md'), 'w') as f:
-        f.write(docs_content)
-    click.echo("  Created file: docs/getting-started.md")
-
-    click.echo(f"Project {name} initialized successfully.")
+def _scaffold_dataset(root: Path, name: str) -> None:
+    (root / "datasets").mkdir(parents=True, exist_ok=True)
+    for ext, tmpl in (("yaml", _t.DATASET_YAML), ("py", _t.DATASET_PY)):
+        (root / "datasets" / f"{name}.{ext}").write_text(
+            tmpl.format(name=name), encoding="utf-8")
 
 
 @main.command()
-@click.option('--size', type=click.Choice(['small', 'large']), default='small', help='Size of dataset to generate.')
-@click.option('--partitioned/--no-partitioned', default=True, help='Generate partitioned data (year/month).')
-@click.option('--format', type=click.Choice(['csv', 'tsv', 'parquet']), default='csv', help='Output format (csv, tsv, or parquet).')
-def generate_data(size, partitioned, format):
-    """Generate mock test data."""
-    click.echo(f"Generating {size} test data (partitioned={partitioned}, format={format})...")
-    generate_test_data(size=size, partitioned=partitioned, file_format=format)
+@click.argument("project_dir", type=click.Path(file_okay=False))
+@click.option("--dataset", "dataset_name", help="Add a dataset scaffold.")
+@click.option("--init-project", is_flag=True,
+              help="Force project scaffold even if directory looks initialized.")
+@click.option("--force", is_flag=True,
+              help="Overwrite a non-empty <project_dir> on first init.")
+def init(project_dir: str, dataset_name: str | None,
+         init_project: bool, force: bool) -> None:
+    """Scaffold a fairway project (and optionally a dataset)."""
+    root = Path(project_dir)
+    initialized = root.exists() and (root / "datasets").is_dir()
+    is_first = not initialized or init_project
+    if (is_first and root.exists() and any(root.iterdir())
+            and not force and not init_project):
+        raise click.ClickException(
+            f"Path {project_dir!r} exists and is not empty. "
+            "Re-run with --force to overwrite, or pass --dataset <name>."
+        )
+    if is_first:
+        _scaffold_project(root)
+    if dataset_name:
+        _scaffold_dataset(root, dataset_name)
+    click.echo(f"Initialized {project_dir}")
+
+
+def _build_ctx_from_shard(config, shard):
+    """Mirror ``pipeline._build_ctx`` for an entry from the shards file."""
+    import os
+    from .ctx import IngestCtx
+    from .duckdb_runner import _layer_root
+    scratch = (Path(config.scratch_dir) if config.scratch_dir is not None
+               else Path(os.environ.get("SLURM_TMPDIR")
+                         or os.environ.get("TMPDIR") or "/tmp"))
+    return IngestCtx(
+        config=config,
+        input_paths=[Path(p) for p in shard["input_paths"]],
+        output_path=_layer_root(config),
+        partition_values=dict(shard.get("partition_values") or {}),
+        shard_id=str(shard["shard_id"]),
+        scratch_dir=scratch)
+
 
 @main.command()
-@click.argument('file_path', required=False)
-@click.option('--config', help='Path to fairway.yaml config (enables Pipeline Mode).')
-@click.option('--output', help='Output file path for the schema (YAML).')
-@click.option('--engine', type=click.Choice(['duckdb', 'pyspark']), default=None, help='Engine for schema inference. Default: duckdb (portable). Use pyspark for distributed inference on slow storage.')
-@click.option('--sampling-ratio', type=float, default=1.0, help='Ratio of data to read (Spark only).')
-# Slurm Options
-@click.option('--slurm', is_flag=True, help='Submit as a Slurm job.')
-@click.option('--account', help='Slurm account.')
-@click.option('--time', help='Slurm time limit.')
-@click.option('--cpus', type=int, help='Slurm CPUs.')
-@click.option('--mem', help='Slurm Memory.')
-@click.option('--internal-run', is_flag=True, hidden=True, help='Internal flag for Slurm execution.')
-@click.option('--spark-master', hidden=True, help='Spark master URL (for internal run).')
-def generate_schema(file_path, config, output, engine, sampling_ratio, slurm, account, time, cpus, mem, internal_run, spark_master):
-    """Generate schema from data.
+@click.option("--shards-file", required=True,
+              type=click.Path(exists=True, dir_okay=False))
+@click.option("--shard-index", required=True, type=int)
+def run(shards_file: str, shard_index: int) -> None:
+    """Run one shard by index from the shards manifest. Always exits 0 on
+    shard error (manifest fragment is the truth); pipeline-level errors
+    (config parse, plugin load, missing file) DO exit non-zero.
 
-    Modes:
-    1. Pipeline Mode: Provide --config. Uses full pipeline (preprocessing/unzipping) to find data.
-    2. Legacy Mode: Provide FILE_PATH. Scans that specific file/dir.
+    Shards file shape (Step 9.2 may refine):
+    ``{"config": "<path/to/config.yaml>", "shards": [<entry>, ...]}``.
     """
-    import yaml
-
-    # ---------------------------------------------------------
-    # SLURM SUBMISSION (Wrapper)
-    # ---------------------------------------------------------
-    # ---------------------------------------------------------
-    # SLURM SUBMISSION (Distributed Cluster Mode)
-    # ---------------------------------------------------------
-    # ---------------------------------------------------------
-    # SLURM SUBMISSION (Distributed Cluster Mode)
-    # ---------------------------------------------------------
-    if slurm and not internal_run:
-        script_path = "scripts/driver-schema.sh"
-        if not os.path.exists(script_path):
-            click.echo(f"Error: {script_path} not found. Run 'fairway init' to regenerate scripts.", err=True)
-            sys.exit(1)
-            
-        click.echo(f"Submitting Schema Generation Driver Job ({script_path})...")
-        try:
-            # We assume the user has configured spark.yaml or fairway-hpc.sh variables if needed
-            # The driver script handles cluster provisioning.
-            subprocess.run(["sbatch", script_path], check=True)
-            click.echo("Job submitted. Check status with 'fairway status'.")
-            return
-        except subprocess.CalledProcessError as e:
-             click.echo(f"Error submitting job: {e}", err=True)
-             sys.exit(1)
-
-    # ---------------------------------------------------------
-    # PIPELINE MODE (Config Driven)
-    # ---------------------------------------------------------
-    if config:
-        from .config_loader import Config
-        from .schema_pipeline import SchemaDiscoveryPipeline
-
-        click.echo(f"Starting Schema Discovery (Pipeline Mode) using {config}...")
-        cfg = Config(config)
-
-        # Determine engine: CLI flag > config > default (duckdb)
-        config_engine = cfg.engine.lower() if cfg.engine else 'duckdb'
-        effective_engine = engine if engine else config_engine
-
-        click.echo(f"Using engine: {effective_engine}")
-
-        if effective_engine in ['pyspark', 'spark']:
-            # Use Spark - requires spark_master for distributed mode
-            if spark_master:
-                click.echo(f"Spark master: {spark_master}")
-            else:
-                click.echo("No spark_master provided, using local[*]")
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=spark_master or "local[*]", engine_override='pyspark')
-        else:
-            # Use DuckDB (default) - portable, no cluster needed
-            pipeline = SchemaDiscoveryPipeline(config, spark_master=None, engine_override='duckdb')
-
-        pipeline.run_inference(output_path=output, sampling_ratio=sampling_ratio)
-        return
-
-    # ---------------------------------------------------------
-    # LEGACY MODE (Single File)
-    # ---------------------------------------------------------
-    if not file_path:
-        click.echo("Error: Must provide either FILE_PATH or --config.", err=True)
-        sys.exit(1)
-
-    # ... [Existing Legacy Logic for PySpark/DuckDB] ...
-    # (Rest of the function follows, but pasted to ensure replacement)
-    
-    if engine == 'pyspark':
-        click.echo(f"Initializing PySpark to infer schema from: {file_path}")
-        try:
-             from .engines.pyspark_engine import PySparkEngine
-             spark_engine = PySparkEngine()
-             
-             fmt = 'parquet'
-             if file_path.endswith('.csv') or '.csv' in file_path: fmt = 'csv'
-             elif file_path.endswith('.tsv') or '.tsv' in file_path: fmt = 'tsv'
-             elif file_path.endswith('.json') or '.json' in file_path: fmt = 'json'
-             
-             if os.path.isdir(file_path):
-                  entries = os.listdir(file_path)
-                  if any(e.endswith('.csv') for e in entries): fmt = 'csv'
-                  elif any(e.endswith('.tsv') for e in entries): fmt = 'tsv'
-                  elif any(e.endswith('.json') for e in entries): fmt = 'json'
-             
-             schema_dict = spark_engine.infer_schema(
-                 path=file_path, 
-                 format=fmt,
-                 sampling_ratio=sampling_ratio
-             )
-             
-             dataset_name = os.path.basename(file_path.rstrip('/'))
-             schema_output = {'name': dataset_name, 'columns': schema_dict}
-             
-             schema_yaml = yaml.dump(schema_output, sort_keys=False, default_flow_style=False)
-             if not output:
-                os.makedirs('config', exist_ok=True)
-                output = f"config/{dataset_name}_schema.yaml"
-             
-             with open(output, 'w') as f:
-                f.write(schema_yaml)
-             click.echo(f"Schema written to {output}")
-             return
-
-        except Exception as e:
-             click.echo(f"Error inferring schema with Spark: {e}", err=True)
-             sys.exit(1)
-
-    # DUCKDB PATH
     import duckdb
-
-    if not os.path.exists(file_path):
-        click.echo(f"Error: Path not found: {file_path}", err=True)
-        return
-
-    partition_columns = []
-    sample_file = None
-    dataset_name = os.path.basename(file_path.rstrip('/'))
-    
-    # Check if path is a directory (partitioned data)
-    if os.path.isdir(file_path):
-        click.echo(f"Detected partitioned directory: {file_path}")
-        
-        current_path = file_path
-        while os.path.isdir(current_path):
-            entries = os.listdir(current_path)
-            dirs = [e for e in entries if os.path.isdir(os.path.join(current_path, e))]
-            files = [e for e in entries if os.path.isfile(os.path.join(current_path, e)) 
-                     and (e.endswith('.csv') or e.endswith('.parquet') or e.endswith('.json'))]
-            
-            partition_dirs = [d for d in dirs if '=' in d]
-            
-            if partition_dirs:
-                partition_col = partition_dirs[0].split('=')[0]
-                if partition_col not in partition_columns:
-                    partition_columns.append(partition_col)
-                current_path = os.path.join(current_path, partition_dirs[0])
-            elif files:
-                sample_file = os.path.join(current_path, files[0])
-                break
-            elif dirs:
-                current_path = os.path.join(current_path, dirs[0])
-            else:
-                return
-        
-        if not sample_file:
-            return
-            
-        click.echo(f"Detected partition columns: {partition_columns}")
-        click.echo(f"Using sample file: {sample_file}")
-    else:
-        sample_file = file_path
-    
-    click.echo(f"Inferring schema from {sample_file}...")
-    
-    try:
-        if sample_file.endswith('.parquet'):
-            rel = duckdb.read_parquet(sample_file)
-        elif sample_file.endswith('.json'):
-            rel = duckdb.read_json(sample_file)
-        else:
-            rel = duckdb.read_csv(sample_file)
-        
-        columns = {}
-        for col_name, col_type in zip(rel.columns, rel.types):
-            if col_name not in partition_columns:
-                columns[col_name] = str(col_type)
-
-        schema_output = {'name': dataset_name}
-        if partition_columns:
-            schema_output['partition_by'] = partition_columns
-        schema_output['columns'] = columns
-
-        schema_yaml = yaml.dump(schema_output, sort_keys=False, default_flow_style=False)
-        
-        if not output:
-            os.makedirs('config', exist_ok=True)
-            output = f"config/{dataset_name}_schema.yaml"
-        
-        with open(output, 'w') as f:
-            f.write(schema_yaml)
-        click.echo(f"Schema written to {output}")
-            
-    except Exception as e:
-        click.echo(f"Error inferring schema: {e}", err=True)
-
-@main.group()
-def spark():
-    """Manage Spark clusters."""
-    pass
-
-@spark.command()
-@click.option('--config', default=None, help='Path to main config file (for container settings).')
-@click.option('--slurm-nodes', 'nodes', default=None, type=int, help='Number of worker nodes.')
-@click.option('--slurm-cpus', 'cpus', default=None, type=int, help='CPUs per node.')
-@click.option('--slurm-mem', 'mem', default=None, help='Memory per node.')
-@click.option('--slurm-time', 'time', default=None, help='Time limit.')
-@click.option('--account', default=None, help='Slurm account.')
-@click.option('--partition', default=None, help='Slurm partition.')
-@click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
-def start(config, nodes, cpus, mem, time, account, partition, driver_job_id):
-    """Start a Spark cluster on Slurm."""
-    import yaml
-    from .config_loader import Config
-
-    # Auto-discover main config for container settings
-    if config is None:
-        config = discover_config()
-
-    # Load main config for container settings
-    main_cfg = Config(config)
-
-    # Auto-detect bind paths from config
-    auto_binds = _get_apptainer_binds(main_cfg)
-    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
-
-    # Check if running in Apptainer mode
-    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
-    use_apptainer = os.path.exists(sif_path)
-
-    if use_apptainer and not apptainer_binds:
+    from .duckdb_runner import run_shard
+    payload = json.loads(Path(shards_file).read_text(encoding="utf-8"))
+    if not (isinstance(payload, dict) and "config" in payload and "shards" in payload):
         raise click.ClickException(
-            "Apptainer mode detected but no bind paths could be determined.\n"
-            "Add 'container.apptainer_binds' to your config file:\n\n"
-            "  container:\n"
-            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
-            "Or ensure storage paths exist so they can be auto-detected."
-        )
-
-    if use_apptainer:
-        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
-
-    # Load defaults from spark.yaml
-    spark_yaml_path = 'config/spark.yaml'
-    spark_defaults = {}
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
-
-    # effective resources (no hardcoded defaults)
-    nodes = nodes or spark_defaults.get('nodes')
-    cpus = cpus or spark_defaults.get('cpus_per_node')
-    mem = mem or spark_defaults.get('mem_per_node')
-    account = account or spark_defaults.get('account')
-    partition = partition or spark_defaults.get('partition')
-    time = time or spark_defaults.get('time')
-
-    # Validate required settings
-    if not account:
-        raise click.ClickException("Slurm account is required. Set 'account' in config/spark.yaml or use --account")
-
-    from .engines.slurm_cluster import SlurmSparkManager
-
-    # Get dynamic allocation settings
-    dynamic_alloc = spark_defaults.get('dynamic_allocation', {})
-
-    # Get arbitrary spark_conf settings (e.g., spark.executor.memory)
-    spark_conf = spark_defaults.get('spark_conf', {})
-
-    spark_cfg = {
-        'slurm_nodes': nodes,
-        'slurm_cpus_per_node': cpus,
-        'slurm_mem_per_node': mem,
-        'slurm_account': account,
-        'slurm_time': time,
-        'slurm_partition': partition,
-        'dynamic_allocation': dynamic_alloc,
-        'spark_conf': spark_conf,
-        'apptainer_binds': apptainer_binds,
-    }
-
-    spark_manager = SlurmSparkManager(spark_cfg, driver_job_id=driver_job_id)
-    spark_master = spark_manager.start_cluster()
-    click.echo(f"Spark cluster started. Master URL: {spark_master}")
-
-@spark.command()
-@click.option('--driver-job-id', default=None, help='Driver Slurm job ID for state file isolation.')
-def stop(driver_job_id):
-    """Stop the running Spark cluster."""
-    from .engines.slurm_cluster import SlurmSparkManager
-    spark_manager = SlurmSparkManager({}, driver_job_id=driver_job_id)
-    spark_manager.stop_cluster()
-
-@main.command()
-@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
-@click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
-@click.option('--dry-run', is_flag=True, help='Show matched files without processing.')
-@click.option('--skip-summary', is_flag=True, default=False, help='Skip summary generation after ingestion. Run `fairway summarize` separately.')
-@click.option('--log-file', default='logs/fairway.jsonl', help='Path to JSONL log file. Set to empty string to disable.')
-@click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Log level.')
-def run(config, spark_master, dry_run, skip_summary, log_file, log_level):
-    """Run the ingestion pipeline.
-
-    This command executes the pipeline directly on the current machine.
-    For HPC submission, use `fairway submit` instead.
-    """
-    import yaml
-    from .pipeline import IngestionPipeline
-    from .logging_config import setup_logging
-
-    # Initialize logging FIRST
-    setup_logging(
-        log_file=log_file if log_file else None,
-        level=log_level.upper(),
-        console=True
-    )
-
-    # Auto-discover config
-    if config is None:
-        config = discover_config()
-        click.echo(f"Auto-discovered config: {config}")
-
-    # Load spark_conf from spark.yaml for executor settings
-    spark_conf = None
-    spark_yaml_path = 'config/spark.yaml'
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
-            spark_conf = spark_defaults.get('spark_conf', {})
-
-    if dry_run:
-        click.echo(f"DRY RUN - showing matched files for config: {config}\n")
-        pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
-        pipeline.dry_run()
-        return
-
-    click.echo(f"Starting pipeline execution using config: {config}")
-    if skip_summary:
-        click.echo("Summary generation will be skipped. Run `fairway summarize` separately.")
-    pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
+            "shards file must be {'config': <path>, 'shards': [...]} "
+            "(Step 9.2 finalises this format).")
+    shards = payload["shards"]
+    if shard_index < 0 or shard_index >= len(shards):
+        raise click.ClickException(
+            f"shard_index {shard_index} out of range (0..{len(shards) - 1})")
+    config = load_config(payload["config"])
+    ctx = _build_ctx_from_shard(config, shards[shard_index])
+    con = duckdb.connect(":memory:")
     try:
-        pipeline.run(skip_summary=skip_summary)
-        click.echo("Pipeline execution completed successfully.")
+        run_shard(con, ctx)
     finally:
-        # Explicitly stop the engine to release Spark resources.
-        # Check _engine directly to avoid triggering lazy init via the property —
-        # if preprocessing failed before Phase 1, Spark was never started.
-        if pipeline._engine is not None and hasattr(pipeline._engine, 'stop'):
-            pipeline._engine.stop()
-
+        con.close()
 
 
 @main.command()
-@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
-@click.option('--spark-master', default=None, help='Spark master URL (e.g., spark://host:port or local[*]).')
-@click.option('--slurm', is_flag=True, help='Submit as a Slurm job (loads Spark/Java modules).')
-@click.option('--account', default=None, help='Slurm account.')
-@click.option('--partition', default='day', help='Slurm partition.')
-@click.option('--time', 'slurm_time', default='04:00:00', help='Slurm time limit (HH:MM:SS).')
-@click.option('--mem', default='32G', help='Slurm memory.')
-@click.option('--cpus', default=4, type=int, help='Slurm CPUs per task.')
-@click.option('--log-file', default='logs/fairway.jsonl', help='Path to JSONL log file. Set to empty string to disable.')
-@click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Log level.')
-def summarize(config, spark_master, slurm, account, partition, slurm_time, mem, cpus, log_file, log_level):
-    """Generate summary stats and reports for already-ingested data.
+@click.option("--dataset", "dataset_name", required=True)
+@click.option("--storage-root", "storage_root", default="data", show_default=True,
+              type=click.Path(file_okay=False))
+@click.option("--layer", default="raw", show_default=True,
+              type=click.Choice(["raw", "processed", "curated"]))
+def status(dataset_name: str, storage_root: str, layer: str) -> None:
+    """Print fragment-level status + most recent submission record(s).
 
-    This command generates summary statistics, markdown reports, and exports
-    to Redivis for data that has already been ingested to curated_dir.
-
-    Use this after running `fairway run --skip-summary` to generate summaries
-    in a separate step.
-
-    Examples:
-
-        # Run locally (requires JAVA_HOME to be set)
-        fairway summarize
-
-        # Submit as Slurm job (loads Spark/Java modules automatically)
-        fairway summarize --slurm
-
-        # Submit with custom resources
-        fairway summarize --slurm --mem 64G --time 08:00:00
+    For chunked submissions (Step 9.5) aggregates ``squeue`` task states
+    across every chunk's array job id when ``squeue`` is on PATH.
     """
-    import yaml
-    import tempfile
-    from .logging_config import setup_logging
-
-    # Auto-discover config first (needed for both paths)
-    if config is None:
-        config = discover_config()
-        click.echo(f"Auto-discovered config: {config}")
-
-    # ---------------------------------------------------------
-    # SLURM SUBMISSION
-    # ---------------------------------------------------------
-    if slurm:
-        # Load main config to get container settings
-        from fairway.config_loader import Config
-        main_cfg = Config(config)
-
-        # Auto-detect bind paths from config
-        auto_binds = _get_apptainer_binds(main_cfg)
-        apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
-
-        # Check if running in Apptainer mode (fairway.sif exists)
-        sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
-        use_apptainer = os.path.exists(sif_path)
-
-        if use_apptainer and not apptainer_binds:
-            raise click.ClickException(
-                "Apptainer mode detected but no bind paths could be determined.\n"
-                "Add 'container.apptainer_binds' to your config file:\n\n"
-                "  container:\n"
-                "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
-                "Or ensure storage paths exist so they can be auto-detected."
-            )
-
-        if use_apptainer:
-            click.echo(f"Auto-detected bind paths: {apptainer_binds}")
-
-        # Load spark.yaml for account default
-        spark_yaml_path = 'config/spark.yaml'
-        if os.path.exists(spark_yaml_path):
-            with open(spark_yaml_path, 'r') as f:
-                spark_defaults = yaml.safe_load(f) or {}
-                account = account or spark_defaults.get('account', 'borzekowski')
-
-        # Validate parameters
-        slurm_time = _validate_slurm_time(slurm_time)
-        mem = _validate_slurm_mem(mem)
-        partition = _validate_slurm_param(partition, 'partition', r'^[a-zA-Z0-9_-]+$')
-        account = _validate_slurm_param(account, 'account', r'^[a-zA-Z0-9_-]+$')
-        config = _validate_slurm_param(config, 'config', r'^[a-zA-Z0-9_./-]+$', max_length=256)
-        if cpus < 1 or cpus > 256:
-            raise click.ClickException(f"Invalid cpus: {cpus} (must be 1-256)")
-
-        job_script = f'''#!/bin/bash
-#SBATCH --job-name=fairway_summary
-#SBATCH --output=logs/slurm/summary_%j.log
-#SBATCH --time={slurm_time}
-#SBATCH --mem={mem}
-#SBATCH --cpus-per-task={cpus}
-#SBATCH --partition={partition}
-#SBATCH --account={account}
-
-set -e
-
-# Ensure log directory exists
-mkdir -p logs/slurm
-
-# =============================================================================
-# Apptainer Mode Detection
-# =============================================================================
-USE_APPTAINER="no"
-FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
-FAIRWAY_BINDS="{apptainer_binds}"
-
-if [ -f "$FAIRWAY_SIF" ]; then
-    USE_APPTAINER="yes"
-    echo "Apptainer mode detected: $FAIRWAY_SIF"
-else
-    echo "Bare-metal mode (no container found at $FAIRWAY_SIF)"
-fi
-
-# =============================================================================
-# Environment Setup
-# =============================================================================
-if [ "$USE_APPTAINER" = "yes" ]; then
-    echo "Using Apptainer container for summarization"
-    export FAIRWAY_SIF
-    export FAIRWAY_BINDS
-else
-    # Load Spark module only in bare-metal mode (container has its own Spark)
-    echo "Loading Spark module..."
-    module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
-fi
-
-# =============================================================================
-# Run Summarization
-# =============================================================================
-echo "Running summarization for config: {config}"
-if [ "$USE_APPTAINER" = "yes" ]; then
-    # Build bind paths for Apptainer
-    BIND_PATHS="${{FAIRWAY_BINDS}}"
-    BIND_PATHS="${{BIND_PATHS}},${{PWD}}"
-    BIND_PATHS="${{BIND_PATHS}},/tmp"
-    echo "Running inside Apptainer with binds: $BIND_PATHS"
-
-    # Ensure all bind-mount source directories exist on this node
-    IFS=',' read -ra _bind_dirs <<< "$BIND_PATHS"
-    for _dir in "${{_bind_dirs[@]}}"; do
-        _dir="${{_dir%%:*}}"
-        _dir="$(echo "${{_dir}}" | xargs)"
-        [ -n "${{_dir}}" ] && mkdir -p "${{_dir}}" 2>/dev/null || true
-    done
-    unset _bind_dirs _dir
-
-    apptainer exec --no-home \\
-        --bind "$BIND_PATHS" \\
-        "$FAIRWAY_SIF" \\
-        fairway summarize --config {config}
-else
-    fairway summarize --config {config}
-fi
-
-echo "Summary generation completed successfully."
-'''
-
-        # Ensure logs directory exists
-        os.makedirs('logs/slurm', exist_ok=True)
-
-        # Write to temp file and submit
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-            f.write(job_script)
-            script_path = f.name
-
+    from . import _sbatch
+    layer_root = Path(storage_root) / layer / dataset_name
+    lines, job_ids = _sbatch.format_status_summary(layer_root)
+    for line in lines:
+        click.echo(line)
+    if job_ids and shutil.which("squeue"):
+        outs = [subprocess.run(["squeue", "-h", "-j", jid, "-o", "%T"],
+                               capture_output=True, text=True, check=False).stdout
+                for jid in job_ids]
+        states = _sbatch.aggregate_squeue_states(outs)
+        if states:
+            click.echo("Slurm states (aggregated): "
+                       + ", ".join(f"{k}={v}" for k, v in sorted(states.items())))
+    counts: dict[str, int] = {"ok": 0, "error": 0}
+    frag_dir = layer_root / "_fragments"
+    for f in (frag_dir.glob("*.json") if frag_dir.is_dir() else ()):
         try:
-            click.echo(f"Submitting summary job (config: {config})...")
-            result = subprocess.run(['sbatch', script_path], capture_output=True, text=True)
-            if result.returncode == 0:
-                click.echo(result.stdout.strip())
-                click.echo("Job submitted. Check status with 'fairway status'.")
-            else:
-                click.echo(f"Error submitting job: {result.stderr}", err=True)
-                sys.exit(1)
-        except FileNotFoundError:
-            click.echo("Error: 'sbatch' command not found. Are you on a system with Slurm?", err=True)
-            sys.exit(1)
-        finally:
-            os.unlink(script_path)
-        return
+            s = json.loads(f.read_text(encoding="utf-8")).get("status", "error")
+        except (json.JSONDecodeError, OSError):
+            continue
+        counts[s] = counts.get(s, 0) + 1
+    click.echo(f"Fragments: ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
 
-    # ---------------------------------------------------------
-    # LOCAL EXECUTION
-    # ---------------------------------------------------------
-    from .pipeline import IngestionPipeline
 
-    # Initialize logging
-    setup_logging(
-        log_file=log_file if log_file else None,
-        level=log_level.upper(),
-        console=True
+@main.command()
+@click.argument("transform_yaml", type=click.Path(exists=True, dir_okay=False))
+def transform(transform_yaml: str) -> None:
+    """Stage-2 transform (full wiring deferred to Step 9.x — see PLAN.md)."""
+    raise click.ClickException(
+        f"fairway transform: full Stage-2 wiring lands in Step 9.x "
+        f"(see PLAN.md). Requested transform={transform_yaml!r}."
     )
 
-    # Load spark_conf from spark.yaml for executor settings
-    spark_conf = None
-    spark_yaml_path = 'config/spark.yaml'
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
-            spark_conf = spark_defaults.get('spark_conf', {})
-
-    click.echo(f"Generating summaries for config: {config}")
-    pipeline = IngestionPipeline(config, spark_master=spark_master, spark_conf=spark_conf)
-    pipeline.summarize()
-    click.echo("Summary generation completed successfully.")
-
 
 @main.command()
-@click.option('--file', '-f', 'log_file', default='logs/fairway.jsonl', help='Path to JSONL log file.')
-@click.option('--level', '-l', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR'], case_sensitive=False), help='Filter by log level.')
-@click.option('--batch', '-b', 'batch_id', help='Filter by batch ID (supports partial match).')
-@click.option('--last', '-n', 'last_n', type=int, default=0, help='Show only last N entries.')
-@click.option('--json', 'output_json', is_flag=True, help='Output raw JSON instead of formatted text.')
-@click.option('--errors', is_flag=True, help='Shortcut for --level ERROR.')
-def logs(log_file, level, batch_id, last_n, output_json, errors):
-    """View and filter pipeline logs.
+@click.argument("dataset_path", type=click.Path(exists=True))
+@click.option("--rules", required=True,
+              type=click.Path(exists=True, dir_okay=False))
+def validate(dataset_path: str, rules: str) -> None:
+    """Apply validation rules to a landed parquet dataset.
 
-    Examples:
-
-        fairway logs                     # Show all logs
-        fairway logs --last 20           # Show last 20 entries
-        fairway logs --level ERROR       # Show only errors
-        fairway logs --errors            # Shortcut for --level ERROR
-        fairway logs --batch batch_001   # Filter by batch ID
-        fairway logs --json              # Raw JSON output (pipe to jq)
+    Exit 0 on all-pass; exit 2 on any failure.
     """
-    import json as json_module
-
-    if errors:
-        level = 'ERROR'
-
-    if not os.path.exists(log_file):
-        raise click.ClickException(f"Log file not found: {log_file}")
-
-    # Read all entries
-    entries = []
-    with open(log_file, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json_module.loads(line)
-                entries.append(entry)
-            except json_module.JSONDecodeError:
-                continue  # Skip malformed lines
-
-    # Apply filters
-    if level:
-        entries = [e for e in entries if e.get('level', '').upper() == level.upper()]
-
-    if batch_id:
-        entries = [e for e in entries if batch_id in e.get('batch_id', '')]
-
-    # Apply --last N
-    if last_n > 0:
-        entries = entries[-last_n:]
-
-    # Output
-    if not entries:
-        click.echo("No matching log entries found.")
-        return
-
-    for entry in entries:
-        if output_json:
-            click.echo(json_module.dumps(entry))
-        else:
-            # Formatted output
-            ts = entry.get('timestamp', '')[:19]  # Truncate microseconds
-            lvl = entry.get('level', 'INFO')
-            msg = entry.get('message', '')
-            bid = entry.get('batch_id', '')
-
-            # Color by level
-            level_colors = {
-                'DEBUG': 'cyan',
-                'INFO': 'green',
-                'WARNING': 'yellow',
-                'ERROR': 'red',
-            }
-            color = level_colors.get(lvl, 'white')
-
-            if bid:
-                click.echo(f"{ts} [{click.style(lvl, fg=color)}] [{bid}] {msg}")
-            else:
-                click.echo(f"{ts} [{click.style(lvl, fg=color)}] {msg}")
-
-
-@main.command()
-@click.option('--scripts', is_flag=True, help='Eject only Slurm/HPC scripts.')
-@click.option('--container', is_flag=True, help='Eject only container files (Apptainer.def, Dockerfile).')
-@click.option('--output', '-o', default='.', help='Output directory (default: current directory).')
-@click.option('--force', is_flag=True, help='Overwrite existing files without prompting.')
-def eject(scripts, container, output, force):
-    """Eject bundled scripts and container definitions for customization.
-
-    By default, ejects both container files and Slurm scripts.
-    Use --scripts or --container to eject only one category.
-
-    Examples:
-
-        fairway eject                  # Eject everything
-        fairway eject --scripts        # Eject only scripts/
-        fairway eject --container      # Eject only container files
-        fairway eject -o custom/       # Eject to custom directory
-    """
-    from .templates import (
-        APPTAINER_DEF, DOCKERFILE_TEMPLATE, DOCKERIGNORE, MAKEFILE_TEMPLATE,
-        DRIVER_TEMPLATE, DRIVER_SCHEMA_TEMPLATE, SPARK_START_TEMPLATE, HPC_SCRIPT
-    )
-
-    # If neither flag is set, eject both
-    eject_scripts = scripts or not container
-    eject_container = container or not scripts
-
-    # Create output directory if needed
-    if output != '.':
-        os.makedirs(output, exist_ok=True)
-
-    def write_file(rel_path, content, executable=False):
-        """Write a file, handling existing files and permissions."""
-        full_path = os.path.join(output, rel_path)
-        dir_path = os.path.dirname(full_path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-
-        if os.path.exists(full_path) and not force:
-            click.echo(f"  Skipping (exists): {rel_path}")
-            return False
-
-        with open(full_path, 'w') as f:
-            f.write(content)
-
-        if executable:
-            os.chmod(full_path, 0o755)
-
-        click.echo(f"  Created: {rel_path}")
-        return True
-
-    created = []
-
-    if eject_container:
-        click.echo("Ejecting container files...")
-        if write_file('Apptainer.def', APPTAINER_DEF):
-            created.append('Apptainer.def')
-        if write_file('Dockerfile', DOCKERFILE_TEMPLATE):
-            created.append('Dockerfile')
-        if write_file('.dockerignore', DOCKERIGNORE):
-            created.append('.dockerignore')
-        if write_file('Makefile', MAKEFILE_TEMPLATE):
-            created.append('Makefile')
-
-    if eject_scripts:
-        click.echo("Ejecting Slurm/HPC scripts...")
-        if write_file('scripts/driver.sh', DRIVER_TEMPLATE, executable=True):
-            created.append('scripts/driver.sh')
-        if write_file('scripts/driver-schema.sh', DRIVER_SCHEMA_TEMPLATE, executable=True):
-            created.append('scripts/driver-schema.sh')
-        if write_file('scripts/fairway-spark-start.sh', SPARK_START_TEMPLATE, executable=True):
-            created.append('scripts/fairway-spark-start.sh')
-        if write_file('scripts/fairway-hpc.sh', HPC_SCRIPT, executable=True):
-            created.append('scripts/fairway-hpc.sh')
-
-    if created:
-        click.echo(f"\nEjected {len(created)} files to {output}")
-    else:
-        click.echo("\nNo files created (all already exist). Use --force to overwrite.")
-
-
-@main.command()
-@click.option('--force', is_flag=True, help='Force rebuild (overwrite existing image).')
-def build(force):
-    """Build the container image (Apptainer preferred, falls back to Docker).
-
-    The container installs fairway from the main branch. For development,
-    use 'fairway shell --dev' to bind-mount local source code.
-    """
-
-    # Check for Apptainer.def
-    if os.path.exists('Apptainer.def'):
-        click.echo("Found Apptainer.def. Building Apptainer image...")
-
-        if os.path.exists("fairway.sif"):
-            if force:
-                click.echo("Overwriting existing fairway.sif...")
-                os.remove("fairway.sif")
-            else:
-                if not click.confirm("fairway.sif already exists. Overwrite?"):
-                    return
-
-        cmd = ["apptainer", "build", "fairway.sif", "Apptainer.def"]
-        try:
-            subprocess.run(cmd, check=True)
-            click.echo("\nBuild complete: fairway.sif")
-            click.echo("For development, use: fairway shell --dev")
-        except subprocess.CalledProcessError as e:
-            raise click.ClickException(f"Apptainer build failed with exit code {e.returncode}")
-        except FileNotFoundError:
-             raise click.ClickException("Apptainer command not found.")
-             
-    elif os.path.exists("Dockerfile"):
-        click.echo("Found Dockerfile. Building Docker image...")
-        
-        cmd = ["docker", "build", "-t", "fairway", "."]
-        try:
-            subprocess.run(cmd, check=True)
-            click.echo("\nBuild complete: fairway:latest")
-        except subprocess.CalledProcessError as e:
-             raise click.ClickException(f"Docker build failed with exit code {e.returncode}")
-        except FileNotFoundError:
-             raise click.ClickException("Docker command not found.")
-    else:
-        raise click.ClickException(
-            "No container definition found. "
-            "Run 'fairway eject' to generate Apptainer.def and Dockerfile."
-        )
-
-
-def _get_dev_bind_path():
-    """Get bind path for dev mode - mounts local src over container's installed package."""
-    # Find local fairway source
-    local_src = os.path.join(os.getcwd(), 'src', 'fairway')
-    if not os.path.isdir(local_src):
-        # Try relative to this file (for when running from fairway repo)
-        local_src = os.path.dirname(os.path.abspath(__file__))
-
-    if os.path.isdir(local_src):
-        # Container's installed package location
-        container_pkg = "/opt/venv/lib/python3.10/site-packages/fairway"
-        return f"{local_src}:{container_pkg}"
-    return None
-
-
-@main.command()
-@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
-@click.option('--image', default=None, help='Path to Apptainer image (default: checks local fairway.sif then pulls from registry).')
-@click.option('--bind', multiple=True, help='Additional bind paths.')
-@click.option('--dev', is_flag=True, help='Dev mode: bind-mount local src/fairway over container package for rapid iteration.')
-def shell(config, image, bind, dev):
-    """Enter an interactive shell inside the fairway container."""
-    from .config_loader import Config
-
-    # Auto-discover config if not specified
-    if config is None:
-        try:
-            config = discover_config()
-            click.echo(f"Auto-discovered config: {config}")
-        except Exception:
-            # It's okay if we don't find config for shell, but we won't auto-bind project paths
-            config = None
-            click.echo("No config file found. Proceeding without auto-binding project paths.")
-
-    bind_paths = set(bind)
-
-    if config:
-        cfg = Config(config)
-        auto_binds = _get_apptainer_binds(cfg)
-        bind_paths.update(auto_binds)
-
-    # Dev mode: bind-mount local source over container's installed package
-    dev_bind = None
-    if dev:
-        dev_bind = _get_dev_bind_path()
-        if dev_bind:
-            click.echo(f"Dev mode: mounting local source -> {dev_bind}")
-        else:
-            click.echo("Warning: --dev specified but src/fairway not found in current directory", err=True)
-
-    # Determine image
-    if image:
-        container_image = image
-    elif os.path.exists("fairway.sif"):
-        container_image = "fairway.sif"
-    else:
-        # Default to latest from registry
-        container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
-
-    cmd = ["apptainer", "shell"]
-
-    # Add dev bind first (so it takes precedence)
-    if dev_bind:
-        cmd.extend(["--bind", dev_bind])
-
-    if bind_paths:
-        bind_str = ','.join(sorted(list(bind_paths)))
-        cmd.extend(["--bind", bind_str])
-        click.echo(f"Binding paths: {bind_str}")
-
-    cmd.append(container_image)
-
-    click.echo(f"Launching shell in container: {container_image}")
-    try:
-        subprocess.run(cmd)
-    except FileNotFoundError:
-        click.echo("Error: 'apptainer' command not found. Is Apptainer installed?", err=True)
-
-@main.command()
-@click.option('--user', default=None, help='Filter by user (default: current user).')
-@click.option('--job-id', help='Filter by job ID.')
-def status(user, job_id):
-    """Show the status of submitted Slurm jobs (wrapper around squeue)."""
-    # Check for active Spark cluster info
-    master_path = os.path.expanduser("~/spark_master_url.txt")
-    job_id_path = os.path.expanduser("~/cluster_job_id.txt")
-    
-    if os.path.exists(master_path) and os.path.exists(job_id_path):
-        with open(master_path, 'r') as f:
-            master_url = f.read().strip()
-        with open(job_id_path, 'r') as f:
-            cluster_job_id = f.read().strip()
-        
-        click.echo("Found active Spark cluster:")
-        click.echo(f"  Slurm Job ID: {cluster_job_id}")
-        click.echo(f"  Master URL:   {master_url}")
-        click.echo("")
-
-    cmd = ['squeue']
-    
-    if job_id:
-        cmd.extend(['--jobs', job_id])
-    else:
-        # Default to current user if no user specified
-        if not user:
-            import getpass
-            user = getpass.getuser()
-        cmd.extend(['--user', user])
-        
-    try:
-        subprocess.run(cmd, check=True)
-    except FileNotFoundError:
-        click.echo("Error: 'squeue' command not found. Are you on a system with Slurm?", err=True)
-    except subprocess.CalledProcessError as e:
-        click.echo(f"Error checking status: {e}", err=True)
-
-
-@main.command()
-@click.argument('job_id', required=False)
-@click.option('--all', 'kill_all', is_flag=True, help='Cancel all your running jobs.')
-def cancel(job_id, kill_all):
-    """Cancel a Slurm job (wrapper around scancel)."""
-    if kill_all:
-        if not click.confirm("Are you sure you want to cancel ALL your running jobs?"):
-            return
-        
-        import getpass
-        user = getpass.getuser()
-        cmd = ['scancel', '--user', user]
-        click.echo(f"Cancelling all jobs for user {user}...")
-        
-    elif job_id:
-        cmd = ['scancel', job_id]
-        click.echo(f"Cancelling job {job_id}...")
-    else:
-        raise click.ClickException("Must specify JOB_ID or --all.")
-
-    try:
-        subprocess.run(cmd, check=True)
-        click.echo("Done.")
-    except FileNotFoundError:
-        click.echo("Error: 'scancel' command not found. Are you on a system with Slurm?", err=True)
-    except subprocess.CalledProcessError as e:
-        click.echo(f"Error cancelling job: {e}", err=True)
-
-
-
-@main.command()
-@click.option('--config', default=None, help='Path to config file. Auto-discovered from config/ if not specified.')
-@click.option('--account', default=None, help='Slurm account.')
-@click.option('--partition', default='day', help='Slurm partition.')
-@click.option('--time', default='24:00:00', help='Time limit (HH:MM:SS).')
-@click.option('--mem', default='16G', help='Memory per node.')
-@click.option('--cpus', default=4, type=int, help='CPUs per task.')
-@click.option('--with-spark', is_flag=True, help='Start Spark cluster before running pipeline.')
-@click.option('--with-summary', is_flag=True, help='Include summary generation (default: skip summary, run separately with `fairway summarize`).')
-@click.option('--dry-run', is_flag=True, help='Print job script without submitting.')
-def submit(config, account, partition, time, mem, cpus, with_spark, with_summary, dry_run):
-    """Submit pipeline as a Slurm job.
-
-    The job will run `fairway run --skip-summary` by default (ingestion only).
-    Use --with-summary to include summary generation in the same job.
-
-    Examples:
-
-        # Submit ingestion only (default)
-        fairway submit --with-spark
-
-        # Submit with summary generation included
-        fairway submit --with-spark --with-summary
-
-        # Submit with custom resources
-        fairway submit --with-spark --mem 64G --cpus 8 --time 48:00:00
-
-        # Preview the job script
-        fairway submit --with-spark --dry-run
-    """
+    import duckdb
     import yaml
-    import tempfile
-
-    # Auto-discover config
-    if config is None:
-        config = discover_config()
-        click.echo(f"Auto-discovered config: {config}")
-
-    # Load main config to get container settings
-    from fairway.config_loader import Config
-    main_cfg = Config(config)
-
-    # Read resource hints from first table's preprocess config
-    preprocess_resources = {}
-    for t in main_cfg.tables:
-        res = t.get('preprocess', {}).get('resources', {})
-        if res:
-            preprocess_resources = res
-            break
-
-    # Apply config defaults only when CLI used default values
-    ctx = click.get_current_context()
-    if ctx.get_parameter_source('cpus') != click.core.ParameterSource.COMMANDLINE:
-        cpus = preprocess_resources.get('cpus', cpus)
-    if ctx.get_parameter_source('mem') != click.core.ParameterSource.COMMANDLINE:
-        mem = preprocess_resources.get('memory', mem)
-
-    # Auto-detect bind paths from config (storage dirs, temp, table roots, explicit binds)
-    auto_binds = _get_apptainer_binds(main_cfg)
-    apptainer_binds = ','.join(sorted(auto_binds)) if auto_binds else ''
-
-    # Check if running in Apptainer mode (fairway.sif exists)
-    sif_path = os.environ.get('FAIRWAY_SIF', 'fairway.sif')
-    use_apptainer = os.path.exists(sif_path)
-
-    if use_apptainer and not apptainer_binds:
-        raise click.ClickException(
-            "Apptainer mode detected but no bind paths could be determined.\n"
-            "Add 'container.apptainer_binds' to your config file:\n\n"
-            "  container:\n"
-            "    apptainer_binds: \"/path/to/data,/path/to/scratch\"\n\n"
-            "Or ensure storage paths exist so they can be auto-detected."
-        )
-
-    if use_apptainer:
-        click.echo(f"Auto-detected bind paths: {apptainer_binds}")
-
-    # Load spark.yaml for defaults
-    spark_yaml_path = 'config/spark.yaml'
-    spark_defaults = {}
-    if os.path.exists(spark_yaml_path):
-        with open(spark_yaml_path, 'r') as f:
-            spark_defaults = yaml.safe_load(f) or {}
-
-    # Apply defaults from spark.yaml if not specified (no hardcoded defaults)
-    account = account or spark_defaults.get('account')
-    if not account:
-        raise click.ClickException(
-            "Slurm account is required. Set 'account' in config/spark.yaml or use --account"
-        )
-
-    # Validate all parameters to prevent command injection
-    time = _validate_slurm_time(time)
-    mem = _validate_slurm_mem(mem)
-    partition = _validate_slurm_param(partition, 'partition', r'^[a-zA-Z0-9_-]+$')
-    account = _validate_slurm_param(account, 'account', r'^[a-zA-Z0-9_-]+$')
-    # Config path validation: only allow safe path characters
-    config = _validate_slurm_param(config, 'config', r'^[a-zA-Z0-9_./-]+$', max_length=256)
-    if cpus < 1 or cpus > 256:
-        raise click.ClickException(f"Invalid cpus: {cpus} (must be 1-256)")
-
-    # Generate job script
-    if with_spark:
-        job_script = f'''#!/bin/bash
-#SBATCH --job-name=fairway_pipeline
-#SBATCH --output=logs/slurm/fairway_%j.log
-#SBATCH --time={time}
-#SBATCH --mem={mem}
-#SBATCH --cpus-per-task={cpus}
-#SBATCH --partition={partition}
-#SBATCH --account={account}
-
-set -e
-
-# Ensure log directory exists
-mkdir -p logs/slurm
-
-# =============================================================================
-# Apptainer Mode Detection
-# =============================================================================
-# Detect if we should use Apptainer mode based on:
-# 1. FAIRWAY_SIF environment variable
-# 2. Local fairway.sif file
-USE_APPTAINER="no"
-FAIRWAY_SIF="${{FAIRWAY_SIF:-fairway.sif}}"
-FAIRWAY_BINDS="{apptainer_binds}"
-
-if [ -f "$FAIRWAY_SIF" ]; then
-    USE_APPTAINER="yes"
-    echo "Apptainer mode detected: $FAIRWAY_SIF"
-else
-    echo "Bare-metal mode (no container found at $FAIRWAY_SIF)"
-fi
-
-# =============================================================================
-# Environment Setup
-# =============================================================================
-if [ "$USE_APPTAINER" = "yes" ]; then
-    echo "Using Apptainer container for Spark cluster and driver"
-    # Export for SlurmSparkManager to detect
-    export FAIRWAY_SIF
-    export FAIRWAY_BINDS
-else
-    # Load Spark module only in bare-metal mode (container has its own Spark)
-    echo "Loading Spark module..."
-    module load Spark/3.5.1-foss-2022b-Scala-2.13 2>/dev/null || echo "WARNING: Could not load Spark module"
-fi
-
-# Use job-specific state directory to prevent race conditions with concurrent jobs
-STATE_DIR="$HOME/.fairway-spark/$SLURM_JOB_ID"
-mkdir -p "$STATE_DIR"
-
-# Cleanup function to stop Spark cluster on exit
-# NOTE: fairway spark stop runs on HOST (not in container) because it:
-#   1. Reads state files from host filesystem
-#   2. Runs scancel (Slurm command) to cancel the cluster job
-cleanup() {{
-    echo "Stopping Spark cluster..."
-    fairway spark stop --driver-job-id $SLURM_JOB_ID || true
-    # Clean up state directory
-    rm -rf "$STATE_DIR"
-}}
-trap cleanup EXIT
-
-# Start Spark cluster with job isolation
-echo "Starting Spark cluster..."
-fairway spark start --driver-job-id $SLURM_JOB_ID
-
-# Wait for master URL and conf dir (job-specific paths)
-MASTER_URL_FILE="$STATE_DIR/master_url.txt"
-CONF_DIR_FILE="$STATE_DIR/conf_dir.txt"
-SPARK_ARGS=""
-if [ -f "$MASTER_URL_FILE" ]; then
-    SPARK_MASTER=$(cat "$MASTER_URL_FILE")
-    echo "Spark Master: $SPARK_MASTER"
-    SPARK_ARGS="--spark-master $SPARK_MASTER"
-else
-    echo "WARNING: Spark master URL not found. Running in local mode."
-fi
-
-# Export SPARK_CONF_DIR so the driver picks up auth settings (SASL secret) from spark-start
-if [ -f "$CONF_DIR_FILE" ]; then
-    export SPARK_CONF_DIR=$(cat "$CONF_DIR_FILE")
-    echo "Spark Conf Dir: $SPARK_CONF_DIR"
-fi
-
-# =============================================================================
-# Run Pipeline
-# =============================================================================
-echo "Running pipeline..."
-if [ "$USE_APPTAINER" = "yes" ]; then
-    # Build bind paths for Apptainer
-    # Use --no-home to prevent classpath pollution from user's home directory
-    BIND_PATHS="${{FAIRWAY_BINDS}}"
-    BIND_PATHS="${{BIND_PATHS}},${{HOME}}/.spark-local"
-    BIND_PATHS="${{BIND_PATHS}},${{HOME}}/.fairway-spark"
-    BIND_PATHS="${{BIND_PATHS}},${{PWD}}"
-    BIND_PATHS="${{BIND_PATHS}},/tmp"
-    if [ -n "$SPARK_CONF_DIR" ]; then
-        BIND_PATHS="${{BIND_PATHS}},${{SPARK_CONF_DIR}}"
-    fi
-    echo "Running inside Apptainer with binds: $BIND_PATHS"
-
-    # Ensure all bind-mount source directories exist on this node.
-    IFS=',' read -ra _bind_dirs <<< "$BIND_PATHS"
-    for _dir in "${{_bind_dirs[@]}}"; do
-        _dir="${{_dir%%:*}}"
-        _dir="$(echo "${{_dir}}" | xargs)"
-        [ -n "${{_dir}}" ] && mkdir -p "${{_dir}}" 2>/dev/null || true
-    done
-    unset _bind_dirs _dir
-
-    apptainer exec --no-home \
-        --bind "$BIND_PATHS" \
-        --env SPARK_CONF_DIR="${{SPARK_CONF_DIR}}" \
-        "$FAIRWAY_SIF" \
-        fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
-else
-    fairway run --config {config} $SPARK_ARGS{'' if with_summary else ' --skip-summary'}
-fi
-
-echo "Pipeline completed successfully."
-'''
-    else:
-        job_script = f'''#!/bin/bash
-#SBATCH --job-name=fairway_pipeline
-#SBATCH --output=logs/slurm/fairway_%j.log
-#SBATCH --time={time}
-#SBATCH --mem={mem}
-#SBATCH --cpus-per-task={cpus}
-#SBATCH --partition={partition}
-#SBATCH --account={account}
-
-set -e
-
-# Ensure log directory exists
-mkdir -p logs/slurm
-
-# Run pipeline (no Spark cluster)
-echo "Running pipeline..."
-fairway run --config {config}{'' if with_summary else ' --skip-summary'}
-
-echo "Pipeline completed successfully."
-'''
-
-    if dry_run:
-        click.echo("Generated job script:")
-        click.echo("-" * 60)
-        click.echo(job_script)
-        click.echo("-" * 60)
-        return
-
-    # Ensure logs directory exists
-    os.makedirs('logs/slurm', exist_ok=True)
-
-    # Write to temp file and submit
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-        f.write(job_script)
-        script_path = f.name
-
+    from .config import _parse_validations
+    from .validations import ShardValidationError, apply_validations
+    spec = yaml.safe_load(Path(rules).read_text(encoding="utf-8")) or {}
+    validations_cfg = _parse_validations(spec.get("validations") if isinstance(spec, dict) else spec)
+    con = duckdb.connect(":memory:")
+    glob = str(Path(dataset_path)).replace("'", "''") + "/**/*.parquet"
     try:
-        click.echo(f"Submitting job (config: {config}, with-spark: {with_spark})...")
-        result = subprocess.run(['sbatch', script_path], capture_output=True, text=True)
-        if result.returncode == 0:
-            click.echo(result.stdout.strip())
-            click.echo("Job submitted. Check status with 'fairway status'.")
-        else:
-            click.echo(f"Error submitting job: {result.stderr}", err=True)
-            sys.exit(1)
-    except FileNotFoundError:
-        click.echo("Error: 'sbatch' command not found. Are you on a system with Slurm?", err=True)
-        sys.exit(1)
+        rel = con.sql(f"SELECT * FROM read_parquet('{glob}')")
+        try:
+            apply_validations(rel, validations_cfg)
+        except ShardValidationError as exc:
+            click.echo(f"FAIL  {exc}", err=True)
+            sys.exit(2)
     finally:
-        os.unlink(script_path)
+        con.close()
+    click.echo(f"OK    all checks passed: {dataset_path}")
 
 
 @main.command()
-def pull():
-    """Pull (mirror) the Apptainer container from the registry."""
-    container_local = "fairway.sif"
-    container_image = "docker://ghcr.io/dissc-yale/fairway:latest"
-    
-    if os.path.exists(container_local):
-        if not click.confirm(f"Container {container_local} already exists. Overwrite?"):
-            return
-
-    click.echo(f"Pulling from registry: {container_image}...")
-    cmd = ["apptainer", "pull", "--force", container_local, container_image]
-    
-    try:
-        subprocess.run(cmd, check=True)
-        click.echo(f"\nContainer pulled successfully: {container_local}")
-    except subprocess.CalledProcessError:
-        click.echo("\nError: Container pull failed.", err=True)
-        click.echo("If you see an auth error, run: source scripts/fairway-hpc.sh registry-login", err=True)
-    except FileNotFoundError:
-        click.echo("apptainer command not found. Is Apptainer installed?", err=True)
+def enrich() -> None:
+    """Deferred stub — see PLAN.md re-entry triggers."""
+    click.echo("enrich is deferred — see PLAN.md re-entry triggers", err=True)
+    sys.exit(2)
 
 
-# =============================================================================
-# MANIFEST COMMANDS
-# =============================================================================
-
-@main.group()
-def manifest():
-    """Inspect and query the file manifest."""
-    pass
-
-
-@manifest.command('list')
-def manifest_list():
-    """List all tables with manifests."""
-    from .manifest import ManifestStore
-    from tabulate import tabulate
-
-    store = ManifestStore()
-    tables = store.list_tables()
-
-    if not tables:
-        click.echo("No tables found in manifest. Run 'fairway run' first.")
-        return
-
-    # Gather stats for each table
-    rows = []
-    for table_name in tables:
-        tm = store.get_table_manifest(table_name)
-        files = tm.data.get("files", {})
-        total = len(files)
-        success = sum(1 for f in files.values() if f.get("status") == "success")
-        failed = sum(1 for f in files.values() if f.get("status") == "failed")
-        rows.append([table_name, total, success, failed])
-
-    headers = ["Table", "Files", "Success", "Failed"]
-    click.echo(tabulate(rows, headers=headers, tablefmt="simple"))
-
-
-@manifest.command('query')
-@click.option('--table', '-t', required=False, help='Table name to query.')
-@click.option('--file', '-f', 'file_key', help='Query a specific file by key.')
-@click.option('--status', '-s', type=click.Choice(['success', 'failed']), help='Filter by status.')
-@click.option('--batch-id', '-b', help='Filter by batch ID.')
-@click.option('--json', 'json_output', is_flag=True, help='Output as JSON.')
-def manifest_query(table, file_key, status, batch_id, json_output):
-    """Query files in the manifest.
-
-    Examples:
-
-        fairway manifest query --table claims
-
-        fairway manifest query --table claims --status failed
-
-        fairway manifest query --table claims --batch-id batch_001
-
-        fairway manifest query --table claims --file CT_2023_01.csv
-
-        fairway manifest query --table claims --json
-    """
-    import json as json_module
-    from .manifest import ManifestStore
-    from tabulate import tabulate
-
-    store = ManifestStore()
-
-    # If no table specified, show error
-    if not table:
-        click.echo("Error: --table is required. Use 'fairway manifest list' to see available tables.")
-        raise SystemExit(1)
-
-    # Check if table exists
-    tables = store.list_tables()
-    if table not in tables:
-        click.echo(f"Error: Table '{table}' not found. Available tables: {', '.join(tables) if tables else 'none'}")
-        raise SystemExit(1)
-
-    tm = store.get_table_manifest(table)
-
-    # Query single file
-    if file_key:
-        entry = tm.query_file(file_key)
-        if entry is None:
-            click.echo(f"File '{file_key}' not found in {table} manifest.")
-            raise SystemExit(1)
-
-        if json_output:
-            result = entry.copy()
-            result["file_key"] = file_key
-            click.echo(json_module.dumps(result, indent=2, default=str))
-        else:
-            click.echo(f"File: {file_key}")
-            click.echo(f"  Status: {entry.get('status', 'unknown')}")
-            click.echo(f"  Last Processed: {entry.get('last_processed', 'unknown')}")
-            click.echo(f"  Hash: {entry.get('hash', 'unknown')}")
-            metadata = entry.get('metadata', {})
-            if metadata:
-                click.echo(f"  Metadata:")
-                for k, v in metadata.items():
-                    click.echo(f"    {k}: {v}")
-        return
-
-    # Query with filters
-    results = tm.query_files(status=status, batch_id=batch_id)
-
-    if not results:
-        click.echo(f"No files found matching filters.")
-        return
-
-    if json_output:
-        click.echo(json_module.dumps(results, indent=2, default=str))
-    else:
-        # Format as table
-        rows = []
-        for entry in results:
-            metadata = entry.get('metadata', {})
-            rows.append([
-                entry.get('file_key', 'unknown'),
-                entry.get('status', 'unknown'),
-                metadata.get('batch_id', '-'),
-                metadata.get('partition', '-'),
-            ])
-
-        headers = ["File", "Status", "Batch ID", "Partition"]
-        click.echo(tabulate(rows, headers=headers, tablefmt="simple"))
-        click.echo(f"\nTotal: {len(results)} files")
+@main.command()
+@click.argument("dataset_path", type=click.Path(exists=True))
+@click.option("--output", "output_path", required=True,
+              type=click.Path(dir_okay=False),
+              help="Path to write the summary CSV.")
+def summarize(dataset_path: str, output_path: str) -> None:
+    """Generate a column-level summary CSV via DuckDB over landed parquet."""
+    from .summarize import generate_summary
+    generate_summary(Path(dataset_path), Path(output_path))
 
 
 @main.group()
-def cache():
-    """Manage fairway cache."""
-    pass
+def manifest() -> None:
+    """Inspect and finalize fragment manifests."""
 
 
-@cache.command()
-@click.option('--force', is_flag=True, help='Skip confirmation prompt.')
-def clean(force):
-    """Clear the archive extraction cache (.fairway_cache/)."""
-    cache_dir = '.fairway_cache'
+@manifest.command("finalize")
+@click.argument("layer_root", type=click.Path(exists=True, file_okay=False))
+def manifest_finalize(layer_root: str) -> None:
+    """Merge ``<layer_root>/_fragments/*.json`` → ``manifest.json`` + ``schema_summary.json``."""
+    merged = _manifest.finalize(layer_root)
+    counts: dict[str, int] = {"ok": 0, "error": 0}
+    for frag in merged.get("fragments", []):
+        counts[frag.get("status", "error")] = counts.get(frag.get("status", "error"), 0) + 1
+    click.echo(f"finalized {layer_root}\n  fragments merged: {merged.get('fragment_count', 0)}\n"
+               f"  ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
 
-    if not os.path.exists(cache_dir):
-        click.echo("No cache directory found.")
+
+@main.command()
+@click.argument("config_yaml", type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True,
+              help="Render shards.json + sbatch script(s); do not invoke sbatch.")
+@click.option("--allow-skip", is_flag=True,
+              help="Skip files in source_glob not matching naming_pattern "
+                   "(logged to manifest/_skipped/<ts>.json).")
+@click.option("--force", is_flag=True,
+              help="Re-submit every shard, bypassing idempotent-resume skip.")
+@click.option("--chunk-size", type=int, default=None,
+              help="Override Config.slurm_chunk_size for this submission.")
+def submit(config_yaml: str, dry_run: bool, allow_skip: bool,
+           force: bool, chunk_size: int | None) -> None:
+    """Render sbatch script(s) and submit a Slurm array (Steps 9.2–9.5)."""
+    from . import _sbatch, batcher
+    from .duckdb_runner import _layer_root
+    config = load_config(config_yaml)
+    layer_root = _layer_root(config)
+    matched, unmatched = batcher.expand_and_validate(config)
+    _sbatch.handle_unmatched(unmatched, layer_root, allow_skip=allow_skip, dry_run=dry_run)
+    if not matched:
+        raise click.ClickException(f"No shards from source_glob={config.source_glob!r}.")
+    to_submit, skipped_ok = _sbatch.filter_resumable_shards(matched, layer_root, force)
+    if dry_run:
+        click.echo(f"Would submit: {len(to_submit)} shards\n"
+                   f"Would skip (existing ok): {len(skipped_ok)} shards")
+    if not to_submit:
+        click.echo("All shards already complete — nothing to submit. "
+                   "Use --force to override.")
         return
+    effective_size = chunk_size if chunk_size is not None else config.slurm_chunk_size
+    chunks = _sbatch.chunk_shards(to_submit, effective_size)
+    scripts = _sbatch.write_chunk_artifacts(config, chunks, Path(config_yaml))
+    if dry_run:
+        for script in scripts:
+            click.echo(f"Would submit: sbatch {script}")
+        return
+    if shutil.which("sbatch") is None:
+        click.echo("Error: sbatch not found on PATH. Run from a Slurm-enabled "
+                   "host or pass --dry-run to render scripts only.", err=True)
+        sys.exit(2)
+    ts = _manifest.utc_now_iso()
+    job_ids: list[str] = []
+    for i, (script, chunk) in enumerate(zip(scripts, chunks)):
+        proc = subprocess.run(["sbatch", str(script)], check=True,
+                              capture_output=True, text=True)
+        jid = _sbatch.parse_array_job_id(proc.stdout)
+        _sbatch.write_submission_record(
+            layer_root, sbatch_script=script, array_job_id=jid,
+            n_shards=len(chunk), ts=ts, chunk_index=i, total_chunks=len(chunks))
+        job_ids.append(jid)
+    click.echo(_sbatch.format_submission_summary(
+        len(to_submit), len(skipped_ok), len(chunks), job_ids))
 
-    # Calculate size
-    total_size = 0
-    file_count = 0
-    for dirpath, dirnames, filenames in os.walk(cache_dir):
-        for f in filenames:
-            fp = os.path.join(dirpath, f)
-            total_size += os.path.getsize(fp)
-            file_count += 1
 
-    size_mb = total_size / (1024 * 1024)
-
-    if not force:
-        if not click.confirm(f"Delete {cache_dir}/ ({file_count} files, {size_mb:.1f} MB)?"):
-            return
-
-    shutil.rmtree(cache_dir)
-    click.echo(f"Removed {cache_dir}/ ({size_mb:.1f} MB freed)")
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-

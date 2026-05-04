@@ -1,0 +1,18 @@
+dataset_name: "integration_partitioned"
+engine: "duckdb"
+storage:
+  root: "PLACEHOLDER_ROOT"
+tables:
+  - name: "sales"
+    path: "PLACEHOLDER_ROOT/raw/sales"
+    format: "csv"
+    partition_by:
+      - "year"
+      - "month"
+    schema:
+      id: "BIGINT"
+      amount: "DOUBLE"
+      year: "INTEGER"
+      month: "INTEGER"
+validations:
+  min_rows: 1

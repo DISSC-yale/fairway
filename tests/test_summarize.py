@@ -1,104 +1,90 @@
-"""Tests for Summarizer."""
+"""Tests for fairway.summarize (DuckDB-only, rewrite/v0.3 Step 9.6)."""
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+import duckdb
 import pytest
-import pandas as pd
-import os
-from fairway.summarize import Summarizer
+
+from fairway.summarize import generate_summary
 
 
-class TestGenerateSummaryTable:
-    """Tests for DuckDB-style summary generation."""
-
-    def test_basic_summary(self, tmp_path):
-        """Generates summary CSV with expected columns."""
-        df = pd.DataFrame({
-            "id": [1, 2, 3],
-            "name": ["a", "b", "c"],
-            "amount": [10.0, 20.0, 30.0],
-        })
-        output = str(tmp_path / "summary.csv")
-
-        result = Summarizer.generate_summary_table(df, output)
-
-        assert os.path.exists(output)
-        assert len(result) == 3  # one row per column
-        assert "variable" in result.columns
-        assert "null_count" in result.columns
-        assert "distinct_count" in result.columns
-
-    def test_numeric_stats(self, tmp_path):
-        """Numeric columns get min/max/mean/median."""
-        df = pd.DataFrame({"val": [10, 20, 30, 40]})
-        output = str(tmp_path / "summary.csv")
-
-        result = Summarizer.generate_summary_table(df, output)
-
-        row = result[result["variable"] == "val"].iloc[0]
-        assert row["min"] == 10
-        assert row["max"] == 40
-        assert row["mean"] == 25.0
-        assert row["median"] == 25.0
-
-    def test_null_counting(self, tmp_path):
-        """Null values are counted correctly."""
-        df = pd.DataFrame({"col": [1, None, 3, None]})
-        output = str(tmp_path / "summary.csv")
-
-        result = Summarizer.generate_summary_table(df, output)
-
-        row = result[result["variable"] == "col"].iloc[0]
-        assert row["null_count"] == 2
-
-    def test_string_column_no_numeric_stats(self, tmp_path):
-        """String columns don't have min/max/mean/median keys."""
-        df = pd.DataFrame({"name": ["alice", "bob"]})
-        output = str(tmp_path / "summary.csv")
-
-        result = Summarizer.generate_summary_table(df, output)
-
-        row = result[result["variable"] == "name"].iloc[0]
-        # Should not have numeric stats (or they should be NaN)
-        assert pd.isna(row.get("min", float("nan")))
-
-    def test_empty_dataframe(self, tmp_path):
-        """Empty dataframe produces empty summary."""
-        df = pd.DataFrame()
-        output = str(tmp_path / "summary.csv")
-
-        result = Summarizer.generate_summary_table(df, output)
-
-        assert len(result) == 0
+def _write_fixture(parquet: Path) -> None:
+    """Mixed int/float/string parquet with one NULL in ``id``."""
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute(
+            "CREATE TABLE t (id INTEGER, amount DOUBLE, name VARCHAR)"
+        )
+        con.execute(
+            "INSERT INTO t VALUES (1, 10.0, 'a'), (2, 20.0, 'b'), "
+            "(3, 30.0, 'c'), (NULL, 40.0, 'd')"
+        )
+        target = str(parquet).replace("'", "''")
+        con.execute(f"COPY t TO '{target}' (FORMAT PARQUET)")
+    finally:
+        con.close()
 
 
-class TestGenerateMarkdownReport:
-    """Tests for markdown report generation."""
+def _read_summary(path: Path) -> dict[str, dict[str, str]]:
+    with open(path, newline="", encoding="utf-8") as f:
+        return {row["variable"]: row for row in csv.DictReader(f)}
 
-    def test_basic_report(self, tmp_path):
-        """Generates markdown with expected sections."""
-        summary_df = pd.DataFrame({
-            "variable": ["id", "amount"],
-            "type": ["int64", "float64"],
-            "null_count": [0, 1],
-        })
-        stats = {"row_count": 100, "status": "success", "config_path": "config/test.yaml"}
-        output = str(tmp_path / "report.md")
 
-        Summarizer.generate_markdown_report("test_dataset", summary_df, stats, output)
+@pytest.fixture()
+def summary_csv(tmp_path: Path) -> dict[str, dict[str, str]]:
+    parquet = tmp_path / "data.parquet"
+    out = tmp_path / "summary.csv"
+    _write_fixture(parquet)
+    generate_summary(parquet, out)
+    return _read_summary(out)
 
-        assert os.path.exists(output)
-        content = open(output).read()
-        assert "# test_dataset" in content
-        assert "Total Rows" in content
-        assert "100" in content
-        assert "success" in content
 
-    def test_report_contains_lineage(self, tmp_path):
-        """Report includes lineage section."""
-        summary_df = pd.DataFrame({"variable": ["x"]})
-        stats = {"row_count": 5, "status": "done", "config_path": "my.yaml"}
-        output = str(tmp_path / "report.md")
+def test_roundtrip_columns_and_header(summary_csv: dict[str, dict[str, str]]) -> None:
+    """Summary CSV has one row per source column with the documented schema."""
+    assert set(summary_csv) == {"id", "amount", "name"}
+    expected_fields = {"variable", "type", "null_count", "distinct_count",
+                       "min", "max", "mean", "median"}
+    for row in summary_csv.values():
+        assert set(row) == expected_fields
 
-        Summarizer.generate_markdown_report("ds", summary_df, stats, output)
 
-        content = open(output).read()
-        assert "Lineage" in content
-        assert "my.yaml" in content
+def test_numeric_column_has_min_max_mean_median(
+        summary_csv: dict[str, dict[str, str]]) -> None:
+    amount = summary_csv["amount"]
+    assert float(amount["min"]) == 10.0
+    assert float(amount["max"]) == 40.0
+    assert float(amount["mean"]) == 25.0
+    assert float(amount["median"]) == 25.0
+
+
+def test_string_column_min_max_mean_median_blank(
+        summary_csv: dict[str, dict[str, str]]) -> None:
+    name = summary_csv["name"]
+    assert name["min"] == ""
+    assert name["max"] == ""
+    assert name["mean"] == ""
+    assert name["median"] == ""
+
+
+def test_null_and_distinct_counts(
+        summary_csv: dict[str, dict[str, str]]) -> None:
+    assert int(summary_csv["id"]["null_count"]) == 1
+    assert int(summary_csv["id"]["distinct_count"]) == 3
+    assert int(summary_csv["amount"]["null_count"]) == 0
+    assert int(summary_csv["amount"]["distinct_count"]) == 4
+    assert int(summary_csv["name"]["null_count"]) == 0
+    assert int(summary_csv["name"]["distinct_count"]) == 4
+
+
+def test_directory_input_globs_parquet(tmp_path: Path) -> None:
+    """Directory input expands to ``<dir>/**/*.parquet``."""
+    data_dir = tmp_path / "landed"
+    data_dir.mkdir()
+    _write_fixture(data_dir / "part-0.parquet")
+    out = tmp_path / "summary.csv"
+    generate_summary(data_dir, out)
+    rows = _read_summary(out)
+    assert set(rows) == {"id", "amount", "name"}
+    assert int(rows["id"]["null_count"]) == 1

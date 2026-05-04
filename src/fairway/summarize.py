@@ -1,103 +1,59 @@
-import pandas as pd
-from datetime import datetime
+"""DuckDB-backed dataset summary (rewrite/v0.3 Step 9.6, ≤60 LOC).
 
-class Summarizer:
-    @staticmethod
-    def generate_summary_table(df, output_path):
-        """
-        Generates advanced summary statistics (min, max, mean, nulls, distinct).
-        """
-        stats = []
-        for col in df.columns:
-            column_data = df[col]
-            type_name = str(column_data.dtype)
-            
-            col_stats = {
-                "variable": col,
-                "type": type_name,
-                "null_count": int(column_data.isnull().sum()),
-                "distinct_count": int(column_data.nunique()),
-            }
-            
-            if pd.api.types.is_numeric_dtype(column_data):
-                col_stats.update({
-                    "min": column_data.min(),
-                    "max": column_data.max(),
-                    "mean": column_data.mean(),
-                    "median": column_data.median()
-                })
-            
-            stats.append(col_stats)
-            
-        summary_df = pd.DataFrame(stats)
-        summary_df.to_csv(output_path, index=False)
-        return summary_df
+One row per column: distinct/null count plus MIN/MAX/AVG/MEDIAN for numerics.
+"""
+from __future__ import annotations
 
-    @staticmethod
-    def generate_summary_spark(df, output_path):
-        """
-        Generates summary statistics using native PySpark (no toPandas).
+import csv
+from pathlib import Path
+from typing import Any
 
-        Returns:
-            tuple: (summary_df, row_count) where summary_df is a pandas DataFrame
-                   and row_count is extracted from describe() output (no extra scan).
-        """
-        from pyspark.sql import functions as F
+import duckdb
 
-        desc_df = df.describe()
+_NUMERIC_PREFIXES = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+                     "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
+                     "FLOAT", "DOUBLE", "DECIMAL")
 
-        # Extract row count from describe() output — first row is "count"
-        # This avoids a separate df.count() which would trigger another full scan
-        cols = [c for c in desc_df.columns if c != "summary"]
-        if cols:
-            count_row = desc_df.filter(F.col("summary") == "count")
-            first_col = cols[0]
-            row_count = int(count_row.select(first_col).first()[0])
-        else:
-            row_count = 0
 
-        # Transpose using stack(): unpivot all columns except 'summary'
-        stack_expr = ", ".join([f"'{c}', `{c}`" for c in cols])
-        transposed = desc_df.selectExpr(
-            "summary",
-            f"stack({len(cols)}, {stack_expr}) as (variable, value)"
-        )
+def _is_numeric(dtype: str) -> bool:
+    return any(dtype.upper().startswith(p) for p in _NUMERIC_PREFIXES)
 
-        # Pivot to get summary stats as columns (count, mean, stddev, min, max)
-        pivoted = transposed.groupBy("variable").pivot("summary").agg(F.first("value"))
 
-        # Write directly as single CSV file
-        pivoted.coalesce(1).write.mode("overwrite").option("header", "true").csv(output_path + "_temp")
+def _source_sql(path: Path) -> str:
+    glob = f"{path}/**/*.parquet" if path.is_dir() else str(path)
+    return glob.replace("'", "''")
 
-        # Move the part file to the final location
-        import glob
-        import shutil
-        csv_files = glob.glob(f"{output_path}_temp/part-*.csv")
-        if csv_files:
-            shutil.move(csv_files[0], output_path)
-            shutil.rmtree(output_path + "_temp")
 
-        # Read back the small summary file for the markdown report
-        return pd.read_csv(output_path), row_count
-
-    @staticmethod
-    def generate_markdown_report(dataset_name, summary_df, stats, output_path):
-        """
-        Generates a MkDocs-compatible Markdown report for the dataset.
-        """
-        lines = [
-            f"# {dataset_name}",
-            "\n## Overview",
-            f"- **Processed at**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"- **Total Rows**: {stats.get('row_count'):,}",
-            f"- **Total Columns**: {len(summary_df)}",
-            "\n## Variable Summary",
-            summary_df.to_markdown(index=False),
-            "\n## Lineage",
-            f"- **Status**: {stats.get('status')}",
-            f"- **Source Config**: `{stats.get('config_path', 'unknown')}`"
-        ]
-        
-        with open(output_path, 'w') as f:
-            f.write("\n".join(lines))
-        print(f"Markdown report generated at {output_path}")
+def generate_summary(parquet_path: Path | str, output_path: Path | str) -> None:
+    """Write per-column summary CSV from landed parquet via DuckDB."""
+    src = _source_sql(Path(parquet_path))
+    con = duckdb.connect(":memory:")
+    rows: list[dict[str, Any]] = []
+    try:
+        cols = [(r[0], r[1]) for r in con.sql(
+            f"DESCRIBE SELECT * FROM read_parquet('{src}')").fetchall()]
+        for name, dtype in cols:
+            ident = '"' + name.replace('"', '""') + '"'
+            base = f"COUNT(DISTINCT {ident}), COUNT(*) - COUNT({ident})"
+            if _is_numeric(dtype):
+                q = (f"SELECT {base}, MIN({ident}), MAX({ident}), "
+                     f"AVG({ident}), MEDIAN({ident}) "
+                     f"FROM read_parquet('{src}')")
+                row = con.sql(q).fetchone() or (0, 0, None, None, None, None)
+                distinct, nulls, mn, mx, mean, median = row
+            else:
+                q = f"SELECT {base} FROM read_parquet('{src}')"
+                row = con.sql(q).fetchone() or (0, 0)
+                distinct, nulls = row
+                mn = mx = mean = median = None
+            rows.append({"variable": name, "type": dtype,
+                         "null_count": nulls, "distinct_count": distinct,
+                         "min": mn, "max": mx, "mean": mean, "median": median})
+    finally:
+        con.close()
+    fields = ["variable", "type", "null_count", "distinct_count",
+              "min", "max", "mean", "median"]
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)

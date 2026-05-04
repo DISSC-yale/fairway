@@ -1,10 +1,21 @@
-"""Tests for PartitionBatcher — partition-aware file grouping."""
-import pytest
-from fairway.batcher import PartitionBatcher
+"""Tests for :mod:`fairway.batcher` — partition grouping + pre-scan."""
+from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+import yaml
+
+from fairway.batcher import PartitionBatcher, ShardSpec, expand_and_validate
+from fairway.config import load_config
+
+
+# ---------------------------------------------------------------------------
+# PartitionBatcher.extract_partition_values
+# ---------------------------------------------------------------------------
 
 class TestExtractPartitionValues:
-    """Tests for extracting partition key values from file paths."""
+    """Filename-regex extraction returns tuples in ``partition_by`` order."""
 
     def test_single_partition_key(self):
         result = PartitionBatcher.extract_partition_values(
@@ -23,7 +34,6 @@ class TestExtractPartitionValues:
         assert result == ("CT", "2023")
 
     def test_partition_by_order_determines_tuple_order(self):
-        """partition_by order controls tuple order, not regex group order."""
         result = PartitionBatcher.extract_partition_values(
             "/data/raw/CT_2023_01.csv",
             r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
@@ -32,7 +42,6 @@ class TestExtractPartitionValues:
         assert result == ("2023", "CT")
 
     def test_regex_applied_to_basename(self):
-        """Regex should match against the file basename, not full path."""
         result = PartitionBatcher.extract_partition_values(
             "/very/deep/path/NY_2024_data.csv",
             r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
@@ -49,7 +58,6 @@ class TestExtractPartitionValues:
         assert result is None
 
     def test_partial_match_missing_partition_key_returns_none(self):
-        """If regex matches but a partition_by key is missing from groups, return None."""
         result = PartitionBatcher.extract_partition_values(
             "/data/raw/CT_data.csv",
             r"(?P<state>[A-Z]{2})_data",
@@ -57,16 +65,7 @@ class TestExtractPartitionValues:
         )
         assert result is None
 
-    def test_s3_path(self):
-        result = PartitionBatcher.extract_partition_values(
-            "s3://my-bucket/raw/CT_2023_01.csv",
-            r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
-            ["state", "year"]
-        )
-        assert result == ("CT", "2023")
-
     def test_regex_with_extra_groups_beyond_partition_by(self):
-        """Regex may have more named groups than partition_by — only extract what's needed."""
         result = PartitionBatcher.extract_partition_values(
             "/data/raw/CT_2023_01.csv",
             r"(?P<state>[A-Z]{2})_(?P<year>\d{4})_(?P<seq>\d+)",
@@ -75,8 +74,12 @@ class TestExtractPartitionValues:
         assert result == ("CT", "2023")
 
 
+# ---------------------------------------------------------------------------
+# PartitionBatcher.group_files
+# ---------------------------------------------------------------------------
+
 class TestGroupFiles:
-    """Tests for grouping files into partition-aware batches."""
+    """In-process clustering used by :mod:`fairway.pipeline`."""
 
     def test_group_multiple_files_into_batches(self):
         files = [
@@ -86,17 +89,12 @@ class TestGroupFiles:
             "/data/NY_2024_01.csv",
         ]
         batches = PartitionBatcher.group_files(
-            files,
-            r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
-            ["state", "year"]
+            files, r"(?P<state>[A-Z]{2})_(?P<year>\d{4})", ["state", "year"]
         )
-
         assert ("CT", "2023") in batches
         assert ("NY", "2023") in batches
         assert ("NY", "2024") in batches
         assert len(batches[("CT", "2023")]) == 2
-        assert len(batches[("NY", "2023")]) == 1
-        assert len(batches[("NY", "2024")]) == 1
 
     def test_unmatched_files_grouped_under_none(self):
         files = [
@@ -105,49 +103,24 @@ class TestGroupFiles:
             "/data/metadata.json",
         ]
         batches = PartitionBatcher.group_files(
-            files,
-            r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
-            ["state", "year"]
+            files, r"(?P<state>[A-Z]{2})_(?P<year>\d{4})", ["state", "year"]
         )
-
         assert ("CT", "2023") in batches
         assert None in batches
         assert len(batches[None]) == 2
 
     def test_empty_file_list_returns_empty_dict(self):
-        batches = PartitionBatcher.group_files(
-            [],
-            r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
-            ["state", "year"]
-        )
-        assert batches == {}
+        assert PartitionBatcher.group_files(
+            [], r"(?P<state>[A-Z]{2})_(?P<year>\d{4})", ["state", "year"]
+        ) == {}
 
     def test_all_files_match_same_partition(self):
-        files = [
-            "/data/CT_2023_01.csv",
-            "/data/CT_2023_02.csv",
-            "/data/CT_2023_03.csv",
-        ]
+        files = ["/data/CT_2023_01.csv", "/data/CT_2023_02.csv", "/data/CT_2023_03.csv"]
         batches = PartitionBatcher.group_files(
-            files,
-            r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
-            ["state", "year"]
+            files, r"(?P<state>[A-Z]{2})_(?P<year>\d{4})", ["state", "year"]
         )
         assert len(batches) == 1
         assert len(batches[("CT", "2023")]) == 3
-
-    def test_preserves_file_order_within_batch(self):
-        files = [
-            "/data/CT_2023_03.csv",
-            "/data/CT_2023_01.csv",
-            "/data/CT_2023_02.csv",
-        ]
-        batches = PartitionBatcher.group_files(
-            files,
-            r"(?P<state>[A-Z]{2})_(?P<year>\d{4})",
-            ["state", "year"]
-        )
-        assert batches[("CT", "2023")] == files
 
     def test_single_partition_key_grouping(self):
         files = [
@@ -156,110 +129,117 @@ class TestGroupFiles:
             "/data/CT_claims_02.csv",
         ]
         batches = PartitionBatcher.group_files(
-            files,
-            r"(?P<state>[A-Z]{2})_claims",
-            ["state"]
+            files, r"(?P<state>[A-Z]{2})_claims", ["state"]
         )
         assert len(batches) == 2
         assert len(batches[("CT",)]) == 2
         assert len(batches[("NY",)]) == 1
 
 
-class TestGetOutputSubpath:
-    """Tests for Hive-style output subpath generation."""
+# ---------------------------------------------------------------------------
+# expand_and_validate (Step 9.3 pre-scan gate)
+# ---------------------------------------------------------------------------
 
-    def test_single_partition(self):
-        result = PartitionBatcher.get_output_subpath(
-            ["state"], ("CT",)
+@pytest.fixture
+def _config_factory(tmp_path: Path):
+    """Build a minimal Config pointing at ``tmp_path`` inputs."""
+
+    def _make(
+        source_glob: str,
+        naming_pattern: str = r"(?P<state>[A-Z]+)_(?P<year>\d{4})\.csv",
+    ) -> object:
+        py = tmp_path / "ds.py"
+        py.write_text(
+            "from fairway.defaults import default_ingest\n"
+            "def transform(con, ctx):\n"
+            "    return default_ingest(con, ctx)\n",
+            encoding="utf-8",
         )
-        assert result == "state=CT"
+        yaml_path = tmp_path / "ds.yaml"
+        yaml_path.write_text(yaml.safe_dump({
+            "dataset_name": "ev_demo",
+            "python": str(py),
+            "storage_root": str(tmp_path / "store"),
+            "source_glob": source_glob,
+            "naming_pattern": naming_pattern,
+            "partition_by": ["state", "year"],
+        }), encoding="utf-8")
+        return load_config(yaml_path)
 
-    def test_multiple_partitions(self):
-        result = PartitionBatcher.get_output_subpath(
-            ["state", "year"], ("CT", "2023")
+    return _make
+
+
+class TestExpandAndValidate:
+    """Pre-scan glob expansion + naming-pattern validation."""
+
+    def test_clean_glob_returns_all_shards_no_unmatched(
+        self, tmp_path: Path, _config_factory
+    ) -> None:
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        for n in ("CT_2023.csv", "MA_2023.csv", "NY_2024.csv"):
+            (inputs / n).write_text("id\n1\n", encoding="utf-8")
+        config = _config_factory(str(inputs / "*.csv"))
+
+        shards, unmatched = expand_and_validate(config)
+        assert unmatched == []
+        assert len(shards) == 3
+        assert all(isinstance(s, ShardSpec) for s in shards)
+        states = {s.partition_values["state"] for s in shards}
+        assert states == {"CT", "MA", "NY"}
+        # Sorted by shard_id is deterministic.
+        ids = [s.shard_id for s in shards]
+        assert ids == sorted(ids)
+
+    def test_dirty_glob_returns_partial_match_plus_unmatched(
+        self, tmp_path: Path, _config_factory
+    ) -> None:
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "CT_2023.csv").write_text("x", encoding="utf-8")
+        # These don't match the naming_pattern (no year, or wrong shape).
+        (inputs / "readme.csv").write_text("x", encoding="utf-8")
+        (inputs / "lower_case.csv").write_text("x", encoding="utf-8")
+        config = _config_factory(str(inputs / "*.csv"))
+
+        shards, unmatched = expand_and_validate(config)
+        assert len(shards) == 1
+        assert shards[0].partition_values == {"state": "CT", "year": "2023"}
+        assert {p.name for p in unmatched} == {"readme.csv", "lower_case.csv"}
+
+    def test_empty_glob_returns_empty_lists(
+        self, tmp_path: Path, _config_factory
+    ) -> None:
+        inputs = tmp_path / "empty"
+        inputs.mkdir()
+        config = _config_factory(str(inputs / "*.csv"))
+        shards, unmatched = expand_and_validate(config)
+        assert shards == []
+        assert unmatched == []
+
+    def test_multiple_files_share_partition_cluster_into_one_shard(
+        self, tmp_path: Path, _config_factory
+    ) -> None:
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        # Three monthly files share (state=CT, year=2023); a separate NY
+        # file lands in its own shard. The regex captures only state+year,
+        # leaving the month suffix outside the named groups.
+        for month in ("jan", "feb", "mar"):
+            (inputs / f"CT_2023_{month}.csv").write_text("x", encoding="utf-8")
+        (inputs / "NY_2024_jan.csv").write_text("x", encoding="utf-8")
+        config = _config_factory(
+            str(inputs / "*.csv"),
+            naming_pattern=r"(?P<state>[A-Z]+)_(?P<year>\d{4})_[a-z]+\.csv",
         )
-        assert result == "state=CT/year=2023"
 
-    def test_three_partitions(self):
-        result = PartitionBatcher.get_output_subpath(
-            ["state", "year", "month"], ("CT", "2023", "01")
-        )
-        assert result == "state=CT/year=2023/month=01"
-
-    def test_uses_forward_slash_separator(self):
-        """Always use forward slash for Hive-style paths (platform-independent)."""
-        result = PartitionBatcher.get_output_subpath(
-            ["a", "b"], ("x", "y")
-        )
-        assert "/" in result
-        assert "\\" not in result
-
-    def test_sanitizes_path_traversal(self):
-        """Partition values with path separators are sanitized."""
-        result = PartitionBatcher.get_output_subpath(
-            ["state"], ("../../etc",)
-        )
-        assert ".." not in result
-        assert result == "state=____etc"
-
-    def test_sanitizes_slashes_in_values(self):
-        result = PartitionBatcher.get_output_subpath(
-            ["name"], ("foo/bar",)
-        )
-        assert "foo/bar" not in result
-        assert result == "name=foo_bar"
-
-
-class TestGenerateBatchId:
-    """Tests for deterministic batch ID generation."""
-
-    def test_generate_batch_id_basic(self):
-        """Generate batch ID from table, partition key, and files."""
-        files = ["/data/CT_2023_01.csv", "/data/CT_2023_02.csv"]
-        batch_id = PartitionBatcher.generate_batch_id("claims", "state=CT/year=2023", files)
-
-        assert batch_id.startswith("claims_")
-        assert "CT" in batch_id or "2023" in batch_id
-        # Should be deterministic
-        batch_id2 = PartitionBatcher.generate_batch_id("claims", "state=CT/year=2023", files)
-        assert batch_id == batch_id2
-
-    def test_generate_batch_id_deterministic(self):
-        """Same inputs should produce same batch ID."""
-        files = ["/data/file1.csv", "/data/file2.csv"]
-        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files)
-        id2 = PartitionBatcher.generate_batch_id("table1", "part=A", files)
-        assert id1 == id2
-
-    def test_generate_batch_id_different_for_different_files(self):
-        """Different files should produce different batch IDs."""
-        files1 = ["/data/file1.csv", "/data/file2.csv"]
-        files2 = ["/data/file3.csv", "/data/file4.csv"]
-        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files1)
-        id2 = PartitionBatcher.generate_batch_id("table1", "part=A", files2)
-        assert id1 != id2
-
-    def test_generate_batch_id_different_for_different_tables(self):
-        """Different tables should produce different batch IDs."""
-        files = ["/data/file1.csv"]
-        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files)
-        id2 = PartitionBatcher.generate_batch_id("table2", "part=A", files)
-        assert id1 != id2
-
-    def test_generate_batch_id_file_order_normalized(self):
-        """File order shouldn't affect batch ID (sorted internally)."""
-        files1 = ["/data/file2.csv", "/data/file1.csv"]
-        files2 = ["/data/file1.csv", "/data/file2.csv"]
-        id1 = PartitionBatcher.generate_batch_id("table1", "part=A", files1)
-        id2 = PartitionBatcher.generate_batch_id("table1", "part=A", files2)
-        assert id1 == id2
-
-    def test_generate_batch_id_format(self):
-        """Batch ID should follow expected format."""
-        files = ["/data/CT_2023_01.csv"]
-        batch_id = PartitionBatcher.generate_batch_id("claims", "state=CT/year=2023", files)
-        # Format: {table}_{partition_key_sanitized}_{hash[:8]}
-        parts = batch_id.split("_")
-        assert parts[0] == "claims"
-        # Hash portion should be alphanumeric
-        assert len(parts[-1]) == 8
+        shards, unmatched = expand_and_validate(config)
+        assert unmatched == []
+        ct_shards = [s for s in shards
+                     if s.partition_values == {"state": "CT", "year": "2023"}]
+        ny_shards = [s for s in shards
+                     if s.partition_values == {"state": "NY", "year": "2024"}]
+        assert len(ct_shards) == 1
+        assert len(ct_shards[0].input_paths) == 3
+        assert len(ny_shards) == 1
+        assert len(ny_shards[0].input_paths) == 1

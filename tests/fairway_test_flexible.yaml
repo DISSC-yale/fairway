@@ -69,7 +69,6 @@ data:
       write_mode: "append"
 
 validations:
-  level1:
-    min_rows: 1
+  min_rows: 1
 
 enrichment: {}
