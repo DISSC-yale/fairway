@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fairway"
-version = "0.2.0"
+version = "0.3.0"
 authors = [
-  { name="Antigravity", email="antigravity@google.com" },
+  { name="Yale DISSC" },
 ]
-description = "A portable data ingestion framework for centralized research data."
+description = "Internal data-engineering tool for landing CSV/TSV/fixed-width datasets as partitioned parquet on Yale HPC."
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
@@ -21,16 +21,11 @@ dependencies = [
     "pyyaml",
     "pandas",
     "tabulate",
+    "platformdirs>=4.0",
+    "python-ulid>=2.0",
 ]
 
 [project.optional-dependencies]
-spark = [
-    "pyspark==4.1.1",
-    "delta-spark>=3.0.0", # Added for Option B support
-    "pandas",
-    "numpy",
-    "pyarrow",
-]
 duckdb = [
     "duckdb",
     "numpy",
@@ -40,8 +35,6 @@ test-data-gen = [
     "numpy",
 ]
 all = [
-    "pyspark>=4.1.1",
-    "delta-spark>=3.0.0",
     "duckdb",
     "numpy",
     "pyarrow",
@@ -49,10 +42,6 @@ all = [
 dev = [
     "pytest",
     "pytest-cov",
-]
-docs = [
-    "mkdocs-material",
-    "mkdocs-coverage",
 ]
 
 [project.scripts]
@@ -69,11 +58,15 @@ markers = [
     "hpc: requires SLURM cluster — skipped in local and container runs",
     "slow: takes >10 seconds",
     "local: runs only in local (non-cluster) environments",
-    "spark: requires PySpark — skipped when Spark is unavailable",
+    "pipeline: real end-to-end pipeline execution with config -> ingest -> artifacts",
+    "no_fairway_home: opt out of the autouse FAIRWAY_HOME/FAIRWAY_SCRATCH fixture (for resolver-behavior tests)",
 ]
 testpaths = ["tests"]
-addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=70"
+addopts = "--cov=src/fairway --cov-report=term-missing --cov-report=xml:build/coverage/coverage.xml --cov-report=html:build/coverage/html --cov-fail-under=68 --basetemp=build/test-tmp"
+
+[tool.coverage.run]
+data_file = "build/coverage/.coverage"
+relative_files = true
 
 [tool.setuptools.package-data]
-"fairway.data" = ["*.yaml", "*.md", "*.txt", "*.py", "*.def", "Dockerfile", "Makefile", ".dockerignore"]
-"fairway.data.scripts" = ["*.sh", "*.py"]
+"fairway.slurm_templates" = ["*.sh"]

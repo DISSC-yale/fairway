@@ -1,110 +1,96 @@
-"""Partition-aware file batching for shuffle-free ingestion."""
-import os
+"""Shard enumeration: glob → naming_pattern → leaf partition + shard grouping.
+
+A *leaf* partition path is the full Hive path under ``partition_by``; a
+*shard* is the ``shard_by`` prefix (a strict prefix of ``partition_by``).
+``shard_by == partition_by`` collapses to one shard per leaf (default);
+``shard_by == []`` collapses to a single shard for the whole table.
+"""
+from __future__ import annotations
+
+import glob as _glob
 import re
-import hashlib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .config import TableConfig, ConfigError
 
 
-class PartitionBatcher:
-    """Groups files into partition-aware batches using regex extraction.
+@dataclass(frozen=True)
+class Shard:
+    """One unit of compute work."""
 
-    Instead of reading all files at once (causing Spark shuffles),
-    files are pre-grouped by their partition values so each batch
-    can be written directly to the correct output partition.
-    """
+    shard_id: str
+    shard_values: dict[str, str]                     # {key: value} for shard_by
+    leaves: dict[str, list[Path]] = field(default_factory=dict)  # leaf → files
 
-    @staticmethod
-    def extract_partition_values(file_path, naming_pattern, partition_by, compiled_re=None):
-        """Extract partition key values from a file path.
+    @property
+    def input_paths(self) -> list[Path]:
+        out: list[Path] = []
+        for files in self.leaves.values():
+            out.extend(files)
+        return out
 
-        Applies naming_pattern regex to the file basename.
-        Returns tuple of values in partition_by order, or None if no match.
-        """
-        basename = os.path.basename(file_path)
-        if compiled_re:
-            match = compiled_re.search(basename)
-        else:
-            match = re.search(naming_pattern, basename)
-        if not match:
-            return None
 
-        groups = match.groupdict()
+def _safe_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
 
-        # All partition_by keys must be present in the regex match
-        values = []
-        for key in partition_by:
-            if key not in groups:
-                return None
-            values.append(groups[key])
 
-        return tuple(values)
+def _shard_id(shard_by: list[str], values: dict[str, str]) -> str:
+    if not shard_by:
+        return "all"
+    return "_".join(f"{k}={_safe_token(values[k])}" for k in shard_by)
 
-    @staticmethod
-    def group_files(file_paths, naming_pattern, partition_by):
-        """Group files into batches keyed by partition values.
 
-        Returns dict where:
-          - key = tuple of partition values (e.g., ("CT", "2023"))
-          - value = list of file paths belonging to that partition
+def _leaf_path(partition_by: list[str], values: dict[str, str]) -> str:
+    return "/".join(f"{k}={values[k]}" for k in partition_by)
 
-        Files that don't match naming_pattern are grouped under None key.
-        """
-        if not file_paths:
-            return {}
 
-        compiled = re.compile(naming_pattern)
-        batches = {}
-        for path in file_paths:
-            partition_values = PartitionBatcher.extract_partition_values(
-                path, naming_pattern, partition_by, compiled_re=compiled
-            )
-            if partition_values not in batches:
-                batches[partition_values] = []
-            batches[partition_values].append(path)
+def validate_shard_by(config: TableConfig) -> None:
+    """``shard_by`` must be a strict prefix of ``partition_by`` (or ``[]``)."""
+    if not config.shard_by:
+        return
+    n = len(config.shard_by)
+    if config.shard_by != config.partition_by[:n]:
+        raise ConfigError(
+            f"shard_by {config.shard_by!r} must be a strict prefix of "
+            f"partition_by {config.partition_by!r} (or [] for one shard)."
+        )
 
-        return batches
 
-    @staticmethod
-    def get_output_subpath(partition_by, partition_values):
-        """Generate Hive-style output subpath.
+def enumerate_shards(
+    config: TableConfig,
+) -> tuple[list[Shard], list[Path]]:
+    """Return ``(shards, unmatched_files)`` for ``config.source_glob``."""
+    validate_shard_by(config)
+    pattern = re.compile(config.naming_pattern)
+    matches: list[tuple[dict[str, str], Path]] = []
+    unmatched: list[Path] = []
+    for f in sorted(_glob.glob(config.source_glob)):
+        path = Path(f)
+        m = pattern.fullmatch(path.name)
+        if m is None:
+            unmatched.append(path)
+            continue
+        groupdict = m.groupdict()
+        try:
+            values = {k: groupdict[k] for k in config.partition_by}
+        except KeyError as exc:
+            raise ConfigError(
+                f"naming_pattern missing named group for {exc.args[0]!r}"
+            ) from exc
+        matches.append((values, path))
 
-        Example:
-            get_output_subpath(["state", "year"], ("CT", "2023"))
-            -> "state=CT/year=2023"
-
-        Partition values are sanitized to prevent path traversal.
-        """
-        parts = []
-        for key, val in zip(partition_by, partition_values):
-            # Sanitize: remove path separators and traversal sequences
-            safe_val = val.replace("/", "_").replace("\\", "_").replace("..", "_")
-            parts.append(f"{key}={safe_val}")
-        return "/".join(parts)
-
-    @staticmethod
-    def generate_batch_id(table_name, partition_key, file_paths):
-        """Generate a deterministic batch ID.
-
-        Format: {table}_{partition_key_sanitized}_{hash[:8]}
-
-        The hash is computed from sorted file paths to ensure determinism
-        regardless of input order.
-
-        Args:
-            table_name: Name of the table being processed
-            partition_key: Partition key string (e.g., "state=CT/year=2023")
-            file_paths: List of file paths in this batch
-
-        Returns:
-            Deterministic batch ID string
-        """
-        # Sanitize partition key for use in ID (replace special chars)
-        sanitized_partition = partition_key.replace("/", "_").replace("=", "-")
-
-        # Sort files for determinism
-        sorted_files = sorted(file_paths)
-
-        # Create hash of sorted file paths
-        content = "\n".join(sorted_files)
-        file_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
-
-        return f"{table_name}_{sanitized_partition}_{file_hash}"
+    shards: dict[str, Shard] = {}
+    for values, path in matches:
+        shard_values = {k: values[k] for k in config.shard_by}
+        sid = _shard_id(config.shard_by, shard_values)
+        leaf = _leaf_path(config.partition_by, values)
+        shard = shards.get(sid)
+        if shard is None:
+            shard = Shard(shard_id=sid, shard_values=dict(shard_values), leaves={})
+            shards[sid] = shard
+        shard.leaves.setdefault(leaf, []).append(path)
+    for shard in shards.values():
+        for leaf in shard.leaves:
+            shard.leaves[leaf].sort()
+    return sorted(shards.values(), key=lambda s: s.shard_id), unmatched

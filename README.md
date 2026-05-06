@@ -1,209 +1,90 @@
 # Fairway
 
-Fairway is a portable data ingestion framework designed to streamline the processing, transformation, and management of centralized research data. It provides a robust and scalable solution for handling data pipelines, with built-in support for multiple execution environments including local machines and Slurm clusters.
+Fairway is an internal data-engineering tool for the DISSC group, used to land
+large research datasets onto a shared filesystem (Yale Grace) as partitioned
+Parquet, in a form that downstream researchers can query directly with DuckDB,
+R, Stata, or pandas.
 
-## Installation
+Scope, deliberately narrow (v0.3):
 
-To install Fairway, ensure you have Python 3.10+ installed.
+- DuckDB-only execution. No Spark, no Delta Lake, no Nextflow, no container.
+- One Slurm job-array shard per partition group. Shuffle-free.
+- Per-shard manifest fragments → finalized into a single `manifest.json` plus a
+  `schema_summary.json` fingerprint per partition.
+- Two-stage layout: raw → processed (ingest) → curated (transform).
 
-1. Install directly from GitHub:
-   ```bash
-   # Core installation (lightweight)
-   pip install "git+https://github.com/DISSC-yale/fairway.git"
-
-   # With DuckDB support
-   pip install "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[duckdb]"
-
-   # With PySpark support
-   pip install "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[spark]"
-
-   # For generating test data only
-   pip install "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[test-data-gen]"
-   ```
-
-## Quick Start
-
-### 1. Initialize a Project
-Create a new Fairway project with the required directory structure:
-
-> **Note:** If you are using a virtual environment, ensure it is activated first.
-
+## Install
 
 ```bash
-fairway init my_new_project
-cd my_new_project
+pip install "git+https://github.com/DISSC-yale/fairway.git#egg=fairway[duckdb]"
 ```
 
-This will create folders for your data, configuration, logs, and transformations.
+Requires Python 3.10+. The `[duckdb]` extra pulls `duckdb`, `pyarrow`, `numpy`.
 
-### 2. Configure Your Pipeline
-Fairway uses YAML configuration files to define data sources and processing steps.
+## Project layout
 
-Key files created:
-- `config/fairway.yaml`: Main pipeline configuration
-- `config/spark.yaml`: Spark cluster settings (nodes, memory, etc.)
-- `nextflow.config`: Execution profiles (Slurm, Kubernetes, etc.)
+`fairway init` scaffolds:
 
-Key configuration elements include:
-- **Project Metadata**: Name, description, and owner.
-- **Engine**: Execution backend (e.g., `duckdb`, `pyspark`).
-- **Data Source**: Path and format of input data.
-- **Transformations**: Steps to clean or modify data. Can be defined globally or per-source file.
-- **Sink**: Output destination and format.
-
-### 3. Run the Pipeline
-
-**Local Execution**
-Run the pipeline on your local machine (auto-discovers config from `config/` folder):
-```bash
-fairway run
-
-# Or specify a config explicitly
-fairway run --config config/my_config.yaml
+```
+my_project/
+├── datasets/
+│   └── mydataset.yaml      # dataset config (source glob, partition_by, validations)
+│   └── mydataset.py        # transform(con, ctx) entry point
+├── transforms/
+│   ├── raw_to_processed/
+│   └── processed_to_curated/
+├── data/                   # gitignored output root
+└── build/                  # gitignored sbatch / shards artifacts
 ```
 
-**Slurm Cluster Execution**
-Run the pipeline as a job on a Slurm cluster:
-```bash
-fairway run --config config/my_config.yaml --profile slurm --slurm --account my_account
-```
-*Note: The `--slurm` flag submits a controller job. The `--profile slurm` tells Nextflow/Fairway to use Slurm executors.*
+One YAML + one Python file per dataset. The Python file exposes a single
+`transform(con, ctx)` function that receives a DuckDB connection and an
+`IngestCtx` (input paths, output path, partition values, shard id, scratch
+dir). The default implementation is `fairway.defaults.default_ingest`.
 
-**Using the Makefile (Recommended)**
-```bash
-# Interactive (Nextflow on login node)
-make run-hpc
-
-# Driver Job (Nextflow on compute node)
-make submit-hpc
-```
-
-## Documentation
-
-For comprehensive guides and API details, please refer to the documentation in the `docs/` directory:
-
-- **[Getting Started](docs/getting-started.md)**: Extended guide on setting up and running your first pipeline.
-- **[Configuration](docs/configuration.md)**: detailed reference for `config.yaml` options.
-- **[Architecture](docs/architecture.md)**: High-level overview of Fairway's design.
-- **[Transformations](docs/transformations.md)**: How to write and use data transformations.
-- **[Validations](docs/validations.md)**: ensuring data quality.
-- **[Schema Evolution](docs/schema_evolution.md)**: Strategies for handling changing data (Strict vs Delta Lake).
-- **[Manifest & Caching](docs/manifest.md)**: How Fairway tracks processed files and avoids redundant work.
-
-## Schema Evolution
-
-Fairway supports two robust strategies for handling schema changes over time:
-
-1.  **Strict Schema Enforcement (Option A)**:
-    - Best for: Regulation, specific contracts.
-    - Behavior: Fails pipeline if extra columns appear (Rule 115). Fills missing columns with nulls.
-    - Config: Define `schema` in `fairway.yaml` and standard parquet output.
-
-2.  **Modern Table Formats (Option B)**:
-    - Best for: Data Lakehouse, rapid evolution.
-    - Behavior: Uses **Delta Lake** to handle schema merging automatically.
-    - Config: Set `storage: { format: "delta" }` or use `output_format: delta` in sources.
-
-## Examples
-
-### Generate Test Data
-
-Quickly create sample datasets for testing your pipeline:
+## CLI surface
 
 ```bash
-# Generate a small partitioned CSV dataset
-fairway generate-data --size small --partitioned
-
-# Generate a large Parquet dataset (non-partitioned)
-fairway generate-data --size large --no-partitioned --format parquet
+fairway init my_project --dataset mydataset            # scaffold project + dataset
+fairway submit datasets/mydataset.yaml                 # submit Slurm array
+fairway submit datasets/mydataset.yaml --dry-run       # render shards.json + sbatch only
+fairway submit datasets/mydataset.yaml --allow-skip    # skip files not matching naming_pattern
+fairway submit datasets/mydataset.yaml --force         # ignore idempotent-resume cache
+fairway run --shards-file build/<dataset>/shards.json --shard-index 0   # one shard
+fairway status --dataset mydataset --storage-root data --layer processed
+fairway transform transforms/processed_to_curated/<recipe>.yaml   # Stage 2
+fairway validate <dataset_path> <rules.yaml>           # standalone validation
+fairway summarize <dataset_path> <output.csv>          # column summary CSV
+fairway manifest finalize <layer_root>                 # merge fragments → manifest.json
 ```
 
-### Auto-Generate Schema
-
-Infer schema from existing data files or partitioned directories:
+## Quick start
 
 ```bash
-# Generate schema from a CSV file
-fairway generate-schema data/raw/sales.csv
-
-# Generate schema from a partitioned directory
-fairway generate-schema data/raw/events/ --output config/events_schema.yaml
+fairway init demo --dataset sales
+# edit datasets/sales.yaml: set source_glob, naming_pattern, partition_by
+fairway submit datasets/sales.yaml --dry-run    # confirm shard count
+fairway submit datasets/sales.yaml              # actually submit on a Slurm host
+fairway status --dataset sales --storage-root data --layer processed
+fairway manifest finalize data/processed/sales
 ```
 
-This outputs a YAML schema file that can be used in your config.
+Required dataset YAML keys: `dataset_name`, `python`, `storage_root`,
+`source_glob`, `naming_pattern`, `partition_by`. See the scaffolded
+`datasets/<name>.yaml` for optional knobs (validations, encoding fallback,
+zip handling, sort, Slurm resource overrides).
 
-### Sample Configuration
+## Querying landed data (researchers)
 
-A minimal `config.yaml` for processing data:
+Output is plain Hive-partitioned Parquet under `<storage_root>/<layer>/<dataset>/`.
+No special client library is needed.
 
-```yaml
-dataset_name: "sales_data"
-engine: "duckdb"
-
-storage:
-  raw_dir: "data/raw"
-  intermediate_dir: "data/intermediate"
-  final_dir: "data/final"
-  # scratch_dir: "/scratch/$USER/fairway"  # Optional: fast storage for HPC
-
-sources:
-  - name: "sales"
-    path: "data/raw/sales.csv"
-    format: "csv"
-    transformation: "src/transformations/sales_cleaning.py"
-    schema:
-      id: "int"
-      date: "date"
-      amount: "double"
-
-validations:
-  level1:
-    check_column_count: true
-    min_rows: 10
-
-# Performance tuning (optional)
-# performance:
-#   target_file_size_mb: 128  # Target parquet file size
-#   salting: false            # Enable for skewed partition keys
+```python
+import duckdb
+duckdb.sql("SELECT * FROM read_parquet('data/processed/sales/**/*.parquet', hive_partitioning=true) LIMIT 10")
 ```
 
-See `config/example_config.yaml` for a complete configuration example with all options.
-
-### Running the Pipeline
-
-```bash
-# Local execution with DuckDB
-fairway run --config config/my_config.yaml
-
-# Slurm cluster with PySpark
-fairway run --config config/my_config.yaml --profile slurm --with-spark --account my_account
-
-# Customize Slurm resources
-fairway run --config config/my_config.yaml --slurm \
-  --cpus 8 \
-  --mem 32G \
-  --time 04:00:00 \
-  --nodes 4
+```r
+library(arrow)
+ds <- open_dataset("data/processed/sales", partitioning = c("state", "year"))
 ```
-
-## Development
-
-A `Makefile` is provided to streamline common development tasks:
-
-```bash
-# Install the package in editable mode
-make install
-
-# Run tests
-make test
-
-# Generate small test data
-make generate-data
-
-# Clean build artifacts
-make clean
-
-# Show all available commands
-make help
-```
-

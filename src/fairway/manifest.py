@@ -1,302 +1,293 @@
-import json
+"""Per-table manifest as the source of truth for idempotent re-runs.
+
+Layout: ``tables/<t>/manifest.json`` (gitignored). Workers write
+fragments to ``tables/<t>/_state/fragments/<shard_id>.json``;
+:func:`finalize` merges them in and clears the fragment dir.
+
+Idempotency unit is the *leaf partition*, not the shard. Changing
+``shard_by`` regroups compute but never invalidates a leaf — each leaf's
+``source_hashes`` + ``schema_fingerprint`` decide skip/run.
+"""
+from __future__ import annotations
+
 import hashlib
+import json
+import logging
 import os
-from datetime import datetime
-from contextlib import contextmanager
-
-TABLE_MANIFEST_VERSION = "3.0"
-GLOBAL_MANIFEST_VERSION = "3.0"
-
-
-def _get_file_hash_static(file_path, fast_check=True):
-    """Static version of file hash calculation."""
-    if not os.path.exists(file_path):
-        return None
-    if fast_check:
-        stats = os.stat(file_path)
-        return f"mtime:{stats.st_mtime}_size:{stats.st_size}"
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest()
+import struct
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 
-class TableManifest:
-    """Per-table manifest for tracking files, preprocessing, and schema."""
+logger = logging.getLogger(__name__)
 
-    def __init__(self, manifest_dir: str, table_name: str):
-        self.manifest_dir = manifest_dir
-        self.table_name = table_name
-        self.manifest_path = os.path.join(manifest_dir, f"{table_name}.json")
-        self._batch_mode = False
-        self.data = self._load()
 
-    def _load(self):
-        if os.path.exists(self.manifest_path):
-            with open(self.manifest_path, 'r') as f:
-                return json.load(f)
-        return {
-            "version": TABLE_MANIFEST_VERSION,
-            "table_name": self.table_name,
-            "files": {},
-            "preprocessing": {},
-            "schema": None
-        }
+MANIFEST_VERSION = "0.3"
+MANIFEST_FILE_NAME = "manifest.json"
+STATE_DIR_NAME = "_state"
+FRAGMENT_DIR_NAME = "fragments"
+HEAD_TAIL_BYTES = 4096
+SMALL_FILE_THRESHOLD = 8192
 
-    def _save(self):
-        if self._batch_mode:
-            return
-        os.makedirs(self.manifest_dir, exist_ok=True)
-        temp_path = f"{self.manifest_path}.tmp"
-        with open(temp_path, 'w') as f:
-            json.dump(self.data, f, indent=2)
-        os.replace(temp_path, self.manifest_path)
 
-    @contextmanager
-    def batch(self):
-        self._batch_mode = True
-        try:
-            yield
-        finally:
-            self._batch_mode = False
-            self._save()
+def utc_now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
-    def get_file_key(self, file_path, table_root=None):
-        """Generate relative path key for file."""
-        if table_root and file_path.startswith(table_root):
-            rel_path = os.path.relpath(file_path, table_root)
+
+def manifest_path(table_dir: Path) -> Path:
+    return table_dir / MANIFEST_FILE_NAME
+
+
+def fragment_dir(table_dir: Path) -> Path:
+    return table_dir / STATE_DIR_NAME / FRAGMENT_DIR_NAME
+
+
+def fragment_path(table_dir: Path, shard_id: str) -> Path:
+    return fragment_dir(table_dir) / f"{shard_id}.json"
+
+
+def source_hash(path: Path | str) -> str:
+    """Best-effort content hash: ``sha256(size || head_4KB || tail_4KB)``."""
+    p = Path(path)
+    size = p.stat().st_size
+    h = hashlib.sha256(struct.pack("<Q", size))
+    with p.open("rb") as f:
+        if size <= SMALL_FILE_THRESHOLD:
+            h.update(f.read())
         else:
-            rel_path = os.path.basename(file_path)
-        return rel_path.replace(os.sep, '/')
-
-    def should_process(self, file_path, table_root=None, fast_check=True, computed_hash=None):
-        """Check if file needs processing."""
-        key = self.get_file_key(file_path, table_root)
-        if key not in self.data["files"]:
-            return True
-        entry = self.data["files"][key]
-        # Retry files that previously failed
-        if entry.get("status") == "failed":
-            return True
-        current_hash = computed_hash or _get_file_hash_static(file_path, fast_check)
-        return entry.get("hash") != current_hash
-
-    def update_file(self, file_path, status="success", metadata=None,
-                    table_root=None, computed_hash=None, fast_check=True, batch_id=None):
-        """Update file entry after processing.
-
-        Args:
-            file_path: Path to the file
-            status: Processing status ('success' or 'failed')
-            metadata: Additional metadata dict
-            table_root: Root directory for relative path calculation
-            computed_hash: Pre-computed file hash (optional)
-            fast_check: Use fast mtime+size hash (default True)
-            batch_id: Optional batch ID to store in metadata
-        """
-        key = self.get_file_key(file_path, table_root)
-        current_hash = computed_hash or _get_file_hash_static(file_path, fast_check)
-
-        # Merge batch_id into metadata if provided
-        final_metadata = metadata.copy() if metadata else {}
-        if batch_id:
-            final_metadata["batch_id"] = batch_id
-
-        self.data["files"][key] = {
-            "hash": current_hash,
-            "last_processed": datetime.now().isoformat(),
-            "status": status,
-            "metadata": final_metadata
-        }
-        self._save()
-
-    def query_file(self, file_key):
-        """Query a single file entry by its key.
-
-        Args:
-            file_key: The file key (relative path or basename)
-
-        Returns:
-            File entry dict or None if not found
-        """
-        return self.data["files"].get(file_key)
-
-    def query_files(self, status=None, batch_id=None):
-        """Query files with optional filters.
-
-        Args:
-            status: Filter by status ('success', 'failed')
-            batch_id: Filter by batch_id in metadata
-
-        Returns:
-            List of file entries matching filters, each with 'file_key' added
-        """
-        results = []
-        for key, entry in self.data["files"].items():
-            # Apply status filter
-            if status is not None and entry.get("status") != status:
-                continue
-
-            # Apply batch_id filter
-            if batch_id is not None:
-                entry_batch_id = entry.get("metadata", {}).get("batch_id")
-                if entry_batch_id != batch_id:
-                    continue
-
-            # Include file_key in result for identification
-            result = entry.copy()
-            result["file_key"] = key
-            results.append(result)
-
-        return results
-
-    def get_pending_files(self, file_paths, table_root=None, fast_check=True):
-        """Filter file_paths to only those needing processing.
-
-        Convenience wrapper around should_process() for batch use.
-        Returns subset of file_paths where should_process() is True.
-        """
-        return [
-            f for f in file_paths
-            if self.should_process(f, table_root=table_root, fast_check=fast_check)
-        ]
-
-    def record_preprocessing(self, original_path, preprocessed_path, action, table_root=None):
-        """Record preprocessing result."""
-        key = self.get_file_key(original_path, table_root)
-        self.data["preprocessing"][key] = {
-            "file_hash": _get_file_hash_static(original_path, fast_check=True),
-            "preprocessed_path": preprocessed_path,
-            "action": action,
-            "processed_at": datetime.now().isoformat()
-        }
-        self._save()
-
-    def get_preprocessed_path(self, original_path, table_root=None):
-        """Get cached preprocessed path if valid."""
-        key = self.get_file_key(original_path, table_root)
-        entry = self.data.get("preprocessing", {}).get(key)
-        if not entry:
-            return None
-        current_hash = _get_file_hash_static(original_path, fast_check=True)
-        if entry.get("file_hash") != current_hash:
-            return None
-        preprocessed = entry.get("preprocessed_path")
-        if not preprocessed or not os.path.exists(preprocessed):
-            return None
-        return preprocessed
-
-    def record_schema(self, files_used, file_hashes, output_path):
-        """Record schema generation."""
-        self.data["schema"] = {
-            "generated_at": datetime.now().isoformat(),
-            "output_path": output_path,
-            "files_used": files_used,
-            "file_hashes": file_hashes,
-            "combined_hash": self._compute_hash(file_hashes)
-        }
-        self._save()
-
-    def is_schema_stale(self, current_file_hashes):
-        """Check if schema needs regeneration."""
-        schema = self.data.get("schema")
-        if not schema:
-            return True
-        return schema.get("combined_hash") != self._compute_hash(current_file_hashes)
-
-    def _compute_hash(self, file_hashes):
-        combined = hashlib.sha256()
-        for h in sorted(h for h in file_hashes if h):
-            combined.update(h.encode())
-        return combined.hexdigest()[:16]
+            h.update(f.read(HEAD_TAIL_BYTES))
+            f.seek(-HEAD_TAIL_BYTES, os.SEEK_END)
+            h.update(f.read(HEAD_TAIL_BYTES))
+    return h.hexdigest()[:16]
 
 
-class GlobalManifest:
-    """Global manifest for cross-table state (extractions)."""
-
-    def __init__(self, manifest_dir: str):
-        self.manifest_dir = manifest_dir
-        self.manifest_path = os.path.join(manifest_dir, "_global.json")
-        self.data = self._load()
-
-    def _load(self):
-        if os.path.exists(self.manifest_path):
-            with open(self.manifest_path, 'r') as f:
-                return json.load(f)
-        return {
-            "version": GLOBAL_MANIFEST_VERSION,
-            "extractions": {}
-        }
-
-    def _save(self):
-        os.makedirs(self.manifest_dir, exist_ok=True)
-        temp_path = f"{self.manifest_path}.tmp"
-        with open(temp_path, 'w') as f:
-            json.dump(self.data, f, indent=2)
-        os.replace(temp_path, self.manifest_path)
-
-    def record_extraction(self, archive_path, extracted_dir, archive_hash, table_name=None):
-        """Record archive extraction."""
-        key = f"archive:{os.path.abspath(archive_path)}"
-        entry = self.data["extractions"].get(key, {})
-        used_by = set(entry.get("used_by_tables", []))
-        if table_name:
-            used_by.add(table_name)
-        self.data["extractions"][key] = {
-            "extracted_dir": extracted_dir,
-            "archive_hash": archive_hash,
-            "extracted_at": datetime.now().isoformat(),
-            "used_by_tables": list(used_by)
-        }
-        self._save()
-
-    def get_extraction(self, archive_path):
-        """Get extraction info if available."""
-        key = f"archive:{os.path.abspath(archive_path)}"
-        return self.data.get("extractions", {}).get(key)
-
-    def is_extraction_valid(self, archive_path):
-        """Check if extraction is still valid."""
-        entry = self.get_extraction(archive_path)
-        if not entry:
-            return False
-        current_hash = _get_file_hash_static(archive_path, fast_check=True)
-        if entry.get("archive_hash") != current_hash:
-            return False
-        extracted_dir = entry.get("extracted_dir")
-        if not extracted_dir or not os.path.isdir(extracted_dir):
-            return False
-        return True
+def _atomic_write_json(target: Path, payload: Any) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, target)
 
 
-class ManifestStore:
-    """Orchestrates per-table and global manifests."""
+def empty_manifest(table: str) -> dict[str, Any]:
+    return {
+        "version": MANIFEST_VERSION,
+        "table": table,
+        "finalized_at": None,
+        "layers": {},
+    }
 
-    def __init__(self, manifest_dir: str = "manifest"):
-        self.manifest_dir = manifest_dir
-        self._table_manifests = {}
-        self._global_manifest = None
 
-    def get_table_manifest(self, table_name: str) -> TableManifest:
-        """Get or create a per-table manifest."""
-        if table_name not in self._table_manifests:
-            self._table_manifests[table_name] = TableManifest(self.manifest_dir, table_name)
-        return self._table_manifests[table_name]
+def load_manifest(table_dir: Path) -> dict[str, Any]:
+    """Load ``manifest.json``; return empty initialized structure if absent."""
+    path = manifest_path(table_dir)
+    table = table_dir.name
+    if not path.is_file():
+        return empty_manifest(table)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("could not read %s (%s); reinitializing", path, exc)
+        return empty_manifest(table)
 
-    @property
-    def global_manifest(self) -> GlobalManifest:
-        """Get the global manifest (lazy init)."""
-        if self._global_manifest is None:
-            self._global_manifest = GlobalManifest(self.manifest_dir)
-        return self._global_manifest
 
-    def list_tables(self):
-        """List all tables with manifests."""
-        if not os.path.exists(self.manifest_dir):
-            return []
-        tables = []
-        for f in os.listdir(self.manifest_dir):
-            if f.endswith('.json') and not f.startswith('_'):
-                tables.append(f[:-5])  # Remove .json
-        return sorted(tables)
+def save_manifest(manifest: dict[str, Any], table_dir: Path) -> None:
+    """Atomic write to ``tables/<t>/manifest.json``."""
+    _atomic_write_json(manifest_path(table_dir), manifest)
+
+
+def _layer(manifest: dict, layer: str) -> dict[str, Any]:
+    layers = manifest.setdefault("layers", {})
+    return layers.setdefault(layer, {"partitions": {}, "last_run": None})
+
+
+def is_leaf_valid(
+    manifest: dict[str, Any],
+    layer: str,
+    leaf: str,
+    source_files: list[str],
+    source_hashes: list[str],
+    schema_fp: str,
+) -> bool:
+    """Return True iff the manifest already has this leaf as ``status="ok"``
+    with matching source hashes (file list + per-file content hash) and
+    matching ``schema_fingerprint``.
+    """
+    layers = manifest.get("layers", {})
+    parts = layers.get(layer, {}).get("partitions", {})
+    entry = parts.get(leaf)
+    if not entry or entry.get("status") != "ok":
+        return False
+    if list(entry.get("source_files") or []) != list(source_files):
+        return False
+    if list(entry.get("source_hashes") or []) != list(source_hashes):
+        return False
+    if entry.get("schema_fingerprint") != schema_fp:
+        return False
+    return True
+
+
+def record_leaf(
+    manifest: dict[str, Any],
+    layer: str,
+    leaf: str,
+    *,
+    source_files: list[str],
+    source_hashes: list[str],
+    schema_fingerprint: str,
+    row_count: int,
+    status: str,
+    drift_events: dict | None = None,
+    encoding_used: str | None = None,
+    ingest_ts: str | None = None,
+) -> None:
+    """Upsert a leaf entry in memory. Caller writes via :func:`save_manifest`."""
+    if status not in ("ok", "error"):
+        raise ValueError(f"status must be 'ok' or 'error', got {status!r}")
+    entry: dict[str, Any] = {
+        "source_files": list(source_files),
+        "source_hashes": list(source_hashes),
+        "schema_fingerprint": schema_fingerprint,
+        "row_count": int(row_count),
+        "status": status,
+        "ingest_ts": ingest_ts or utc_now_iso(),
+    }
+    if drift_events:
+        entry["drift_events"] = drift_events
+    if encoding_used:
+        entry["encoding_used"] = encoding_used
+    layer_entry = _layer(manifest, layer)
+    layer_entry.setdefault("partitions", {})[leaf] = entry
+
+
+def clear_last_run(manifest: dict[str, Any], layer: str = "processed") -> None:
+    """Reset the layer's ``last_run`` block ahead of a fresh submit/run."""
+    _layer(manifest, layer)["last_run"] = None
+
+
+def set_last_run(
+    manifest: dict[str, Any],
+    layer: str,
+    *,
+    shard_by: list[str],
+    shards_observed: list[str],
+    failed_shards: list[dict[str, Any]],
+) -> None:
+    _layer(manifest, layer)["last_run"] = {
+        "shard_grouping": {"shard_by": list(shard_by)},
+        "shards_observed": list(shards_observed),
+        "failed_shards": list(failed_shards),
+    }
+
+
+def write_fragment(
+    table_dir: Path,
+    shard_id: str,
+    *,
+    layer: str,
+    leaves: dict[str, dict[str, Any]],
+    failed: dict[str, Any] | None = None,
+    shard_by: list[str] | None = None,
+) -> Path:
+    """Atomically write a fragment for one shard's outcome.
+
+    A fragment carries either successful per-leaf entries (``leaves``) or
+    a shard-level error record (``failed``). Both can be present when a
+    shard partially succeeded before erroring.
+    """
+    payload: dict[str, Any] = {
+        "shard_id": shard_id,
+        "layer": layer,
+        "leaves": leaves,
+        "failed": failed,
+        "shard_by": list(shard_by or []),
+    }
+    target = fragment_path(table_dir, shard_id)
+    _atomic_write_json(target, payload)
+    return target
+
+
+def _read_fragments(table_dir: Path) -> list[dict[str, Any]]:
+    fdir = fragment_dir(table_dir)
+    if not fdir.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in sorted(fdir.iterdir()):
+        if not entry.is_file() or entry.suffix != ".json":
+            continue
+        try:
+            out.append(json.loads(entry.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("skipping corrupt fragment %s: %s", entry, exc)
+    return out
+
+
+def finalize(
+    table_dir: Path,
+    *,
+    layer: str = "processed",
+    shard_by: list[str] | None = None,
+) -> dict[str, Any]:
+    """Merge fragments → manifest; delete fragment files on success.
+
+    Always rewrites ``last_run`` for ``layer`` (cleared on each submit/run).
+    No-op fragment dir is allowed: only ``finalized_at`` + ``last_run`` are
+    refreshed.
+    """
+    manifest = load_manifest(table_dir)
+    fragments = _read_fragments(table_dir)
+    failed_shards: list[dict[str, Any]] = []
+    shards_observed: list[str] = []
+    effective_shard_by: list[str] = list(shard_by or [])
+    leaf_count = 0
+    for frag in fragments:
+        sid = str(frag.get("shard_id", ""))
+        shards_observed.append(sid)
+        if frag.get("shard_by") and not effective_shard_by:
+            effective_shard_by = list(frag["shard_by"])
+        leaves = frag.get("leaves") or {}
+        for leaf_path, leaf_data in leaves.items():
+            record_leaf(
+                manifest, layer, leaf_path,
+                source_files=leaf_data.get("source_files", []),
+                source_hashes=leaf_data.get("source_hashes", []),
+                schema_fingerprint=leaf_data.get("schema_fingerprint", ""),
+                row_count=leaf_data.get("row_count", 0),
+                status=leaf_data.get("status", "ok"),
+                drift_events=leaf_data.get("drift_events"),
+                encoding_used=leaf_data.get("encoding_used"),
+                ingest_ts=leaf_data.get("ingest_ts"),
+            )
+            leaf_count += 1
+        if frag.get("failed"):
+            failed_shards.append(frag["failed"])
+    if fragments:
+        set_last_run(
+            manifest, layer,
+            shard_by=effective_shard_by,
+            shards_observed=sorted(shards_observed),
+            failed_shards=failed_shards,
+        )
+    manifest["finalized_at"] = utc_now_iso()
+    save_manifest(manifest, table_dir)
+    fdir = fragment_dir(table_dir)
+    if fdir.is_dir():
+        for entry in fdir.iterdir():
+            if entry.is_file() and entry.suffix == ".json":
+                try:
+                    entry.unlink()
+                except OSError as exc:
+                    logger.warning("could not remove fragment %s: %s", entry, exc)
+    logger.info("finalized %s: merged %d fragment(s), %d leaf entries",
+                table_dir, len(fragments), leaf_count)
+    return manifest
+
+
+def fragment_count(table_dir: Path) -> int:
+    fdir = fragment_dir(table_dir)
+    if not fdir.is_dir():
+        return 0
+    return sum(1 for f in fdir.iterdir() if f.is_file() and f.suffix == ".json")
