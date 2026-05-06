@@ -76,10 +76,21 @@ def test_finalize_merges_fragments(tmp_path):
 
 
 def test_finalize_empty_fragments_noop(tmp_path):
+    """Empty fragments dir → only finalized_at refreshed; last_run preserved."""
     td = _table_dir(tmp_path)
+    seed = manifest.empty_manifest("x")
+    manifest.set_last_run(
+        seed, "processed",
+        shard_by=["state"],
+        shards_observed=["s1"],
+        failed_shards=[{"shard_id": "s1", "error_message": "boom"}],
+    )
+    manifest.save_manifest(seed, td)
     m = manifest.finalize(td)
-    assert m["layers"]["processed"]["partitions"] == {}
     assert m["finalized_at"] is not None
+    last_run = m["layers"]["processed"]["last_run"]
+    assert last_run["shard_grouping"]["shard_by"] == ["state"]
+    assert last_run["failed_shards"][0]["shard_id"] == "s1"
 
 
 def test_is_leaf_valid_all_conditions(tmp_path):

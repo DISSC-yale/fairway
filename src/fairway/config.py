@@ -270,11 +270,14 @@ def resolve_config(
         return default
 
     table_dir = root / "tables" / table
+    raw_glob = str(table_raw["source_glob"])
+    glob_path = Path(raw_glob)
+    source_glob = raw_glob if glob_path.is_absolute() else str(root / glob_path)
     return TableConfig(
         table=table,
         project_root=root,
         table_dir=table_dir,
-        source_glob=str(table_raw["source_glob"]),
+        source_glob=source_glob,
         naming_pattern=naming_pattern,
         partition_by=partition_by,
         shard_by=shard_by,

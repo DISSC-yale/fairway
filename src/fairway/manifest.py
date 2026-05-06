@@ -264,12 +264,13 @@ def finalize(
             leaf_count += 1
         if frag.get("failed"):
             failed_shards.append(frag["failed"])
-    set_last_run(
-        manifest, layer,
-        shard_by=effective_shard_by,
-        shards_observed=sorted(shards_observed),
-        failed_shards=failed_shards,
-    )
+    if fragments:
+        set_last_run(
+            manifest, layer,
+            shard_by=effective_shard_by,
+            shards_observed=sorted(shards_observed),
+            failed_shards=failed_shards,
+        )
     manifest["finalized_at"] = utc_now_iso()
     save_manifest(manifest, table_dir)
     fdir = fragment_dir(table_dir)

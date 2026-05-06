@@ -31,7 +31,8 @@ from .config import (
     PROJECT_FILE,
     resolve_config,
 )
-from .pipeline import run_inline, run_one_shard
+from .batcher import Shard
+from .pipeline import run_inline, run_shard_direct
 from .schema import SchemaError, load_schema
 
 
@@ -204,17 +205,26 @@ def _shard(table: str, shards_file: str, shard_index: int) -> None:
         raise click.ClickException(
             f"shards file {shards_file!r} must contain a `shards` array"
         )
-    if shard_index < 0 or shard_index >= len(payload["shards"]):
+    shards_data = payload["shards"]
+    if shard_index < 0 or shard_index >= len(shards_data):
         raise click.ClickException(
-            f"shard_index {shard_index} out of range "
-            f"(0..{len(payload['shards']) - 1})"
+            f"shard_index {shard_index} out of range (0..{len(shards_data) - 1})"
         )
+    entry = shards_data[shard_index]
+    shard = Shard(
+        shard_id=str(entry["shard_id"]),
+        shard_values=dict(entry.get("shard_values") or {}),
+        leaves={
+            leaf: [Path(p) for p in files]
+            for leaf, files in (entry.get("leaves") or {}).items()
+        },
+    )
     project_root = Path(payload.get("project_root", ".")).resolve()
     try:
         config = resolve_config(project_root=project_root, table=table)
         schema = load_schema(config.table_dir)
-        result = run_one_shard(config, schema, shard_index)
-    except (ConfigError, SchemaError) as exc:
+        result = run_shard_direct(config, schema, shard)
+    except (ConfigError, SchemaError, IndexError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(
         f"Shard {result.shard_id}: ok={len(result.leaves_ok)} "

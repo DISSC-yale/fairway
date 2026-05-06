@@ -112,25 +112,22 @@ def run_inline(
     )
 
 
-def run_one_shard(
+def run_shard_direct(
     config: TableConfig,
     schema: SchemaSpec,
-    shard_index: int,
+    shard: Shard,
 ) -> ShardResult:
-    """Worker entry point: execute exactly one shard from the deterministic list."""
+    """Worker entry point: execute the *given* shard, without re-enumeration.
+
+    This is the correct path for Slurm array workers: ``shards.json`` is the
+    pre-computed (and possibly resume-filtered) subset; re-globbing the source
+    tree from the worker would let `to_run[k]` and `enumerate_shards()[k]`
+    diverge once any shard is skipped, silently processing the wrong leaves.
+    """
     validate_shard_by(config)
     validate_schema_vs_config(schema, config.source_format)
-    shards, unmatched = enumerate_shards(config)
-    if unmatched:
-        raise RuntimeError(
-            f"{len(unmatched)} input file(s) did not match naming_pattern"
-        )
-    if shard_index < 0 or shard_index >= len(shards):
-        raise IndexError(
-            f"shard_index {shard_index} out of range (0..{len(shards) - 1 if shards else -1})"
-        )
     con = duckdb.connect(":memory:")
     try:
-        return run_shard(con, config, schema, shards[shard_index])
+        return run_shard(con, config, schema, shard)
     finally:
         con.close()

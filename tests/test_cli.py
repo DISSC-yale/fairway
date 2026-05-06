@@ -105,7 +105,7 @@ def test_shard_command_internal(example_table, tmp_project, monkeypatch):
     monkeypatch.chdir(tmp_project)
     from fairway.batcher import enumerate_shards
     from fairway.config import resolve_config
-    from fairway._sbatch import shards_payload, write_artifacts
+    from fairway._sbatch import write_artifacts
     cfg = resolve_config(table="example")
     shards, _ = enumerate_shards(cfg)
     shards_file, _, _ = write_artifacts(cfg, shards)
@@ -114,6 +114,57 @@ def test_shard_command_internal(example_table, tmp_project, monkeypatch):
                "--shard-index", "0"], catch_exceptions=False,
     )
     assert res.exit_code == 0, res.output
+
+
+def test_shard_uses_payload_not_reenumeration(example_table, tmp_project, monkeypatch):
+    """Regression for the silent-data-loss bug: when shards.json holds the
+    filtered (to_run) subset, the worker MUST process payload[shard_index],
+    not enumerate_shards()[shard_index] — otherwise `to_run[k]` and
+    `all_shards[k]` diverge once any shard is skipped, and a worker writes
+    the wrong shard's leaves.
+    """
+    from fairway._sbatch import write_artifacts
+    from fairway.batcher import enumerate_shards
+    from fairway.config import resolve_config
+    monkeypatch.chdir(tmp_project)
+    cfg = resolve_config(table="example")
+    all_shards, _ = enumerate_shards(cfg)
+    # all_shards is sorted: [state=CT_year=2023, state=NY_year=2023].
+    # Simulate "CT already done, only NY needs running" — write a shards.json
+    # holding ONLY the second shard.
+    only_ny = [all_shards[1]]
+    shards_file, _, _ = write_artifacts(cfg, only_ny)
+    res = CliRunner().invoke(
+        main, ["_shard", "example", "--shards-file", str(shards_file),
+               "--shard-index", "0"], catch_exceptions=False,
+    )
+    assert res.exit_code == 0, res.output
+    # Output must reference NY's shard_id, not CT's.
+    assert "state=NY_year=2023" in res.output
+    assert "state=CT_year=2023" not in res.output
+    # Parquet must have been written under NY's leaf, not CT's.
+    processed = tmp_project / "data" / "processed" / "example"
+    assert (processed / "state=NY/year=2023/data.parquet").is_file()
+    assert not (processed / "state=CT/year=2023/data.parquet").is_file()
+
+
+def test_shard_index_out_of_range_clean_error(example_table, tmp_project, monkeypatch):
+    """`fairway _shard` index past payload length surfaces a clean ClickException,
+    not a Python traceback through Slurm logs.
+    """
+    monkeypatch.chdir(tmp_project)
+    from fairway._sbatch import write_artifacts
+    from fairway.batcher import enumerate_shards
+    from fairway.config import resolve_config
+    cfg = resolve_config(table="example")
+    shards, _ = enumerate_shards(cfg)
+    shards_file, _, _ = write_artifacts(cfg, shards)
+    res = CliRunner().invoke(
+        main, ["_shard", "example", "--shards-file", str(shards_file),
+               "--shard-index", "999"], catch_exceptions=False,
+    )
+    assert res.exit_code != 0
+    assert "out of range" in res.output.lower()
 
 
 def test_discover_command_exists(tmp_project, monkeypatch):
