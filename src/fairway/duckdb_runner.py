@@ -1,216 +1,220 @@
-"""DuckDB shard runner — Step 7.3 full pipeline integration.
+"""Per-shard DuckDB runner.
 
-Glues together connection setup, optional unzip, plugin load, the user
-transform, Type A rename, partition-column injection, validations,
-sort, parquet write, schema fingerprint, manifest fragment write, and
-scratch cleanup. All exceptions are caught: a failure produces an
-``error`` fragment plus a :class:`ShardResult` with ``status='error'``
-— the Slurm task itself always exits 0; the manifest is the truth.
+Pipeline order (one shard):
+
+1. Bind a DuckDB view over the shard's input files.
+2. Apply optional ``transform.py`` (identity if absent).
+3. Apply Type A rename if ``config.apply_type_a``.
+4. Apply ``schema.yaml`` CASTs and ``on_drift`` enforcement.
+5. Run validations.
+6. Sort if ``config.sort_by`` set.
+7. ``COPY ... PARTITION_BY`` to ``storage_processed/<table>/``.
+8. Write a leaf-keyed manifest fragment.
+
+Shard-level errors are caught and produce a ``failed_shards`` fragment;
+per-leaf errors set ``status="error"`` for that leaf only.
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from . import defaults, manifest, transform_loader, validations
+from . import defaults, manifest, transform_loader
+from .batcher import Shard
+from .config import TableConfig
+from .ctx import IngestCtx
+from .schema import (
+    DriftEvents,
+    SchemaSpec,
+    apply_schema,
+    schema_fingerprint,
+)
+from .validations import apply_validations
 
-if TYPE_CHECKING:  # pragma: no cover — import-only
-    from .ctx import IngestCtx
-    from .config import Config
 
-
-@dataclass(frozen=True)
-class ColumnSpec:
-    """One column of a parquet output schema."""
-
-    name: str
-    dtype: str
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class ShardResult:
-    """Result of running a single shard through the runner."""
-
-    row_count: int
-    schema_fingerprint: str
-    schema: list[ColumnSpec]
-    output_paths: list[Path]
-    duration_seconds: float
-    encoding_used: str
-    status: str = "ok"
-    error: str | None = None
+    shard_id: str
+    leaves_ok: list[str] = field(default_factory=list)
+    leaves_error: list[str] = field(default_factory=list)
+    failed: dict[str, Any] | None = None
+    duration_seconds: float = 0.0
 
 
-def _layer_root(cfg: "Config") -> Path:
-    """Dataset's storage layer root (where ``_fragments/`` lives)."""
-    overrides = {
-        "raw": cfg.storage_raw,
-        "processed": cfg.storage_processed,
-        "curated": cfg.storage_curated,
-    }
-    base = overrides.get(cfg.layer) or (cfg.storage_root / cfg.layer)
-    return Path(base) / cfg.dataset_name
+def _layer_root(config: TableConfig) -> Path:
+    return Path(config.storage_processed) / config.table
 
 
-def _configure(con: Any, ctx: "IngestCtx") -> None:
-    cfg = ctx.config
-    con.execute(f"PRAGMA threads={int(cfg.slurm_cpus_per_task)}")
-    mem = cfg.slurm_mem.replace("'", "''")
+def _format_path_sql(path: Path | str) -> str:
+    return "'" + str(path).replace("'", "''") + "'"
+
+
+def _configure(con: Any, config: TableConfig, scratch_dir: Path) -> None:
+    con.execute(f"PRAGMA threads={int(config.slurm_cpus_per_task)}")
+    mem = config.slurm_mem.replace("'", "''")
     con.execute(f"PRAGMA memory_limit='{mem}'")
-    tmp = str(ctx.scratch_dir).replace("'", "''")
-    con.execute(f"PRAGMA temp_directory='{tmp}'")
+    con.execute(f"PRAGMA temp_directory='{str(scratch_dir).replace(chr(39), chr(39)*2)}'")
 
 
-def _describe_shard_output(
+def _resolve_scratch(config: TableConfig) -> Path:
+    if config.scratch_dir is not None:
+        return Path(config.scratch_dir)
+    import os
+    env = os.environ.get("SLURM_TMPDIR") or os.environ.get("TMPDIR") or "/tmp"
+    return Path(env)
+
+
+def build_ctx(config: TableConfig, shard: Shard) -> IngestCtx:
+    return IngestCtx(
+        config=config,
+        input_paths=shard.input_paths,
+        output_root=_layer_root(config),
+        partition_values=dict(shard.shard_values),
+        leaves={leaf: list(files) for leaf, files in shard.leaves.items()},
+        shard_id=shard.shard_id,
+        scratch_dir=_resolve_scratch(config),
+    )
+
+
+def _hash_inputs(paths: list[Path]) -> list[str]:
+    out: list[str] = []
+    for p in paths:
+        try:
+            out.append(manifest.source_hash(p))
+        except OSError:
+            out.append("")
+    return out
+
+
+def run_shard(
     con: Any,
-    output_root: Path,
-    partition_values: dict[str, str],
-    partition_by: list[str],
-) -> list[dict[str, str]]:
-    """DESCRIBE only the parquet leaf written by THIS shard.
-
-    Globbing the dataset root would let DuckDB intersect schemas across
-    sibling shards (non-deterministic under Slurm-array concurrency). We
-    join ``__<key>=<value>`` directories onto ``output_root`` in the
-    same order as ``config.partition_by`` (DuckDB's ``write_parquet``
-    Hive order) and glob only that leaf — sub-partition levels are
-    picked up by the recursive ``**``. ``hive_partitioning=true``
-    reconstitutes partition columns in the schema view.
-    """
-    leaf = output_root
-    for k in partition_by:
-        leaf = leaf / f"__{k}={partition_values[k]}"
-    pattern = str(leaf).replace("'", "''") + "/**/*.parquet"
-    rows = con.sql(
-        f"DESCRIBE SELECT * FROM read_parquet('{pattern}', hive_partitioning=true)"
-    ).fetchall()
-    return [{"name": r[0], "dtype": r[1]} for r in rows]
-
-
-def run_shard(con: Any, ctx: "IngestCtx") -> ShardResult:
-    """Execute a single shard end-to-end and return a :class:`ShardResult`.
-
-    Pipeline order matches PLAN.md Step 7.3 verbatim. Any exception is
-    captured, persisted as an ``error`` fragment, and surfaced via the
-    returned :class:`ShardResult` — never re-raised.
-    """
+    config: TableConfig,
+    schema: SchemaSpec,
+    shard: Shard,
+) -> ShardResult:
+    """Execute one shard end-to-end. Always writes a fragment."""
     started = time.monotonic()
-    cfg = ctx.config
-    sources = [str(p) for p in ctx.input_paths]
-    source_hashes: list[str] = []
-    for p in ctx.input_paths:
-        try:
-            source_hashes.append(manifest.source_hash(p))
-        except OSError:
-            source_hashes.append("")
-    encoding_used = cfg.encoding
+    ctx = build_ctx(config, shard)
+    layer_root = ctx.output_root
+    layer_root.mkdir(parents=True, exist_ok=True)
+    schema_fp = schema_fingerprint(schema)
+    leaves_payload: dict[str, dict[str, Any]] = {}
+    leaves_ok: list[str] = []
+    leaves_error: list[str] = []
+    fail_record: dict[str, Any] | None = None
     extracted_dirs: list[Path] = []
-    layer_root = _layer_root(cfg)
-
-    def _error_result(exc: BaseException) -> ShardResult:
-        frag = manifest.build_fragment(
-            partition_values=ctx.partition_values,
-            source_files=sources,
-            source_hashes=source_hashes,
-            schema=[],
-            row_count=0,
-            status="error",
-            error=str(exc),
-            encoding_used=encoding_used,
-        )
-        try:
-            manifest.write_fragment(frag, root_dir=layer_root)
-        except OSError:
-            pass
-        return ShardResult(
-            row_count=0,
-            schema_fingerprint=frag["schema_fingerprint"],
-            schema=[],
-            output_paths=[],
-            duration_seconds=time.monotonic() - started,
-            encoding_used=encoding_used,
-            status="error",
-            error=str(exc),
-        )
 
     try:
-        _configure(con, ctx)
+        _configure(con, config, ctx.scratch_dir)
 
-        active_ctx = ctx
-        if cfg.unzip:
-            extracted = defaults.unzip_inputs(
-                zip_paths=ctx.input_paths,
-                scratch_dir=ctx.scratch_dir,
-                inner_pattern=cfg.zip_inner_pattern,
-                password_file=cfg.zip_password_file,
-            )
-            extracted_dirs = sorted({p.parent for p in extracted})
-            active_ctx = replace(ctx, input_paths=extracted)
+        active_inputs_by_leaf: dict[str, list[Path]] = {}
+        if config.unzip:
+            for leaf, files in ctx.leaves.items():
+                extracted = defaults.unzip_inputs(
+                    zip_paths=files,
+                    scratch_dir=ctx.scratch_dir,
+                    inner_pattern=config.zip_inner_pattern,
+                    password_file=config.zip_password_file,
+                )
+                extracted_dirs.extend(sorted({p.parent for p in extracted}))
+                active_inputs_by_leaf[leaf] = extracted
+        else:
+            active_inputs_by_leaf = {leaf: list(files) for leaf, files in ctx.leaves.items()}
 
-        user_transform = transform_loader.load_transform(cfg.python)
-        rel = user_transform(con, active_ctx)
-        if cfg.apply_type_a:
-            rel = defaults.apply_type_a(rel)
-        for k in sorted(active_ctx.partition_values):
-            v = str(active_ctx.partition_values[k]).replace("'", "''")
-            rel = rel.project(f"*, '{v}' AS __{k}")
-        validations.apply_validations(rel, cfg.validations)
-        if cfg.sort_by:
-            rel = rel.order(", ".join(cfg.sort_by))
+        user_transform = transform_loader.load_transform(config.table_dir)
 
-        ctx.output_path.parent.mkdir(parents=True, exist_ok=True)
-        partition_keys = [f"__{k}" for k in cfg.partition_by] + list(cfg.sub_partition_by)
-        rel.write_parquet(
-            str(ctx.output_path),
-            compression="zstd",
-            row_group_size=cfg.row_group_size,
-            partition_by=partition_keys or None,
-            overwrite=True,
-        )
-
-        schema = _describe_shard_output(
-            con, ctx.output_path, active_ctx.partition_values, list(cfg.partition_by)
-        )
-        fp = manifest.schema_fingerprint(schema)
-        # Read row_count from the parquet files we just wrote rather than
-        # ``rel.count("*")`` — the latter would re-execute the entire lazy
-        # transform + Type A + validations + sort pipeline a second time.
-        # Globbing the per-shard leaf (same scope as ``_describe_shard_output``)
-        # keeps the count scoped to this shard and avoids cross-shard reads.
-        leaf = ctx.output_path
-        for k in cfg.partition_by:
-            leaf = leaf / f"__{k}={active_ctx.partition_values[k]}"
-        count_pattern = str(leaf).replace("'", "''") + "/**/*.parquet"
-        row_count = int(con.sql(
-            f"SELECT COUNT(*) FROM read_parquet('{count_pattern}', "
-            f"hive_partitioning=true)"
-        ).fetchone()[0])
-        fragment = manifest.build_fragment(
-            partition_values=ctx.partition_values,
-            source_files=sources,
-            source_hashes=source_hashes,
-            schema=schema,
-            row_count=row_count,
-            status="ok",
-            error=None,
-            encoding_used=encoding_used,
-        )
-        manifest.write_fragment(fragment, root_dir=layer_root)
-
-        output_paths = sorted(ctx.output_path.rglob("*.parquet"))
-        return ShardResult(
-            row_count=row_count,
-            schema_fingerprint=fp,
-            schema=[ColumnSpec(name=c["name"], dtype=c["dtype"]) for c in schema],
-            output_paths=output_paths,
-            duration_seconds=time.monotonic() - started,
-            encoding_used=encoding_used,
-        )
+        for leaf, files in active_inputs_by_leaf.items():
+            source_files = [str(p) for p in ctx.leaves[leaf]]
+            source_hashes = _hash_inputs(ctx.leaves[leaf])
+            try:
+                encoding_used = defaults.bind_source_view(con, files, config, ctx.input_view)
+                if user_transform is not None:
+                    rel = user_transform(con, ctx)
+                else:
+                    rel = con.sql(f"SELECT * FROM {ctx.input_view}")
+                if config.apply_type_a:
+                    rel = defaults.apply_type_a(rel)
+                rel, drift = apply_schema(con, rel, schema)
+                apply_validations(rel, config.validations)
+                if config.sort_by:
+                    rel = rel.order(", ".join(config.sort_by))
+                leaf_dir = layer_root / leaf
+                leaf_dir.mkdir(parents=True, exist_ok=True)
+                leaf_file = leaf_dir / "data.parquet"
+                rel.write_parquet(
+                    str(leaf_file),
+                    compression="zstd",
+                    row_group_size=config.row_group_size,
+                )
+                row_count = int(con.sql(
+                    f"SELECT COUNT(*) FROM read_parquet({_format_path_sql(str(leaf_file))})"
+                ).fetchone()[0])
+                drift_events = None if drift.is_empty() else drift.to_dict()
+                payload: dict[str, Any] = {
+                    "source_files": source_files,
+                    "source_hashes": source_hashes,
+                    "schema_fingerprint": schema_fp,
+                    "row_count": row_count,
+                    "status": "ok",
+                    "ingest_ts": manifest.utc_now_iso(),
+                }
+                if drift_events:
+                    payload["drift_events"] = drift_events
+                if encoding_used != config.encoding:
+                    payload["encoding_used"] = encoding_used
+                leaves_payload[leaf] = payload
+                leaves_ok.append(leaf)
+            except Exception as exc:
+                logger.exception("leaf %s failed", leaf)
+                leaves_payload[leaf] = {
+                    "source_files": source_files,
+                    "source_hashes": source_hashes,
+                    "schema_fingerprint": schema_fp,
+                    "row_count": 0,
+                    "status": "error",
+                    "ingest_ts": manifest.utc_now_iso(),
+                }
+                leaves_error.append(leaf)
+                if fail_record is None:
+                    fail_record = {
+                        "shard_id": shard.shard_id,
+                        "error_message": str(exc),
+                        "failed_at": manifest.utc_now_iso(),
+                        "leaves_attempted": [],
+                    }
+                fail_record["leaves_attempted"].append(leaf)
     except Exception as exc:
-        return _error_result(exc)
+        logger.exception("shard %s failed at setup", shard.shard_id)
+        fail_record = {
+            "shard_id": shard.shard_id,
+            "error_message": str(exc),
+            "failed_at": manifest.utc_now_iso(),
+            "leaves_attempted": list(ctx.leaves),
+        }
     finally:
         for d in extracted_dirs:
             shutil.rmtree(d, ignore_errors=True)
+
+    successful_leaves = {k: v for k, v in leaves_payload.items() if v["status"] == "ok"}
+    manifest.write_fragment(
+        config.table_dir,
+        shard.shard_id,
+        layer="processed",
+        leaves=successful_leaves,
+        failed=fail_record,
+        shard_by=list(config.shard_by),
+    )
+    return ShardResult(
+        shard_id=shard.shard_id,
+        leaves_ok=sorted(leaves_ok),
+        leaves_error=sorted(leaves_error),
+        failed=fail_record,
+        duration_seconds=time.monotonic() - started,
+    )

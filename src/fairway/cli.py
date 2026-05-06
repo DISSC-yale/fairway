@@ -1,277 +1,319 @@
-"""fairway CLI — rewrite/v0.3 Step 9.1 skeleton (≤ 280 LOC after 9.5)."""
+"""fairway CLI — v0.3 redesign (tables/ layout + manifest as SoT).
+
+Top-level commands:
+
+  init <proj> [--table <name>]        scaffold project / add a table
+  discover <table>                    populate tables/<t>/schema.yaml
+  submit <table> [--force]            Slurm array + afterany finalize dep
+  run <table> [--force]               single-machine inline finalize
+  finalize <table>                    merge fragments → manifest
+  status <table>                      manifest + fragment-dir status
+  validate <table>                    rules from config.yaml
+  _shard <table> --shards-file F --shard-index N    internal worker
+"""
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
 from . import _init_templates as _t
+from . import _sbatch
 from . import manifest as _manifest
-from .config import load_config
+from .config import (
+    ConfigError,
+    PROJECT_FILE,
+    resolve_config,
+)
+from .pipeline import run_inline, run_one_shard
+from .schema import SchemaError, load_schema
+
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
-def main() -> None:
-    """fairway — shuffle-free Slurm-array data ingestion."""
+@click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
+def main(verbose: bool) -> None:
+    """fairway — partitioned-parquet ingest for HPC."""
+    if verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(name)s %(levelname)s %(message)s",
+        )
+
+
+# ── init ────────────────────────────────────────────────────────────
 
 
 def _scaffold_project(root: Path) -> None:
-    for sub in ("datasets", "transforms/raw_to_processed",
-                "transforms/processed_to_curated", "data", "build"):
-        (root / sub).mkdir(parents=True, exist_ok=True)
-    (root / ".gitignore").write_text(_t.GITIGNORE, encoding="utf-8")
-    (root / "README.md").write_text(_t.README.format(name=root.name), encoding="utf-8")
+    root.mkdir(parents=True, exist_ok=True)
+    (root / PROJECT_FILE).write_text(_t.FAIRWAY_YAML_TEMPLATE, encoding="utf-8")
+    (root / ".gitignore").write_text(_t.GITIGNORE_TEMPLATE, encoding="utf-8")
+    (root / "README.md").write_text(
+        _t.README_TEMPLATE.format(name=root.name), encoding="utf-8")
+    (root / "tables").mkdir(parents=True, exist_ok=True)
 
 
-def _scaffold_dataset(root: Path, name: str) -> None:
-    (root / "datasets").mkdir(parents=True, exist_ok=True)
-    for ext, tmpl in (("yaml", _t.DATASET_YAML), ("py", _t.DATASET_PY)):
-        (root / "datasets" / f"{name}.{ext}").write_text(
-            tmpl.format(name=name), encoding="utf-8")
+def _scaffold_table(root: Path, name: str) -> None:
+    table_dir = root / "tables" / name
+    table_dir.mkdir(parents=True, exist_ok=True)
+    (table_dir / "config.yaml").write_text(
+        _t.TABLE_CONFIG_YAML_TEMPLATE.format(name=name), encoding="utf-8")
+    (table_dir / "schema.yaml").write_text(
+        _t.TABLE_SCHEMA_YAML_STUB.format(name=name), encoding="utf-8")
+    (table_dir / "transform.py").write_text(
+        _t.TABLE_TRANSFORM_PY_TEMPLATE.format(name=name), encoding="utf-8")
 
 
 @main.command()
 @click.argument("project_dir", type=click.Path(file_okay=False))
-@click.option("--dataset", "dataset_name", help="Add a dataset scaffold.")
-@click.option("--init-project", is_flag=True,
-              help="Force project scaffold even if directory looks initialized.")
-@click.option("--force", is_flag=True,
-              help="Overwrite a non-empty <project_dir> on first init.")
-def init(project_dir: str, dataset_name: str | None,
-         init_project: bool, force: bool) -> None:
-    """Scaffold a fairway project (and optionally a dataset)."""
-    root = Path(project_dir)
-    initialized = root.exists() and (root / "datasets").is_dir()
-    is_first = not initialized or init_project
-    if (is_first and root.exists() and any(root.iterdir())
-            and not force and not init_project):
-        raise click.ClickException(
-            f"Path {project_dir!r} exists and is not empty. "
-            "Re-run with --force to overwrite, or pass --dataset <name>."
-        )
-    if is_first:
+@click.option("--table", "table_name", default=None,
+              help="Add a tables/<name>/ scaffold (existing project only).")
+def init(project_dir: str, table_name: str | None) -> None:
+    """Scaffold a fairway project (and/or a per-table directory)."""
+    root = Path(project_dir).resolve()
+    project_exists = (root / PROJECT_FILE).is_file()
+    if not project_exists:
+        if root.exists() and any(root.iterdir()):
+            raise click.ClickException(
+                f"Path {project_dir!r} is non-empty and missing {PROJECT_FILE}; "
+                f"point --table at an empty dir or run `fairway init <new>`."
+            )
         _scaffold_project(root)
-    if dataset_name:
-        _scaffold_dataset(root, dataset_name)
-    click.echo(f"Initialized {project_dir}")
+        if table_name is None:
+            _scaffold_table(root, "example")
+    if table_name:
+        _scaffold_table(root, table_name)
+    click.echo(f"Initialized {root}")
 
 
-def _build_ctx_from_shard(config, shard):
-    """Mirror ``pipeline._build_ctx`` for an entry from the shards file."""
-    import os
-    from .ctx import IngestCtx
-    from .duckdb_runner import _layer_root
-    scratch = (Path(config.scratch_dir) if config.scratch_dir is not None
-               else Path(os.environ.get("SLURM_TMPDIR")
-                         or os.environ.get("TMPDIR") or "/tmp"))
-    return IngestCtx(
-        config=config,
-        input_paths=[Path(p) for p in shard["input_paths"]],
-        output_path=_layer_root(config),
-        partition_values=dict(shard.get("partition_values") or {}),
-        shard_id=str(shard["shard_id"]),
-        scratch_dir=scratch)
+# ── discover ─────────────────────────────────────────────────────────
 
 
 @main.command()
-@click.option("--shards-file", required=True,
-              type=click.Path(exists=True, dir_okay=False))
-@click.option("--shard-index", required=True, type=int)
-def run(shards_file: str, shard_index: int) -> None:
-    """Run one shard by index from the shards manifest. Always exits 0 on
-    shard error (manifest fragment is the truth); pipeline-level errors
-    (config parse, plugin load, missing file) DO exit non-zero.
-
-    Shards file shape (Step 9.2 may refine):
-    ``{"config": "<path/to/config.yaml>", "shards": [<entry>, ...]}``.
-    """
-    import duckdb
-    from .duckdb_runner import run_shard
-    payload = json.loads(Path(shards_file).read_text(encoding="utf-8"))
-    if not (isinstance(payload, dict) and "config" in payload and "shards" in payload):
-        raise click.ClickException(
-            "shards file must be {'config': <path>, 'shards': [...]} "
-            "(Step 9.2 finalises this format).")
-    shards = payload["shards"]
-    if shard_index < 0 or shard_index >= len(shards):
-        raise click.ClickException(
-            f"shard_index {shard_index} out of range (0..{len(shards) - 1})")
-    config = load_config(payload["config"])
-    ctx = _build_ctx_from_shard(config, shards[shard_index])
-    con = duckdb.connect(":memory:")
+@click.argument("table")
+@click.option("--sample-files", default=50, show_default=True, type=int)
+@click.option("--rows-per-file", default=1000, show_default=True, type=int)
+@click.option("--force", is_flag=True, help="Overwrite an existing schema.yaml.")
+def discover(table: str, sample_files: int, rows_per_file: int, force: bool) -> None:
+    """Two-phase header union + type inference → schema.yaml."""
+    from .discover import DiscoverError, discover as _discover
     try:
-        run_shard(con, ctx)
-    finally:
-        con.close()
+        config = resolve_config(table=table)
+        path = _discover(config, sample_files=sample_files,
+                         rows_per_file=rows_per_file, force=force)
+    except (ConfigError, DiscoverError, SchemaError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Wrote {path}")
+
+
+# ── run (single-machine) ─────────────────────────────────────────────
 
 
 @main.command()
-@click.option("--dataset", "dataset_name", required=True)
-@click.option("--storage-root", "storage_root", default="data", show_default=True,
-              type=click.Path(file_okay=False))
-@click.option("--layer", default="raw", show_default=True,
-              type=click.Choice(["raw", "processed", "curated"]))
-def status(dataset_name: str, storage_root: str, layer: str) -> None:
-    """Print fragment-level status + most recent submission record(s).
-
-    For chunked submissions (Step 9.5) aggregates ``squeue`` task states
-    across every chunk's array job id when ``squeue`` is on PATH.
-    """
-    from . import _sbatch
-    layer_root = Path(storage_root) / layer / dataset_name
-    lines, job_ids = _sbatch.format_status_summary(layer_root)
-    for line in lines:
-        click.echo(line)
-    if job_ids and shutil.which("squeue"):
-        outs = [subprocess.run(["squeue", "-h", "-j", jid, "-o", "%T"],
-                               capture_output=True, text=True, check=False).stdout
-                for jid in job_ids]
-        states = _sbatch.aggregate_squeue_states(outs)
-        if states:
-            click.echo("Slurm states (aggregated): "
-                       + ", ".join(f"{k}={v}" for k, v in sorted(states.items())))
-    counts: dict[str, int] = {"ok": 0, "error": 0}
-    frag_dir = layer_root / "_fragments"
-    for f in (frag_dir.glob("*.json") if frag_dir.is_dir() else ()):
-        try:
-            s = json.loads(f.read_text(encoding="utf-8")).get("status", "error")
-        except (json.JSONDecodeError, OSError):
-            continue
-        counts[s] = counts.get(s, 0) + 1
-    click.echo(f"Fragments: ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
-
-
-@main.command()
-@click.argument("transform_yaml", type=click.Path(exists=True, dir_okay=False))
-def transform(transform_yaml: str) -> None:
-    """Stage-2 transform (full wiring deferred to Step 9.x — see PLAN.md)."""
-    raise click.ClickException(
-        f"fairway transform: full Stage-2 wiring lands in Step 9.x "
-        f"(see PLAN.md). Requested transform={transform_yaml!r}."
+@click.argument("table")
+@click.option("--force", is_flag=True, help="Re-run every shard, ignoring manifest.")
+def run(table: str, force: bool) -> None:
+    """Single-machine ingest with inline finalize after the last shard."""
+    try:
+        config = resolve_config(table=table)
+        schema = load_schema(config.table_dir)
+        result = run_inline(config, schema, force=force)
+    except (ConfigError, SchemaError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    ok = sum(1 for r in result.shard_results if not r.failed)
+    err = result.submitted - ok
+    click.echo(
+        f"Done: total_shards={result.total_shards} submitted={result.submitted} "
+        f"skipped={result.skipped} ok={ok} error={err}"
     )
 
 
-@main.command()
-@click.argument("dataset_path", type=click.Path(exists=True))
-@click.option("--rules", required=True,
-              type=click.Path(exists=True, dir_okay=False))
-def validate(dataset_path: str, rules: str) -> None:
-    """Apply validation rules to a landed parquet dataset.
+# ── submit (Slurm) ───────────────────────────────────────────────────
 
-    Exit 0 on all-pass; exit 2 on any failure.
-    """
+
+@main.command()
+@click.argument("table")
+@click.option("--force", is_flag=True, help="Re-submit every shard, ignoring manifest.")
+@click.option("--dry-run", is_flag=True,
+              help="Render artifacts; do not invoke sbatch.")
+def submit(table: str, force: bool, dry_run: bool) -> None:
+    """Slurm array submit + afterany finalize dependency."""
+    try:
+        config = resolve_config(table=table)
+        schema = load_schema(config.table_dir)
+        to_run, skipped, unmatched = _sbatch.plan_submission(
+            config, schema, force=force,
+        )
+    except (ConfigError, SchemaError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _sbatch.handle_unmatched(unmatched)
+
+    if not to_run:
+        click.echo(
+            f"All {len(skipped)} shard(s) up-to-date — nothing to submit. "
+            f"Use --force to re-run."
+        )
+        return
+
+    shards_file, array_script, finalize_script = _sbatch.write_artifacts(
+        config, to_run,
+    )
+    click.echo(f"Wrote {shards_file}")
+    click.echo(f"Wrote {array_script}")
+    click.echo(f"Wrote {finalize_script}")
+    if dry_run:
+        click.echo(f"Would submit: sbatch {array_script}")
+        click.echo(f"Would submit: sbatch --dependency=afterany:<JID> {finalize_script}")
+        return
+    if shutil.which("sbatch") is None:
+        click.echo(
+            "Error: sbatch not found on PATH. Run from a Slurm-enabled host "
+            "or pass --dry-run.", err=True,
+        )
+        sys.exit(2)
+    manifest = _manifest.load_manifest(config.table_dir)
+    _manifest.clear_last_run(manifest)
+    _manifest.save_manifest(manifest, config.table_dir)
+    array_jid = _sbatch.run_sbatch(array_script)
+    finalize_jid = _sbatch.run_sbatch_dependency(finalize_script, array_jid)
+    click.echo(_sbatch.format_submission_summary(
+        len(to_run), len(skipped), array_jid, finalize_jid,
+    ))
+
+
+# ── _shard (internal worker) ─────────────────────────────────────────
+
+
+@main.command(name="_shard")
+@click.argument("table")
+@click.option("--shards-file", required=True,
+              type=click.Path(exists=True, dir_okay=False))
+@click.option("--shard-index", required=True, type=int)
+def _shard(table: str, shards_file: str, shard_index: int) -> None:
+    """Internal worker — invoked by the sbatch array script."""
+    payload = json.loads(Path(shards_file).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or "shards" not in payload:
+        raise click.ClickException(
+            f"shards file {shards_file!r} must contain a `shards` array"
+        )
+    if shard_index < 0 or shard_index >= len(payload["shards"]):
+        raise click.ClickException(
+            f"shard_index {shard_index} out of range "
+            f"(0..{len(payload['shards']) - 1})"
+        )
+    project_root = Path(payload.get("project_root", ".")).resolve()
+    try:
+        config = resolve_config(project_root=project_root, table=table)
+        schema = load_schema(config.table_dir)
+        result = run_one_shard(config, schema, shard_index)
+    except (ConfigError, SchemaError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Shard {result.shard_id}: ok={len(result.leaves_ok)} "
+        f"error={len(result.leaves_error)}"
+    )
+
+
+# ── finalize ─────────────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("table")
+def finalize(table: str) -> None:
+    """Merge ``_state/fragments/*.json`` → ``manifest.json``."""
+    try:
+        config = resolve_config(table=table)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+    fragment_count = _manifest.fragment_count(config.table_dir)
+    _manifest.finalize(
+        config.table_dir,
+        layer="processed",
+        shard_by=list(config.shard_by),
+    )
+    click.echo(f"Finalized {config.table_dir} (merged {fragment_count} fragment(s))")
+
+
+# ── status ───────────────────────────────────────────────────────────
+
+
+def _format_status(config_table: Any, manifest: dict[str, Any], frag_count: int) -> list[str]:
+    layer = (manifest.get("layers", {}) or {}).get("processed", {})
+    parts = layer.get("partitions", {})
+    ok = sum(1 for p in parts.values() if p.get("status") == "ok")
+    err = sum(1 for p in parts.values() if p.get("status") == "error")
+    last_run = layer.get("last_run") or {}
+    failed = last_run.get("failed_shards") or []
+    shard_by = (last_run.get("shard_grouping") or {}).get("shard_by", [])
+    lines = [
+        f"Table:      {config_table.table}",
+        f"Layer:      processed",
+        f"Partitions: {ok} ok, {err} error",
+        f"Last run:   {manifest.get('finalized_at') or '(none)'} "
+        f"(shard_by: {shard_by})",
+        f"Failed shards: {len(failed) if failed else 'none'}",
+        "",
+        f"Fragment dir: {frag_count} unmerged fragment(s)",
+    ]
+    if frag_count:
+        lines.append(
+            f"  → finalize pending or failed. Re-run "
+            f"`fairway finalize {config_table.table}` if the dependency job has finished."
+        )
+    return lines
+
+
+@main.command()
+@click.argument("table")
+def status(table: str) -> None:
+    """Print manifest + fragment status."""
+    try:
+        config = resolve_config(table=table)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+    manifest = _manifest.load_manifest(config.table_dir)
+    frag_count = _manifest.fragment_count(config.table_dir)
+    for line in _format_status(config, manifest, frag_count):
+        click.echo(line)
+
+
+# ── validate ─────────────────────────────────────────────────────────
+
+
+@main.command()
+@click.argument("table")
+def validate(table: str) -> None:
+    """Apply ``validations:`` rules to landed parquet under storage_processed/<t>/."""
     import duckdb
-    import yaml
     from .config import _parse_validations
     from .validations import ShardValidationError, apply_validations
-    spec = yaml.safe_load(Path(rules).read_text(encoding="utf-8")) or {}
-    validations_cfg = _parse_validations(spec.get("validations") if isinstance(spec, dict) else spec)
+    try:
+        config = resolve_config(table=table)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+    layer_root = Path(config.storage_processed) / config.table
+    if not layer_root.is_dir():
+        raise click.ClickException(f"No data at {layer_root}")
+    glob = str(layer_root).replace("'", "''") + "/**/*.parquet"
     con = duckdb.connect(":memory:")
-    glob = str(Path(dataset_path)).replace("'", "''") + "/**/*.parquet"
     try:
         rel = con.sql(f"SELECT * FROM read_parquet('{glob}')")
         try:
-            apply_validations(rel, validations_cfg)
+            apply_validations(rel, config.validations)
         except ShardValidationError as exc:
             click.echo(f"FAIL  {exc}", err=True)
             sys.exit(2)
     finally:
         con.close()
-    click.echo(f"OK    all checks passed: {dataset_path}")
-
-
-@main.command()
-def enrich() -> None:
-    """Deferred stub — see PLAN.md re-entry triggers."""
-    click.echo("enrich is deferred — see PLAN.md re-entry triggers", err=True)
-    sys.exit(2)
-
-
-@main.command()
-@click.argument("dataset_path", type=click.Path(exists=True))
-@click.option("--output", "output_path", required=True,
-              type=click.Path(dir_okay=False),
-              help="Path to write the summary CSV.")
-def summarize(dataset_path: str, output_path: str) -> None:
-    """Generate a column-level summary CSV via DuckDB over landed parquet."""
-    from .summarize import generate_summary
-    generate_summary(Path(dataset_path), Path(output_path))
-
-
-@main.group()
-def manifest() -> None:
-    """Inspect and finalize fragment manifests."""
-
-
-@manifest.command("finalize")
-@click.argument("layer_root", type=click.Path(exists=True, file_okay=False))
-def manifest_finalize(layer_root: str) -> None:
-    """Merge ``<layer_root>/_fragments/*.json`` → ``manifest.json`` + ``schema_summary.json``."""
-    merged = _manifest.finalize(layer_root)
-    counts: dict[str, int] = {"ok": 0, "error": 0}
-    for frag in merged.get("fragments", []):
-        counts[frag.get("status", "error")] = counts.get(frag.get("status", "error"), 0) + 1
-    click.echo(f"finalized {layer_root}\n  fragments merged: {merged.get('fragment_count', 0)}\n"
-               f"  ok={counts.get('ok', 0)}  error={counts.get('error', 0)}")
-
-
-@main.command()
-@click.argument("config_yaml", type=click.Path(exists=True, dir_okay=False))
-@click.option("--dry-run", is_flag=True,
-              help="Render shards.json + sbatch script(s); do not invoke sbatch.")
-@click.option("--allow-skip", is_flag=True,
-              help="Skip files in source_glob not matching naming_pattern "
-                   "(logged to manifest/_skipped/<ts>.json).")
-@click.option("--force", is_flag=True,
-              help="Re-submit every shard, bypassing idempotent-resume skip.")
-@click.option("--chunk-size", type=int, default=None,
-              help="Override Config.slurm_chunk_size for this submission.")
-def submit(config_yaml: str, dry_run: bool, allow_skip: bool,
-           force: bool, chunk_size: int | None) -> None:
-    """Render sbatch script(s) and submit a Slurm array (Steps 9.2–9.5)."""
-    from . import _sbatch, batcher
-    from .duckdb_runner import _layer_root
-    config = load_config(config_yaml)
-    layer_root = _layer_root(config)
-    matched, unmatched = batcher.expand_and_validate(config)
-    _sbatch.handle_unmatched(unmatched, layer_root, allow_skip=allow_skip, dry_run=dry_run)
-    if not matched:
-        raise click.ClickException(f"No shards from source_glob={config.source_glob!r}.")
-    to_submit, skipped_ok = _sbatch.filter_resumable_shards(matched, layer_root, force)
-    if dry_run:
-        click.echo(f"Would submit: {len(to_submit)} shards\n"
-                   f"Would skip (existing ok): {len(skipped_ok)} shards")
-    if not to_submit:
-        click.echo("All shards already complete — nothing to submit. "
-                   "Use --force to override.")
-        return
-    effective_size = chunk_size if chunk_size is not None else config.slurm_chunk_size
-    chunks = _sbatch.chunk_shards(to_submit, effective_size)
-    scripts = _sbatch.write_chunk_artifacts(config, chunks, Path(config_yaml))
-    if dry_run:
-        for script in scripts:
-            click.echo(f"Would submit: sbatch {script}")
-        return
-    if shutil.which("sbatch") is None:
-        click.echo("Error: sbatch not found on PATH. Run from a Slurm-enabled "
-                   "host or pass --dry-run to render scripts only.", err=True)
-        sys.exit(2)
-    ts = _manifest.utc_now_iso()
-    job_ids: list[str] = []
-    for i, (script, chunk) in enumerate(zip(scripts, chunks)):
-        proc = subprocess.run(["sbatch", str(script)], check=True,
-                              capture_output=True, text=True)
-        jid = _sbatch.parse_array_job_id(proc.stdout)
-        _sbatch.write_submission_record(
-            layer_root, sbatch_script=script, array_job_id=jid,
-            n_shards=len(chunk), ts=ts, chunk_index=i, total_chunks=len(chunks))
-        job_ids.append(jid)
-    click.echo(_sbatch.format_submission_summary(
-        len(to_submit), len(skipped_ok), len(chunks), job_ids))
+    click.echo(f"OK    all checks passed: {layer_root}")
 
 
 if __name__ == "__main__":

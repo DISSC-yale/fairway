@@ -1,26 +1,13 @@
-"""Fragment-based manifest for Slurm job-array safe per-shard ingest tracking.
+"""Per-table manifest as the source of truth for idempotent re-runs.
 
-Two physical forms, eliminating the single-file JSON write race under concurrent
-Slurm tasks:
+Layout: ``tables/<t>/manifest.json`` (gitignored). Workers write
+fragments to ``tables/<t>/_state/fragments/<shard_id>.json``;
+:func:`finalize` merges them in and clears the fragment dir.
 
-* **Fragments** ``<root>/_fragments/<shard_id>.json`` — write-once per shard via
-  :func:`write_fragment` (``.json.tmp`` + ``os.rename`` → POSIX-atomic).
-* **Merged** ``<root>/manifest.json`` and ``<root>/schema_summary.json`` —
-  produced by :func:`finalize`; never written by workers.
-
-Pinned identifiers (see PLAN.md Locked architectural decisions):
-
-* ``shard_id == task_id == sha256("/".join(f"__{k}={v}" for k, v in
-  sorted(pv.items()))).hexdigest()[:16]``
-* ``schema_fingerprint = sha256(json.dumps(sorted [{name, dtype}, ...],
-  sort_keys=True)).hexdigest()[:16]``
-* ``source_hash(p) = sha256(size_le_8 || first_4096 || last_4096).hexdigest()[:16]``;
-  files <8 KB hashed in full. Best-effort content-change detection — will NOT
-  detect mid-file edits that preserve file size (explicit perf tradeoff: full
-  hashing of 50 GB files would dominate ingest cost; pass ``--force`` for
-  bit-exact checks).
+Idempotency unit is the *leaf partition*, not the shard. Changing
+``shard_by`` regroups compute but never invalidates a leaf — each leaf's
+``source_hashes`` + ``schema_fingerprint`` decide skip/run.
 """
-
 from __future__ import annotations
 
 import hashlib
@@ -32,37 +19,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
 logger = logging.getLogger(__name__)
 
+
 MANIFEST_VERSION = "0.3"
-FRAGMENT_DIR_NAME = "_fragments"
 MANIFEST_FILE_NAME = "manifest.json"
-SCHEMA_SUMMARY_FILE_NAME = "schema_summary.json"
+STATE_DIR_NAME = "_state"
+FRAGMENT_DIR_NAME = "fragments"
 HEAD_TAIL_BYTES = 4096
 SMALL_FILE_THRESHOLD = 8192
 
-class DuplicateShardIdError(RuntimeError):
-    """Raised by :func:`finalize` when two fragments share a ``shard_id``."""
 
 def utc_now_iso() -> str:
-    """ISO 8601 UTC timestamp string."""
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-def compute_task_id(partition_values: dict[str, str]) -> str:
-    """Pinned ``task_id`` / ``shard_id`` formula (see module docstring)."""
-    payload = "/".join(f"__{k}={v}" for k, v in sorted(partition_values.items()))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+def manifest_path(table_dir: Path) -> Path:
+    return table_dir / MANIFEST_FILE_NAME
 
 
-def schema_fingerprint(schema: list[dict[str, str]]) -> str:
-    """Deterministic 16-char hex schema fingerprint (see module docstring)."""
-    sorted_schema = sorted(({"name": c["name"], "dtype": c["dtype"]} for c in schema), key=lambda c: c["name"])
-    return hashlib.sha256(json.dumps(sorted_schema, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+def fragment_dir(table_dir: Path) -> Path:
+    return table_dir / STATE_DIR_NAME / FRAGMENT_DIR_NAME
+
+
+def fragment_path(table_dir: Path, shard_id: str) -> Path:
+    return fragment_dir(table_dir) / f"{shard_id}.json"
 
 
 def source_hash(path: Path | str) -> str:
-    """Best-effort content-change hash (see module docstring)."""
+    """Best-effort content hash: ``sha256(size || head_4KB || tail_4KB)``."""
     p = Path(path)
     size = p.stat().st_size
     h = hashlib.sha256(struct.pack("<Q", size))
@@ -76,44 +62,6 @@ def source_hash(path: Path | str) -> str:
     return h.hexdigest()[:16]
 
 
-def build_fragment(
-    *,
-    partition_values: dict[str, str],
-    source_files: list[str],
-    source_hashes: list[str],
-    schema: list[dict[str, str]],
-    row_count: int,
-    status: str,
-    error: str | None,
-    encoding_used: str,
-    ingest_ts: str | None = None,
-) -> dict[str, Any]:
-    """``shard_id`` and ``schema_fingerprint`` are derived deterministically."""
-    if status not in ("ok", "error"):
-        raise ValueError(f"status must be 'ok' or 'error', got {status!r}")
-    return {
-        "shard_id": compute_task_id(partition_values),
-        "partition_values": dict(partition_values),
-        "source_files": list(source_files),
-        "source_hashes": list(source_hashes),
-        "schema": [{"name": c["name"], "dtype": c["dtype"]} for c in schema],
-        "schema_fingerprint": schema_fingerprint(schema),
-        "row_count": int(row_count),
-        "ingest_ts": ingest_ts or utc_now_iso(),
-        "status": status,
-        "error": error,
-        "encoding_used": encoding_used,
-    }
-
-
-def _fragment_dir(root_dir: Path | str) -> Path:
-    return Path(root_dir) / FRAGMENT_DIR_NAME
-
-def fragment_path(root_dir: Path | str, shard_id: str) -> Path:
-    """Final on-disk location of the fragment file for ``shard_id``."""
-    return _fragment_dir(root_dir) / f"{shard_id}.json"
-
-
 def _atomic_write_json(target: Path, payload: Any) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
@@ -121,81 +69,224 @@ def _atomic_write_json(target: Path, payload: Any) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
         f.flush()
         os.fsync(f.fileno())
-    os.rename(tmp, target)
+    os.replace(tmp, target)
 
 
-def write_fragment(fragment: dict[str, Any], root_dir: Path | str) -> None:
-    """Atomically write ``fragment`` to ``<root_dir>/_fragments/<shard_id>.json``."""
-    _atomic_write_json(fragment_path(root_dir, fragment["shard_id"]), fragment)
+def empty_manifest(table: str) -> dict[str, Any]:
+    return {
+        "version": MANIFEST_VERSION,
+        "table": table,
+        "finalized_at": None,
+        "layers": {},
+    }
 
 
-def _read_fragments(root_dir: Path) -> list[dict[str, Any]]:
-    frag_dir = _fragment_dir(root_dir)
-    if not frag_dir.is_dir():
+def load_manifest(table_dir: Path) -> dict[str, Any]:
+    """Load ``manifest.json``; return empty initialized structure if absent."""
+    path = manifest_path(table_dir)
+    table = table_dir.name
+    if not path.is_file():
+        return empty_manifest(table)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("could not read %s (%s); reinitializing", path, exc)
+        return empty_manifest(table)
+
+
+def save_manifest(manifest: dict[str, Any], table_dir: Path) -> None:
+    """Atomic write to ``tables/<t>/manifest.json``."""
+    _atomic_write_json(manifest_path(table_dir), manifest)
+
+
+def _layer(manifest: dict, layer: str) -> dict[str, Any]:
+    layers = manifest.setdefault("layers", {})
+    return layers.setdefault(layer, {"partitions": {}, "last_run": None})
+
+
+def is_leaf_valid(
+    manifest: dict[str, Any],
+    layer: str,
+    leaf: str,
+    source_files: list[str],
+    source_hashes: list[str],
+    schema_fp: str,
+) -> bool:
+    """Return True iff the manifest already has this leaf as ``status="ok"``
+    with matching source hashes (file list + per-file content hash) and
+    matching ``schema_fingerprint``.
+    """
+    layers = manifest.get("layers", {})
+    parts = layers.get(layer, {}).get("partitions", {})
+    entry = parts.get(leaf)
+    if not entry or entry.get("status") != "ok":
+        return False
+    if list(entry.get("source_files") or []) != list(source_files):
+        return False
+    if list(entry.get("source_hashes") or []) != list(source_hashes):
+        return False
+    if entry.get("schema_fingerprint") != schema_fp:
+        return False
+    return True
+
+
+def record_leaf(
+    manifest: dict[str, Any],
+    layer: str,
+    leaf: str,
+    *,
+    source_files: list[str],
+    source_hashes: list[str],
+    schema_fingerprint: str,
+    row_count: int,
+    status: str,
+    drift_events: dict | None = None,
+    encoding_used: str | None = None,
+    ingest_ts: str | None = None,
+) -> None:
+    """Upsert a leaf entry in memory. Caller writes via :func:`save_manifest`."""
+    if status not in ("ok", "error"):
+        raise ValueError(f"status must be 'ok' or 'error', got {status!r}")
+    entry: dict[str, Any] = {
+        "source_files": list(source_files),
+        "source_hashes": list(source_hashes),
+        "schema_fingerprint": schema_fingerprint,
+        "row_count": int(row_count),
+        "status": status,
+        "ingest_ts": ingest_ts or utc_now_iso(),
+    }
+    if drift_events:
+        entry["drift_events"] = drift_events
+    if encoding_used:
+        entry["encoding_used"] = encoding_used
+    layer_entry = _layer(manifest, layer)
+    layer_entry.setdefault("partitions", {})[leaf] = entry
+
+
+def clear_last_run(manifest: dict[str, Any], layer: str = "processed") -> None:
+    """Reset the layer's ``last_run`` block ahead of a fresh submit/run."""
+    _layer(manifest, layer)["last_run"] = None
+
+
+def set_last_run(
+    manifest: dict[str, Any],
+    layer: str,
+    *,
+    shard_by: list[str],
+    shards_observed: list[str],
+    failed_shards: list[dict[str, Any]],
+) -> None:
+    _layer(manifest, layer)["last_run"] = {
+        "shard_grouping": {"shard_by": list(shard_by)},
+        "shards_observed": list(shards_observed),
+        "failed_shards": list(failed_shards),
+    }
+
+
+def write_fragment(
+    table_dir: Path,
+    shard_id: str,
+    *,
+    layer: str,
+    leaves: dict[str, dict[str, Any]],
+    failed: dict[str, Any] | None = None,
+    shard_by: list[str] | None = None,
+) -> Path:
+    """Atomically write a fragment for one shard's outcome.
+
+    A fragment carries either successful per-leaf entries (``leaves``) or
+    a shard-level error record (``failed``). Both can be present when a
+    shard partially succeeded before erroring.
+    """
+    payload: dict[str, Any] = {
+        "shard_id": shard_id,
+        "layer": layer,
+        "leaves": leaves,
+        "failed": failed,
+        "shard_by": list(shard_by or []),
+    }
+    target = fragment_path(table_dir, shard_id)
+    _atomic_write_json(target, payload)
+    return target
+
+
+def _read_fragments(table_dir: Path) -> list[dict[str, Any]]:
+    fdir = fragment_dir(table_dir)
+    if not fdir.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for entry in sorted(frag_dir.iterdir()):
+    for entry in sorted(fdir.iterdir()):
         if not entry.is_file() or entry.suffix != ".json":
             continue
         try:
-            with entry.open("r", encoding="utf-8") as f:
-                out.append(json.load(f))
+            out.append(json.loads(entry.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("skipping corrupt fragment %s: %s", entry, exc)
     return out
 
 
-def _build_schema_summary(fragments: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate fragment schemas. Only ``status == "ok"`` fragments contribute."""
-    distinct: dict[str, dict[str, Any]] = {}
-    presence: dict[str, int] = {}
-    dtypes: dict[str, set[str]] = {}
-    total = 0
-    for frag in fragments:
-        if frag.get("status") != "ok":
-            continue
-        total += 1
-        fp = frag.get("schema_fingerprint", "")
-        d = distinct.setdefault(fp, {"fingerprint": fp, "schema": frag.get("schema", []), "shard_count": 0})
-        d["shard_count"] += 1
-        seen: set[str] = set()
-        for col in frag.get("schema", []):
-            name, dtype = col["name"], col["dtype"]
-            if name not in seen:
-                presence[name] = presence.get(name, 0) + 1
-                seen.add(name)
-            dtypes.setdefault(name, set()).add(dtype)
-    return {
-        "ok_shard_count": total,
-        "distinct_schemas": list(distinct.values()),
-        "column_presence": {n: round(c / total, 6) if total else 0.0 for n, c in presence.items()},
-        "column_dtypes_seen": {n: sorted(d) for n, d in dtypes.items()},
-    }
+def finalize(
+    table_dir: Path,
+    *,
+    layer: str = "processed",
+    shard_by: list[str] | None = None,
+) -> dict[str, Any]:
+    """Merge fragments → manifest; delete fragment files on success.
 
-
-def finalize(root_dir: Path | str) -> dict[str, Any]:
-    """Merge fragments → ``manifest.json`` + ``schema_summary.json``.
-
-    Validates ``shard_id`` uniqueness (raises :class:`DuplicateShardIdError`);
-    corrupt fragments are logged and skipped.
+    Always rewrites ``last_run`` for ``layer`` (cleared on each submit/run).
+    No-op fragment dir is allowed: only ``finalized_at`` + ``last_run`` are
+    refreshed.
     """
-    root = Path(root_dir)
-    fragments = _read_fragments(root)
-    seen: set[str] = set()
+    manifest = load_manifest(table_dir)
+    fragments = _read_fragments(table_dir)
+    failed_shards: list[dict[str, Any]] = []
+    shards_observed: list[str] = []
+    effective_shard_by: list[str] = list(shard_by or [])
+    leaf_count = 0
     for frag in fragments:
-        sid = frag.get("shard_id", "")
-        if sid in seen:
-            raise DuplicateShardIdError(f"duplicate shard_id {sid!r} in {root}")
-        seen.add(sid)
-    merged: dict[str, Any] = {
-        "version": MANIFEST_VERSION,
-        "finalized_at": utc_now_iso(),
-        "fragment_count": len(fragments),
-        "fragments": fragments,
-    }
-    root.mkdir(parents=True, exist_ok=True)
-    _atomic_write_json(root / MANIFEST_FILE_NAME, merged)
-    _atomic_write_json(root / SCHEMA_SUMMARY_FILE_NAME, _build_schema_summary(fragments))
-    return merged
+        sid = str(frag.get("shard_id", ""))
+        shards_observed.append(sid)
+        if frag.get("shard_by") and not effective_shard_by:
+            effective_shard_by = list(frag["shard_by"])
+        leaves = frag.get("leaves") or {}
+        for leaf_path, leaf_data in leaves.items():
+            record_leaf(
+                manifest, layer, leaf_path,
+                source_files=leaf_data.get("source_files", []),
+                source_hashes=leaf_data.get("source_hashes", []),
+                schema_fingerprint=leaf_data.get("schema_fingerprint", ""),
+                row_count=leaf_data.get("row_count", 0),
+                status=leaf_data.get("status", "ok"),
+                drift_events=leaf_data.get("drift_events"),
+                encoding_used=leaf_data.get("encoding_used"),
+                ingest_ts=leaf_data.get("ingest_ts"),
+            )
+            leaf_count += 1
+        if frag.get("failed"):
+            failed_shards.append(frag["failed"])
+    set_last_run(
+        manifest, layer,
+        shard_by=effective_shard_by,
+        shards_observed=sorted(shards_observed),
+        failed_shards=failed_shards,
+    )
+    manifest["finalized_at"] = utc_now_iso()
+    save_manifest(manifest, table_dir)
+    fdir = fragment_dir(table_dir)
+    if fdir.is_dir():
+        for entry in fdir.iterdir():
+            if entry.is_file() and entry.suffix == ".json":
+                try:
+                    entry.unlink()
+                except OSError as exc:
+                    logger.warning("could not remove fragment %s: %s", entry, exc)
+    logger.info("finalized %s: merged %d fragment(s), %d leaf entries",
+                table_dir, len(fragments), leaf_count)
+    return manifest
 
 
+def fragment_count(table_dir: Path) -> int:
+    fdir = fragment_dir(table_dir)
+    if not fdir.is_dir():
+        return 0
+    return sum(1 for f in fdir.iterdir() if f.is_file() and f.suffix == ".json")

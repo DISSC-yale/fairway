@@ -1,76 +1,124 @@
-"""String templates rendered by ``fairway init`` — kept out of cli.py to
-hold its LOC budget (≤ 250 for Step 9.1, ≤ 280 after 9.5)."""
+"""Scaffold template strings rendered by ``fairway init``.
+
+Pure string data — no runtime imports, no logic. Each constant is one
+file the scaffolder writes into a fresh project or table dir.
+"""
 from __future__ import annotations
 
-# Per-dataset YAML scaffold. ``str.format`` placeholder is ``{name}``;
-# YAML braces (``{}``) are doubled so .format() leaves them literal.
-DATASET_YAML = """\
-# fairway dataset config — Required fields uncommented; optionals show defaults.
-dataset_name: {name}
-python: datasets/{name}.py
-storage_root: data
+
+FAIRWAY_YAML_TEMPLATE = """\
+# fairway.yaml — project defaults. Per-table override allowed in tables/<t>/config.yaml.
+
+# Storage — output paths per layer (per-table-overrideable)
+storage_root:      data
+storage_processed: data/processed
+storage_curated:   data/curated
+scratch_dir:       null
+
+# Encoding policy
+encoding: utf-8
+encoding_fallback: latin-1
+allow_encoding_fallback: false
+
+# Output
+row_group_size: 122880
+
+# Slurm
+slurm_account: null
+slurm_partition: null
+slurm_chunk_size: 4000
+slurm_concurrency: 64
+slurm_mem: 64G
+slurm_cpus_per_task: 8
+slurm_time: "2:00:00"
+"""
+
+
+TABLE_CONFIG_YAML_TEMPLATE = """\
+# tables/{name}/config.yaml — table-specific pipeline config.
+# Folder name is the table name; no `dataset_name:` field needed.
+
 source_glob: data/raw/{name}/*.csv
 naming_pattern: '(?P<state>[A-Z]+)_(?P<year>\\d{{4}})\\.csv'
 partition_by: [state, year]
 
-# storage_raw / storage_processed / storage_curated: <path>   # layer overrides
-# layer: raw                                                  # raw|processed|curated
-# source_format: delimited        # delimited | fixed_width
-# delimiter: "\\t"
-# has_header: true
-# encoding: utf-8
-# encoding_fallback: latin-1
-# allow_encoding_fallback: false
+# shard_by must be a strict prefix of partition_by (or [] for one shard).
+# Defaults to partition_by (one shard per leaf).
+# shard_by: [state]
+
+source_format: delimited           # delimited | fixed_width
+delimiter: ","
+has_header: true
+apply_type_a: false                # per-table only
+
 # date_columns: {{}}
-# apply_type_a: true
 # unzip: false
 # zip_inner_pattern: "*.csv|*.tsv|*.txt"
 # zip_password_file: null
-# validations:
-#   min_rows: 1
-#   max_rows: null
-#   check_nulls: []
-#   expected_columns: {{columns: [], strict: false}}
-#   check_range: {{}}
-#   check_values: {{}}
-#   check_pattern: {{}}
 # sort_by: null
-# row_group_size: 122880
-# slurm_account: null
-# slurm_partition: null
-# slurm_chunk_size: 4000
-# slurm_concurrency: 64
-# slurm_mem: 64G
-# slurm_cpus_per_task: 8
-# slurm_time: "2:00:00"
-# scratch_dir: null
+# slurm_mem: 128G                  # override fairway.yaml for this table
+# slurm_time: "4:00:00"
+
+validations:
+  min_rows: 1
+  expected_columns: {{columns: [], strict: false}}
 """
 
-DATASET_PY = '''\
-"""Ingest transform for {name}.
 
-Edit ``transform`` to customize. Default is ``default_ingest(con, ctx)``.
-See :mod:`fairway.defaults` for ``default_ingest_read_only``, ``apply_type_a``.
+TABLE_SCHEMA_YAML_STUB = """\
+# tables/{name}/schema.yaml — required output schema.
+# Run `fairway discover {name}` to populate columns automatically,
+# or edit this file by hand.
+
+on_drift: strict                   # strict | lenient | per-axis dict
+columns: []
 """
-from fairway.defaults import default_ingest
+
+
+TABLE_TRANSFORM_PY_TEMPLATE = '''\
+"""Optional transform hook for table `{name}`.
+
+If this file is absent, the source view is passed through unchanged.
+Delete this file if you don't need a custom transform.
+"""
+from __future__ import annotations
 
 
 def transform(con, ctx):
-    return default_ingest(con, ctx)
+    """Return a DuckDB relation. ``ctx.input_view`` is the source view."""
+    return con.sql(f"SELECT * FROM {{ctx.input_view}}")
 '''
 
-GITIGNORE = "data/\nbuild/\n.venv/\n__pycache__/\n*.pyc\n"
 
-README = """\
+GITIGNORE_TEMPLATE = """\
+data/
+build/
+tables/*/manifest.json
+tables/*/_state/
+.venv/
+__pycache__/
+*.pyc
+"""
+
+
+README_TEMPLATE = """\
 # {name}
 
-fairway project (v0.3 layout). ``datasets/<name>.{{yaml,py}}`` per dataset;
-``transforms/{{raw_to_processed,processed_to_curated}}/`` for Stage 2;
-``data/`` and ``build/`` are gitignored.
+fairway project (v0.3 layout). `fairway.yaml` holds project defaults;
+`tables/<t>/` holds per-table config (`config.yaml`), required schema
+(`schema.yaml`), and an optional `transform.py` hook. The per-table
+`manifest.json` is the source of truth for idempotent re-runs.
 
-Quickstart::
+Quickstart:
 
-    fairway init {name} --dataset mydataset
-    fairway submit datasets/mydataset.yaml
-    fairway status --dataset mydataset
+    cd {name}
+    # add a new table
+    fairway init . --table sales
+    # populate tables/sales/schema.yaml from sample CSV files
+    fairway discover sales
+    # single-machine run (inline finalize):
+    fairway run sales
+    # Slurm array submission (separate finalize dependency job):
+    fairway submit sales
+    fairway status sales
 """

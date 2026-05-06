@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .config import RangeSpec, Validations
+from .config import RangeSpec, Validations  # noqa: F401  (re-exported via Validations)
 
 
 class ShardValidationError(RuntimeError):

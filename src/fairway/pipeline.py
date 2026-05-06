@@ -1,151 +1,136 @@
-"""Pipeline orchestrator (rewrite/v0.3 Step 8.1 skeleton).
+"""Pipeline orchestrator — single-machine and per-task entry points.
 
-Single-path orchestrator: enumerate shards from :mod:`fairway.batcher`,
-build an :class:`~fairway.ctx.IngestCtx` per shard, open a DuckDB
-in-memory connection, call :func:`fairway.duckdb_runner.run_shard`, and
-collect :class:`~fairway.duckdb_runner.ShardResult` objects.
-
-There is no engine selector and no batch-strategy dispatch — DuckDB is
-the only execution engine in v0.3. The Slurm-array entry point passes
-``shard_index=N`` to process exactly one shard; sequential local runs
-(used for tests and small datasets) pass ``shard_index=None``.
+``run_inline`` is the single-machine path used by ``fairway run``: it
+clears ``last_run``, executes every (non-skippable) shard sequentially,
+and finalizes the manifest at the end. ``run_one_shard`` is the
+per-task entry point used by Slurm array workers (``fairway _shard``).
 """
 from __future__ import annotations
 
-import glob
-import os
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
 
-from . import manifest
-from .batcher import PartitionBatcher
-from .config import Config
-from .ctx import IngestCtx
-from .duckdb_runner import ShardResult, _layer_root, run_shard
+from . import manifest as _manifest
+from .batcher import Shard, enumerate_shards, validate_shard_by
+from .config import TableConfig
+from .duckdb_runner import ShardResult, run_shard
+from .schema import (
+    SchemaSpec,
+    schema_fingerprint,
+    validate_schema_vs_config,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class PipelineResult:
-    """Aggregated outcome of a :func:`run_pipeline` invocation."""
-
     total_shards: int
-    ok_count: int
-    error_count: int
+    submitted: int
+    skipped: int
     shard_results: list[ShardResult] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class _ShardSpec:
-    """Internal: a single shard's identity + inputs prior to context build."""
+def _resumable_shards(
+    shards: list[Shard],
+    table_dir: Path,
+    schema_fp: str,
+    *,
+    force: bool,
+) -> tuple[list[Shard], list[Shard]]:
+    """Split shards into ``(to_run, skipped)`` based on per-leaf manifest state."""
+    if force:
+        return list(shards), []
+    manifest = _manifest.load_manifest(table_dir)
+    to_run: list[Shard] = []
+    skipped: list[Shard] = []
+    for shard in shards:
+        all_valid = True
+        for leaf, files in shard.leaves.items():
+            sources = [str(p) for p in files]
+            try:
+                hashes = [_manifest.source_hash(p) for p in files]
+            except OSError:
+                all_valid = False
+                break
+            if not _manifest.is_leaf_valid(
+                manifest, "processed", leaf, sources, hashes, schema_fp,
+            ):
+                all_valid = False
+                break
+        if all_valid:
+            skipped.append(shard)
+        else:
+            to_run.append(shard)
+    return to_run, skipped
 
-    shard_id: str
-    input_paths: list[Path]
-    partition_values: dict[str, str]
 
-
-def _resolve_scratch_dir(config: Config) -> Path:
-    """Pick a scratch directory: explicit config override, else env, else /tmp."""
-    if config.scratch_dir is not None:
-        return Path(config.scratch_dir)
-    env = os.environ.get("SLURM_TMPDIR") or os.environ.get("TMPDIR") or "/tmp"
-    return Path(env)
-
-
-def _enumerate_shards(config: Config) -> list[_ShardSpec]:
-    """Discover input files and group them into deterministic shards.
-
-    Files whose basename does not match ``config.naming_pattern`` are
-    silently skipped at this layer. Step 9.3 introduces the pre-scan
-    validation gate (:func:`batcher.expand_and_validate`) that surfaces
-    those mismatches with ``--allow-skip`` semantics.
-    """
-    files = sorted(glob.glob(config.source_glob))
-    grouped = PartitionBatcher.group_files(
-        files, config.naming_pattern, config.partition_by
-    )
-    specs: list[_ShardSpec] = []
-    for values, paths in grouped.items():
-        if values is None:
-            continue
-        partition_values = dict(zip(config.partition_by, values))
-        shard_id = manifest.compute_task_id(partition_values)
-        specs.append(
-            _ShardSpec(
-                shard_id=shard_id,
-                input_paths=[Path(p) for p in sorted(paths)],
-                partition_values=partition_values,
-            )
+def run_inline(
+    config: TableConfig,
+    schema: SchemaSpec,
+    *,
+    force: bool = False,
+) -> PipelineResult:
+    """Single-machine ingest: enumerate, run sequentially, finalize."""
+    validate_shard_by(config)
+    validate_schema_vs_config(schema, config.source_format)
+    shards, unmatched = enumerate_shards(config)
+    if unmatched:
+        names = "\n  ".join(str(p) for p in unmatched)
+        raise RuntimeError(
+            f"{len(unmatched)} input file(s) did not match naming_pattern:\n  {names}"
         )
-    specs.sort(key=lambda s: s.shard_id)
-    return specs
 
+    schema_fp = schema_fingerprint(schema)
+    manifest = _manifest.load_manifest(config.table_dir)
+    _manifest.clear_last_run(manifest)
+    _manifest.save_manifest(manifest, config.table_dir)
 
-def _build_ctx(config: Config, spec: _ShardSpec) -> IngestCtx:
-    """Materialize a frozen :class:`IngestCtx` for one shard.
-
-    ``output_path`` is the dataset's layer root (``storage_root/layer/
-    dataset_name`` with overrides honored); the runner's ``write_parquet``
-    call lays Hive ``__<key>=<val>`` subdirectories underneath it.
-    """
-    return IngestCtx(
-        config=config,
-        input_paths=spec.input_paths,
-        output_path=_layer_root(config),
-        partition_values=spec.partition_values,
-        shard_id=spec.shard_id,
-        scratch_dir=_resolve_scratch_dir(config),
-    )
-
-
-def _run_one(config: Config, spec: _ShardSpec) -> ShardResult:
-    """Open an in-memory DuckDB connection and ingest one shard."""
+    to_run, skipped = _resumable_shards(shards, config.table_dir, schema_fp, force=force)
+    results: list[ShardResult] = []
     con = duckdb.connect(":memory:")
     try:
-        return run_shard(con, _build_ctx(config, spec))
+        for shard in to_run:
+            results.append(run_shard(con, config, schema, shard))
     finally:
         con.close()
 
-
-def run_pipeline(
-    config: Config, shard_index: int | None = None
-) -> PipelineResult:
-    """Drive Stage-1 ingest for one Slurm-array task or every shard.
-
-    Parameters
-    ----------
-    config:
-        Parsed :class:`~fairway.config.Config`.
-    shard_index:
-        ``None`` runs every shard sequentially in this process (used by
-        tests and very small datasets). An ``int`` runs only the shard at
-        that index in the deterministically sorted shard list — the Slurm
-        array entry point passes its ``$SLURM_ARRAY_TASK_ID`` here.
-
-    Notes
-    -----
-    Shard-level failures are absorbed by
-    :func:`fairway.duckdb_runner.run_shard`; they appear as
-    ``ShardResult(status="error")`` in :attr:`PipelineResult.shard_results`
-    and are tallied in :attr:`PipelineResult.error_count`. The pipeline
-    itself never re-raises a per-shard exception.
-    """
-    specs = _enumerate_shards(config)
-    if shard_index is not None:
-        if shard_index < 0 or shard_index >= len(specs):
-            raise IndexError(
-                f"shard_index {shard_index} out of range "
-                f"(0..{len(specs) - 1 if specs else -1})"
-            )
-        results = [_run_one(config, specs[shard_index])]
-    else:
-        results = [_run_one(config, s) for s in specs]
-    ok = sum(1 for r in results if r.status == "ok")
-    err = sum(1 for r in results if r.status == "error")
+    _manifest.finalize(
+        config.table_dir,
+        layer="processed",
+        shard_by=list(config.shard_by),
+    )
     return PipelineResult(
-        total_shards=len(specs),
-        ok_count=ok,
-        error_count=err,
+        total_shards=len(shards),
+        submitted=len(to_run),
+        skipped=len(skipped),
         shard_results=results,
     )
+
+
+def run_one_shard(
+    config: TableConfig,
+    schema: SchemaSpec,
+    shard_index: int,
+) -> ShardResult:
+    """Worker entry point: execute exactly one shard from the deterministic list."""
+    validate_shard_by(config)
+    validate_schema_vs_config(schema, config.source_format)
+    shards, unmatched = enumerate_shards(config)
+    if unmatched:
+        raise RuntimeError(
+            f"{len(unmatched)} input file(s) did not match naming_pattern"
+        )
+    if shard_index < 0 or shard_index >= len(shards):
+        raise IndexError(
+            f"shard_index {shard_index} out of range (0..{len(shards) - 1 if shards else -1})"
+        )
+    con = duckdb.connect(":memory:")
+    try:
+        return run_shard(con, config, schema, shards[shard_index])
+    finally:
+        con.close()

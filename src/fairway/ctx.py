@@ -1,41 +1,21 @@
-"""Shard-execution contexts handed to user transforms.
-
-Stage 1 (ingest) uses :class:`IngestCtx`; Stage 2 (transform) uses
-:class:`TransformCtx`. Both are frozen dataclasses with the same shape
-modulo the config field — the type difference distinguishes the two
-stages at the user-callable boundary.
-"""
+"""Shard-execution context handed to user transforms."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from .config import Config
-
-
-@dataclass(frozen=True)
-class TransformConfig:
-    """Stage 2 config stub — fully built in later steps."""
-
-    dataset_name: str = ""
-    python: Path | None = None
+from .config import TableConfig
 
 
 @dataclass(frozen=True)
 class IngestCtx:
-    config: Config
+    config: TableConfig
     input_paths: list[Path]
-    output_path: Path
-    partition_values: dict[str, str]
+    output_root: Path                       # storage_processed/<table>
+    partition_values: dict[str, str]        # {key: value} for the SHARD level
+    leaves: dict[str, list[Path]]           # {leaf_path: [files...]} for this shard
     shard_id: str
     scratch_dir: Path
-
-
-@dataclass(frozen=True)
-class TransformCtx:
-    transform_config: TransformConfig
-    input_paths: list[Path]
-    output_path: Path
-    partition_values: dict[str, str]
-    shard_id: str
-    scratch_dir: Path
+    input_view: str = "fairway_input"       # name of the DuckDB view bound to inputs
+    extra: dict[str, Any] = field(default_factory=dict)
